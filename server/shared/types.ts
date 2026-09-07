@@ -1401,3 +1401,55 @@ export type SandboxCommandService = {
  * retains the selected user message and replaces subsequent SDK context; files restores only
  * native checkpoints; both performs the two operations and reports any partial file failure. */
 export type ClaudeSessionRewindMode = 'conversation' | 'files' | 'both';
+
+//----------------- CLAUDE USAGE ACCOUNTING ------------
+/** Non-overlapping billed token buckets. Thinking is an optional subset of output and must never be added to the total. */
+export type ClaudeUsageBuckets = {
+  inputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; outputTokens: number; thinkingTokens?: number;
+};
+/** SDK-reported model consumption. Missing or unknown pricing stays null; costs are estimates, never invoices. */
+export type ClaudeUsageModelCounters = ClaudeUsageBuckets & {
+  estimatedCostUsd: number | null; costBasis: 'list' | 'managed' | 'unknown'; contextWindow?: number; canonicalModel?: string;
+};
+/** Latest main sampling window, distinct from cumulative billed work. Capacity is SDK-observed, not inferred from an alias. */
+export type ClaudeUsageContext = {
+  usedTokens: number | null; model: string | null; capacityTokens: number | null; compactionWindowTokens: number | null;
+  measurement: 'last-request' | 'sdk-local-estimate' | 'post-compact' | 'unavailable'; observedAt: string;
+};
+/** Consumption of a turn. The public snapshot aggregates the whole user-started execution, including Workflow follow-ups; the internal reducer also uses this shape for result deltas. Request-only coverage is explicitly partial. */
+export type ClaudeUsageTurn = {
+  id: string; status: 'running' | 'complete' | 'error' | 'interrupted'; models: Record<string, ClaudeUsageModelCounters>;
+  estimatedCostUsd: number | null; coverage: 'sdk-query-pipeline' | 'observed-requests';
+};
+/** Shared REST/history/live snapshot. Revision is durable and monotonic per stable app session on one remote. */
+export type ClaudeUsageSnapshot = {
+  schemaVersion: 2; provider: 'claude'; sessionId: string; nativeContextId: string | null; revision: number; updatedAt: string;
+  context: ClaudeUsageContext; turn: (ClaudeUsageTurn & { executionId: string }) | null;
+  session: { models: Record<string, ClaudeUsageModelCounters>; tokens: ClaudeUsageBuckets; estimatedCostUsd: number | null;
+    knownEstimatedCostUsd: number; provisional: boolean; historicalCoverage: 'observed-requests' | 'new-session' | 'inherited-context';
+    warnings: string[]; };
+};
+
+//----------------- CLAUDE EXECUTION SETTINGS ------------
+/** Canonical next-launch selection shared by Chat and Shell. Revision fingerprints the persisted choice, not an effective run. */
+export type ClaudeExecutionSettings = {
+  model: string;
+  effort: string;
+  ultracode: boolean;
+  revision: string;
+};
+
+/** A remote execution record. Requested values are immutable; observations are only fields explicitly reported by that execution. */
+export type ClaudeExecutionRecord = {
+  executionId: string;
+  appSessionId: string;
+  providerSessionId: string | null;
+  surface: 'chat' | 'shell';
+  projectPath: string;
+  requested: ClaudeExecutionSettings;
+  startedAt: string;
+  endedAt: string | null;
+  status: 'running' | 'completed' | 'failed';
+  observed: { model?: string; effort?: string | null; ultracode?: boolean; source?: string; observedAt?: string; promptId?: string };
+};
+// ---------------------------

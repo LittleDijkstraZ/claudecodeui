@@ -13,3 +13,7 @@ export { initializeSessionsWatcher } from './services/sessions-watcher.service.j
 export { closeSessionsWatcher } from './services/sessions-watcher.service.js';
 
 export { isClaudeSessionActive } from './list/claude/claude-runtime.provider.js';
+
+// Used by Shell and server configuration routes to share Claude session settings.
+export { claudeSessionConfiguration } from './services/claude-session-configuration.service.js';
+export { claudeExecutionRecords } from './services/claude-execution-records.js';

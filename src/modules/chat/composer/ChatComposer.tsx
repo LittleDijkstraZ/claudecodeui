@@ -11,6 +11,7 @@ import type {
   TouchEvent,
 } from 'react';
 import { PaperclipIcon, MessageSquareIcon, XIcon, Loader2, ArrowUpIcon, PencilIcon } from 'lucide-react';
+import { AgentsStatus } from '@/modules/workspace-panels';
 
 import { useVoiceInput } from '@/modules/chat/hooks/useVoiceInput';
 import { useVoiceAvailable } from '@/modules/chat/hooks/useVoiceAvailable';
@@ -272,6 +273,7 @@ export default function ChatComposer({
 
   return (
     <div className="chat-composer-shell relative flex-shrink-0 px-2 pb-2 pt-0 sm:px-4 sm:pb-4 md:px-4 md:pb-6">
+      <div className="mx-auto max-w-[54.25rem]"><AgentsStatus /></div>
       {!hasPendingPermissions && (
         <div className="pointer-events-none relative z-10 mx-auto max-w-[54.25rem] translate-y-px bg-transparent">
           <ActivityIndicator activity={activity} onAbort={onAbortSession} isInputFocused={isInputFocused} />
@@ -368,6 +370,7 @@ export default function ChatComposer({
           onSubmit={onSubmit as (event: FormEvent<HTMLFormElement>) => void}
           status={isLoading ? 'streaming' : 'ready'}
           className={[
+            'cloudcli-composer',
             isTextareaExpanded ? 'chat-input-expanded' : '',
             hasActivityIndicator ? 'rounded-t-none' : '',
           ].filter(Boolean).join(' ')}
@@ -431,8 +434,8 @@ export default function ChatComposer({
             />
         </PromptInputBody>
 
-        <PromptInputFooter className="flex-wrap gap-y-1">
-          <PromptInputTools className="min-w-0">
+        <PromptInputFooter className="cloudcli-composer-footer flex-wrap gap-x-2 gap-y-2">
+          <PromptInputTools className="cloudcli-composer-tools min-w-0 flex-wrap">
             <PromptInputButton
               tooltip={{ content: t('input.attachFiles') }}
               onClick={openAttachmentPicker}
@@ -474,7 +477,7 @@ export default function ChatComposer({
 
           </PromptInputTools>
 
-          <div className="ml-auto flex shrink-0 items-center gap-1.5 sm:gap-2">
+          <div className="cloudcli-composer-controls ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-1.5">
             <ScheduleMessagePopover
               disabled={!input.trim()}
               onSchedule={onScheduleMessage}
@@ -536,7 +539,8 @@ export default function ChatComposer({
           </div>
 
           <div
-            className={`order-last hidden basis-full px-2 text-center text-xs leading-4 text-muted-foreground/50 transition-opacity duration-200 lg:block ${
+            data-testid="composer-shortcuts"
+            className={`cloudcli-composer-shortcuts order-last basis-full px-1 text-center text-xs leading-4 text-muted-foreground/60 transition-opacity duration-200 ${
               input.trim() && !canQueueDraft ? 'opacity-0' : 'opacity-100'
             }`}
           >

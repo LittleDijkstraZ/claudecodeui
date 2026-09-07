@@ -1,3 +1,6 @@
+import { randomUUID } from 'node:crypto';
+import { claudeSessionConfiguration } from '@/modules/providers/services/claude-session-configuration.service.js';
+import { claudeExecutionRecords } from '@/modules/providers/services/claude-execution-records.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { providerModelsService } from '@/modules/providers/services/provider-models.service.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
@@ -62,13 +65,23 @@ export function createProviderRuntimeService(
     },
   });
 
-  const run = (
+  const run = async (
     providerName: LLMProvider,
     command: string,
     options: AnyRecord,
     writer: ProviderRuntimeWriter,
   ): Promise<unknown> => {
     const provider = dependencies.resolveProvider(providerName);
+    if (providerName === 'claude' && options.sessionId) {
+      if (claudeExecutionRecords.isActive(options.sessionId, 'shell')) throw new Error('This conversation is open in a Claude terminal. Stop that execution before sending in Chat.');
+      const prepared = await claudeSessionConfiguration.prepare(options.sessionId);
+      options = { ...options, model: prepared.settings.model,
+        effort: prepared.settings.ultracode ? 'ultracode' : prepared.settings.effort,
+        executionId: randomUUID(),
+        executionSettings: prepared.settings,
+        expectedProviderSessionId: prepared.row.provider_session_id,
+        cwd: prepared.row.project_path, projectPath: prepared.row.project_path };
+    }
     return provider.runtime.run(command, options, writer, createRuntimeContext(provider));
   };
 

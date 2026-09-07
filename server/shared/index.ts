@@ -31,3 +31,9 @@ export {
   normalizeProjectPath,
   validateWorkspacePath,
 } from './utils.js';
+
+export type { ClaudeUsageBuckets, ClaudeUsageModelCounters, ClaudeUsageContext, ClaudeUsageTurn, ClaudeUsageSnapshot } from './types.js';
+
+export { parseIncomingJsonObject } from './utils.js';
+
+export { addClaudeUsageModels } from './utils.js';

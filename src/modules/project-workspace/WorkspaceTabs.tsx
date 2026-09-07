@@ -1,29 +1,30 @@
-import { MessageSquare, Terminal, Folder, GitBranch, ClipboardCheck, MonitorPlay, type LucideIcon } from 'lucide-react';
+import { MessageSquare, Terminal, Folder, GitBranch, ClipboardCheck, MonitorPlay, Bot, MessagesSquare, type LucideIcon } from 'lucide-react';
 import { Fragment } from 'react';
-import type { Dispatch, KeyboardEvent, SetStateAction } from 'react';
+import type { KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { Tooltip, PillBar, Pill } from '@/shared/ui';
-import type { AppTab } from '@/shared/types';
-import { usePlugins,PluginIcon } from '@/modules/plugins';
+import type { AppTab, WorkspacePanelTab } from '@/shared/types';
+import { usePlugins, PluginIcon } from '@/modules/plugins';
+import { useWorkspacePanels } from '@/modules/workspace-panels';
 
 type WorkspaceTabsProps = {
-  activeTab: AppTab;
-  setActiveTab: Dispatch<SetStateAction<AppTab>>;
+  activeTab: AppTab | WorkspacePanelTab;
+  setActiveTab: (tab: AppTab | WorkspacePanelTab) => void;
   shouldShowTasksTab: boolean;
   shouldShowBrowserTab: boolean;
 };
 
 type BuiltInTab = {
   kind: 'builtin';
-  id: AppTab;
+  id: AppTab | WorkspacePanelTab;
   labelKey: string;
   icon: LucideIcon;
 };
 
 type PluginTab = {
   kind: 'plugin';
-  id: AppTab;
+  id: AppTab | WorkspacePanelTab;
   label: string;
   pluginName: string;
   iconFile: string;
@@ -35,7 +36,8 @@ const BASE_TABS: BuiltInTab[] = [
   { kind: 'builtin', id: 'chat',  labelKey: 'tabs.chat',  icon: MessageSquare },
   { kind: 'builtin', id: 'shell', labelKey: 'tabs.shell', icon: Terminal },
   { kind: 'builtin', id: 'files', labelKey: 'tabs.files', icon: Folder },
-  { kind: 'builtin', id: 'git',   labelKey: 'tabs.git',   icon: GitBranch },
+  { kind: 'builtin', id: 'git', labelKey: 'workspacePanel.sourceControl', icon: GitBranch },
+  { kind: 'builtin', id: 'agents', labelKey: 'workspacePanel.agents', icon: Bot },
 ];
 
 const BROWSER_TAB: BuiltInTab = {
@@ -61,9 +63,11 @@ export default function WorkspaceTabs({
 }: WorkspaceTabsProps) {
   const { t } = useTranslation();
   const { plugins } = usePlugins();
+  const panel = useWorkspacePanels();
 
   const builtInTabs: BuiltInTab[] = [
     ...BASE_TABS,
+    ...(panel?.sideChatCount ? [{ kind: 'builtin' as const, id: 'sideChat' as const, labelKey: 'workspacePanel.sideChat', icon: MessagesSquare }] : []),
     ...(shouldShowBrowserTab ? [BROWSER_TAB] : []),
     ...(shouldShowTasksTab ? [TASKS_TAB] : []),
   ];

@@ -14,6 +14,8 @@ import { beforeEach, test, vi } from 'vitest';
  * while membership is unchanged.
  */
 
+vi.mock('@/shared/context/WebSocketContext', () => ({ useWebSocket: () => ({ subscribe: () => () => {} }) }));
+
 vi.mock('@/shared/api', () => ({
   api: { runningSessions: () => Promise.resolve({ ok: false }) },
 }));

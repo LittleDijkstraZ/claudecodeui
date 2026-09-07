@@ -217,6 +217,8 @@ export default function SidebarContent({
       <ScrollArea className="flex-1 overflow-y-auto overscroll-contain md:px-1.5 md:py-2">
         {searchMode === 'groups' ? (
           <SidebarConversationGroups
+            activeSessions={projectListProps.activeSessions}
+            attentionSessionIds={projectListProps.attentionSessionIds}
             selectedGroupId={selectedGroupId}
             onSelectGroup={onSelectGroup}
             query={searchFilter}
@@ -392,6 +394,8 @@ export default function SidebarContent({
           ) : null
         ) : searchMode === 'conversations' ? (
           <SidebarRecentConversations
+            activeSessions={projectListProps.activeSessions}
+            attentionSessionIds={projectListProps.attentionSessionIds}
             conversations={recentConversations}
             total={recentConversationsTotal}
             hasMore={recentConversationsHasMore}

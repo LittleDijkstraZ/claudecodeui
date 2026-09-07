@@ -1,8 +1,11 @@
 # Personal fork maintenance
 
-Base: upstream `v1.37.2`. Branch: `personal/cloudcli`.
-Modified on 2026-09-07 for incremental Claude output, Ultracode, conversation
-groups, and per-turn conversation change review.
+Base: upstream `main` at `b6083e0`. Branch: `personal/cloudcli`.
+Rebased on 2026-09-07, including upstream's frontend/backend module layout,
+session editing and forking, lazy history projection, and shared chat writers.
+The personal changes add incremental Claude output, conversation groups,
+change review, side chats, rewind, a local multi-remote hub, usage accounting,
+shared execution settings, and a retained right-hand workspace.
 
 ## Behavior to preserve
 
@@ -148,6 +151,86 @@ an unknown report from a selected alias, guessed release number, or another
 machine's session. Reported model, source, and timestamp help distinguish the
 last observed response from a newly selected model that has not replied yet.
 
+## Chat and Shell execution settings
+
+One remote database session stores the next model, effort, and Ultracode choice.
+Chat and the Claude terminal read that same configuration. Each launch freezes
+its own execution record with the remote's stable app session, native Claude
+session, project, configuration revision, and unique execution ID. A change
+during a running request applies to the next launch, not retroactively to the
+current process. An already open Claude terminal must be restarted to adopt
+changed launch settings.
+
+The configuration details distinguish requested settings, observations from the
+actual process, and the next-launch choice. SDK settings observations and Shell
+hooks record only approved configuration fields and identity, not tool contents
+or prompts. A requested `xhigh` effort alone does not prove Ultracode enabled.
+Unavailable observations stay unconfirmed; older execution history is not
+invented. Unsupported combinations return an explicit error. Catalog discovery
+never starts a new model question to check whether an option works.
+
+The Shell launch validates the owning project, native session, and configuration
+again after asynchronous preparation. Concurrent launches cannot claim the same
+terminal/session twice. A missing native session or a failed resume is an error:
+it must never silently fall back to a new Claude conversation. Shell commands
+such as `/model` and `/effort` affect that terminal process; they do not prove
+what a separate Chat execution used.
+
+## Claude usage accounting
+
+The compact composer number is the current main-thread context measurement,
+not accumulated billing tokens. Its details separate current context, this
+execution's turn, and the session's cumulative recorded consumption. Cache
+reads, cache writes, uncached input, and output remain separate. Capacity comes
+from observations of the owning session's actual model/configuration when
+available; unknown capacity remains unknown. A large cumulative cache count,
+such as 8M, must not be presented as an 8M current context.
+
+A remote SQLite ledger persists execution results and request identities outside
+the provider transcript. Complete SDK query totals are reconciled with streamed
+usage; split assistant events and already covered subagent requests are not
+counted twice. Request/model identities and execution coverage reconcile later
+history imports with already settled query totals. Usage from child agents is
+part of consumption, but never replaces the main thread's context measurement.
+Each SDK query, including a resumed query, starts a new billing baseline.
+
+Snapshot revisions and the stable/native session and execution identities guard
+stream events and delayed history requests. The hub additionally isolates all
+transport and browser state by machine. Refreshing or switching conversations
+must not let an older request overwrite a newer measurement. Compact and rewind
+may change the current context; they do not erase consumption already recorded
+in the ledger. A fork's copied history is identified as inherited rather than
+new usage caused by the branch.
+
+Costs are estimates from reported SDK costs, with the reported pricing basis,
+per-model breakdown, and coverage shown in details. Unknown prices are not
+guessed from a model alias. Older transcripts, missing request identities, or
+incomplete execution boundaries can limit historical coverage; partial data is
+marked explicitly rather than presented as a complete invoice. No extra model
+query or account-wide usage request is created to populate this display.
+
+## Right-hand workspace and compact controls
+
+Chat remains the main mounted view. Shell, Source Control, Files, Agents, and
+side chats use one right-hand panel with resize, collapse, maximize, and restore
+controls. On narrow containers it becomes an overlay. Opened terminal instances
+retain their original machine, project, and session binding across navigation;
+switching views or collapsing the panel does not destroy the terminal. Open side
+chat frames also retain their state when switching branches or panel tabs.
+
+Agents exposes each observed child task's name, status, elapsed time, action,
+output, and result, with a link back to its initiating message/tool. Only a
+compact status remains above the input. Agent information is derived from
+provider events/history; a provider that supplies no child output cannot have
+that output reconstructed by the UI.
+
+The composer uses its actual container width, including when a right panel is
+open. Controls wrap and the shortcut hint occupies its own row; long model IDs
+truncate without hiding the menu. Group, Project, and Recent conversation rows
+share running and attention indicators, including colors and tooltips. Live
+activity takes precedence over late running-list snapshots. Group conversations
+remain single-line, draggable, and retain their separate ellipsis menu.
+
 ## Local Remote Hub
 
 The standalone hub presents multiple self-hosted remotes in one sidebar. It
@@ -229,11 +312,10 @@ Use the locked dependencies with `npm ci`. Relevant regression tests live under
 `server/modules/providers/tests/`, `server/modules/conversation-groups/tests/`,
 `server/modules/database/tests/`, `server/modules/websocket/tests/`,
 `server/modules/claude-session-actions/tests/`, `server/modules/remote-hub/tests/`,
-`src/components/sidebar/utils/groupConversationPager.test.ts`,
-`src/components/chat/utils/sessionStreamBuffer.test.ts`,
-`src/components/chat/utils/conversationChanges.test.ts`,
-`src/components/chat/hooks/useChatMessages.test.ts`, and
-`src/components/chat/view/subcomponents/ConversationChangeContent.test.tsx`.
+`server/modules/claude-usage/tests/`, `src/modules/sidebar/tests/`,
+`src/modules/chat/tests/`, `src/modules/remote-hub/tests/`,
+`src/modules/project-workspace/tests/`, `src/modules/workspace-panels/tests/`,
+`src/modules/session-configuration/tests/`, and `src/shared/tests/`.
 
 ```sh
 npm test
@@ -315,3 +397,15 @@ the machine's installed Claude or verify a production deployment.
 When updating upstream, review the provider's SDK event protocol and frontend
 realtime handlers together. Test the rebuilt application before replacing a
 working remote service. Retain a separate previous installation for rollback.
+
+### Claude token and cost accounting
+
+The composer counter shows the **current context**, using the last main-model sampling iteration or the existing Claude process's local `getContextUsage({ detail: 'summary' })` estimate. A large cumulative bill (for example 8M tokens across repeated cached prompts) is never substituted for the context window. The observed model capacity and the compaction policy window are separate fields; an alias or `1m` selection does not prove actual capacity. Missing observations remain unknown.
+
+Click the counter to compare current context, the current/latest **user-started execution**, and cumulative conversation consumption. A user-started execution includes its Workflow follow-up results and subagents. Uncached input, cache reads, cache writes, output and per-model estimated costs are separate; thinking is already part of output. SDK prices are estimates, not invoices. Explicit `costBasis: unknown` is never displayed as a confirmed price; an absent basis follows the SDK's older-build contract of list pricing.
+
+The remote database persists only numerical counters and public/opaque model, request, session and execution identifiers. API request IDs deduplicate streamed blocks; cumulative SDK `modelUsage` is differenced within one query and resets for a new/resumed query. Result totals replace overlapping provisional observations. Completed query coverage also deduplicates subagent requests that were not forwarded live but appear later in transcript files. Classification uses request timestamps, not file modification times. Records with uncertain overlap are excluded from extra charges and visibly labeled partial.
+
+REST, history pages and live events use the same versioned snapshot with a durable per-session revision. Each remote pane keeps its own session cache; stale or mismatched snapshots cannot replace newer counters. Compaction and rewind change context without erasing prior spend. A fork inherits its prefix without charging that copied context again. Available old rewind backups and subagent logs contribute to historical request recovery, while missing internal calls and historical prices remain explicitly unknown. A stopped process preserves its observed partial spend.
+
+No discovery question, extra model session, token-count API call or account-wide `getUsage()` request is used for these statistics. The summary query operates only on an already user-started Claude process. Accounting cannot reconstruct an invoice or recover usage that Claude never recorded/reported.

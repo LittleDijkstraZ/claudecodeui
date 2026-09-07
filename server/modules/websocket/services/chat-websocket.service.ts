@@ -19,7 +19,7 @@ import type {
   ProviderPermissionDecision,
   ProviderRuntimeWriter,
 } from '@/shared/types.js';
-import { parseIncomingJsonObject } from '@/shared/utils.js';
+import { parseIncomingJsonObject, createNormalizedMessage } from '@/shared/index.js';
 
 /**
  * Trust boundary for client-supplied image attachments: chat.send options come
@@ -244,13 +244,12 @@ async function dispatchRun(
   // accepted sends so a rejected competing send cannot rename the conversation.
   sessionsService.initializeAppSessionName(sessionId, command);
 
-  // Record what this turn runs with so reopening the session later restores the
-  // same model and reasoning effort, and so the resume path has a
-  // session-scoped model answer to use.
-  if (typeof clientOptions.model === 'string' && clientOptions.model.trim()) {
+  // Initialize draft choices once. Claude launches reread the canonical session
+  // selection, so a stale browser cannot overwrite a newer saved choice here.
+  if ((provider !== 'claude' || !session.model) && typeof clientOptions.model === 'string' && clientOptions.model.trim()) {
     providerModelsService.setSessionModel(provider, sessionId, clientOptions.model);
   }
-  if (typeof clientOptions.effort === 'string' && clientOptions.effort.trim()) {
+  if ((provider !== 'claude' || !session.effort) && typeof clientOptions.effort === 'string' && clientOptions.effort.trim()) {
     providerModelsService.setSessionEffort(provider, sessionId, clientOptions.effort);
   }
 
@@ -279,7 +278,7 @@ async function dispatchRun(
     images: uniqueAttachments.filter(isImageAttachmentDescriptor),
     files: uniqueAttachments.filter((descriptor) => !isImageAttachmentDescriptor(descriptor)),
     sessionId,
-    cwd: clientOptions.cwd ?? session.project_path ?? undefined,
+    cwd: session.project_path ?? clientOptions.cwd ?? undefined,
     projectPath: session.project_path ?? clientOptions.projectPath,
   };
 
@@ -294,6 +293,7 @@ async function dispatchRun(
   } catch (error) {
     failure = error instanceof Error ? error.message : String(error);
     console.error(`[Chat] Provider runtime "${provider}" failed`, { sessionId, error: failure });
+    run.writer.send(createNormalizedMessage({ kind: 'error', content: failure, sessionId, provider }));
   } finally {
     // Safety net: a runtime that crashed (or resolved) without emitting its
     // terminal `complete` would otherwise leave the session stuck in

@@ -143,3 +143,17 @@ test('a rejected competing send cannot initialize an unnamed draft', { concurren
     assert.ok(connection.frames.some((frame) => frame.code === 'RUN_IN_PROGRESS'));
   });
 });
+
+
+test('configuration preparation failures reach the chat and release the reserved run', { concurrency: false }, async () => {
+  await withIsolatedDatabase(async () => {
+    const draft = sessionsService.createAppSession('claude', '/tmp/configuration-failure-fixture');
+    const connection = connect(createRuntime(async () => { throw new Error('This remote does not support the selected effort'); }));
+    await connection.receive({ type: 'chat.send', sessionId: draft.sessionId, content: 'Fixture only' });
+    const errors = connection.frames.filter((frame) => frame.kind === 'error');
+    assert.equal(errors.length, 1);
+    assert.match(JSON.stringify(errors[0]), /does not support the selected effort/);
+    assert.equal(connection.frames.filter((frame) => frame.kind === 'complete').length, 1);
+    assert.equal(chatRunRegistry.isProcessing(draft.sessionId), false);
+  });
+});

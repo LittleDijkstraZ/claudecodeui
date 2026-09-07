@@ -1,4 +1,4 @@
-import type { HubRemote, HubGroupState, ClaudeSessionCapabilities, ForkedClaudeSession, RewindMode, RewindPreview, RewindResult,LLMProvider,ConversationGroup,ConversationGroupsSnapshot,CreatedGroupConversation,GroupConversationsPage } from '@/shared/types';
+import type { HubRemote, HubGroupState, ClaudeSessionCapabilities, ClaudeSessionSettings, ForkedClaudeSession, RewindMode, RewindPreview, RewindResult,LLMProvider,ConversationGroup,ConversationGroupsSnapshot,CreatedGroupConversation,GroupConversationsPage } from '@/shared/types';
 import { isValidRefreshedToken } from '@/shared/authToken';
 import { remoteStorageKey } from '@/shared/utils';
 import {
@@ -793,3 +793,11 @@ export function previewClaudeRewind(sessionId: string, messageId: string, mode: 
 export function rewindClaudeSession(sessionId: string, messageId: string, mode: RewindMode, previewToken: string): Promise<RewindResult> {
   return requestClaudeSessionAction(sessionId, '/rewind', { messageId, mode, previewToken });
 }
+
+/** Used by Chat/Shell configuration UI to read and update the owning remote session's next-launch settings. */
+export const claudeExecutionSettingsApi = {
+  read: (sessionId: string, executionId?: string | null, options: ApiRequestOptions = {}) => authenticatedFetch(
+    `/api/providers/claude/sessions/${encodeURIComponent(sessionId)}/execution-settings${executionId ? `?executionId=${encodeURIComponent(executionId)}` : ''}`, options),
+  update: (sessionId: string, settings: ClaudeSessionSettings) => authenticatedFetch(
+    `/api/providers/claude/sessions/${encodeURIComponent(sessionId)}/execution-settings`, { method: 'PUT', body: JSON.stringify(settings) }),
+};

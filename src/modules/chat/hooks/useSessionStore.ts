@@ -9,6 +9,7 @@
 
 import { useCallback, useMemo, useRef, useState } from 'react';
 
+import { acceptClaudeUsageSnapshot, isClaudeUsageSnapshot } from '@/modules/chat/utils/claudeUsageSnapshot';
 import { api } from '@/shared/api';
 import type { LLMProvider, NormalizedMessage } from '@/shared/types';
 import { removeOptimisticUserEchoes } from '@/modules/chat/utils/sessionMessageReconciliation';
@@ -517,7 +518,7 @@ async function refreshLatestSlotFromServer(
     latestPage.tokenUsage !== undefined
     && !hasEquivalentTokenUsage(latestPage.tokenUsage, slot.tokenUsage)
   ) {
-    slot.tokenUsage = latestPage.tokenUsage;
+    slot.tokenUsage = acceptClaudeUsageSnapshot(slot.tokenUsage, latestPage.tokenUsage, sessionId, window.__REMOTE_ID__ || window.location.origin);
     changed = true;
   }
 
@@ -614,7 +615,7 @@ export function useSessionStore() {
         );
         recomputeMergedIfNeeded(slot);
         if (data.tokenUsage !== undefined) {
-          slot.tokenUsage = data.tokenUsage;
+          slot.tokenUsage = acceptClaudeUsageSnapshot(slot.tokenUsage, data.tokenUsage, sessionId, window.__REMOTE_ID__ || window.location.origin);
         }
 
         notify(sessionId);
@@ -684,7 +685,7 @@ export function useSessionStore() {
           slot.offset = slot.serverMessages.length;
           prependedCount = olderMerge.prependedCount;
           if (data.tokenUsage !== undefined) {
-            slot.tokenUsage = data.tokenUsage;
+            slot.tokenUsage = acceptClaudeUsageSnapshot(slot.tokenUsage, data.tokenUsage, sessionId, window.__REMOTE_ID__ || window.location.origin);
           }
           recomputeMergedIfNeeded(slot);
           changed = true;
@@ -865,8 +866,9 @@ export function useSessionStore() {
       slot.total = 0;
       slot.hasMore = false;
       slot.fetchedAt = 0;
-      // No usage has been reported for the replacement chain yet.
-      slot.tokenUsage = undefined;
+      // Keep the ledger revision watermark. Rewind changes context, never spent usage;
+      // its authoritative replacement carries the next durable revision.
+      if (!isClaudeUsageSnapshot(slot.tokenUsage)) slot.tokenUsage = undefined;
       slot.status = 'idle';
       recomputeMergedIfNeeded(slot);
       notify(sessionId);

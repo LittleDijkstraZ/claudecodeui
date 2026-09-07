@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import '@xterm/xterm/css/xterm.css';
-import type { Project, ProjectSession } from '@/shared/types';
+import type { Project, ProjectSession, ShellTerminationRegistrar } from '@/shared/types';
+import { SessionExecutionSettings } from '@/modules/session-configuration';
 import { useShellRuntime } from '@/modules/shell/hooks/useShellRuntime';
 import { sendSocketMessage } from '@/modules/shell/utils/socket';
 import { getSessionTitle } from '@/shared/utils';
@@ -34,6 +35,11 @@ type ShellProps = {
   minimal?: boolean;
   autoConnect?: boolean;
   isActive?: boolean;
+  /** Immutable human-readable remote/project/session binding for a retained terminal. */
+  bindingLabel?: string;
+  /** Stable identity for an independently retained plain terminal. */
+  terminalInstanceId?: string;
+  onTerminateReady?: ShellTerminationRegistrar;
 };
 
 /** Exported through the shell barrel: the standalone-shell module renders it as a full-page terminal and the task-master module embeds it in its setup modal to run TaskMaster's init command. */
@@ -46,6 +52,9 @@ export default function Shell({
   minimal = false,
   autoConnect = false,
   isActive = true,
+  bindingLabel,
+  terminalInstanceId,
+  onTerminateReady,
 }: ShellProps) {
   const { t } = useTranslation('chat');
   const [isRestarting, setIsRestarting] = useState(false);
@@ -67,6 +76,8 @@ export default function Shell({
     isConnected,
     isInitialized,
     isConnecting,
+    executionBinding,
+    terminateShell,
     connectToShell,
     disconnectFromShell,
   } = useShellRuntime({
@@ -74,6 +85,7 @@ export default function Shell({
     selectedSession,
     initialCommand,
     isPlainShell,
+    terminalInstanceId,
     bypassPermissions,
     minimal,
     autoConnect,
@@ -81,6 +93,11 @@ export default function Shell({
     onProcessComplete,
     onOutputRef,
   });
+
+  useEffect(() => {
+    onTerminateReady?.(terminateShell);
+    return () => onTerminateReady?.(null);
+  }, [onTerminateReady, terminateShell]);
 
   // Check xterm.js buffer for CLI prompt patterns (❯ N. label)
   const checkBufferForPrompt = useCallback(() => {
@@ -296,6 +313,8 @@ export default function Shell({
 
   return (
     <div className="flex h-full w-full flex-col bg-gray-900">
+      {bindingLabel && <p className="shrink-0 truncate border-b border-gray-700 px-3 py-1 text-[10px] text-gray-300" title={bindingLabel}>{bindingLabel}</p>}
+      {!isPlainShell && <div className="shrink-0 border-b border-gray-700 bg-background px-2 py-1 text-foreground"><SessionExecutionSettings sessionId={selectedSession?.id ?? null} provider={selectedSession?.__provider ?? readSelectedProvider()} surface="shell" executionId={executionBinding?.executionId} /></div>}
       <ShellHeader
         isConnected={isConnected}
         isInitialized={isInitialized}

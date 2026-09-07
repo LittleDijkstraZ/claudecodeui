@@ -1014,3 +1014,17 @@
     }
   }
 }
+
+/* Composer layout follows its own available width, including a narrowed right workspace. */
+.cloudcli-composer { container-type: inline-size; container-name: composer; }
+.cloudcli-composer-model { max-width: min(14rem, 48cqw); }
+.cloudcli-composer-shortcuts { overflow-wrap: anywhere; }
+@container composer (max-width: 560px) {
+  .cloudcli-composer-controls { flex-basis: 100%; }
+  .cloudcli-composer-shortcuts { text-align: left; }
+}
+@container composer (max-width: 360px) {
+  .cloudcli-composer-footer { padding-inline: .5rem; }
+  .cloudcli-composer-model { max-width: min(10rem, 44cqw); }
+  .cloudcli-composer-effort { display: none; }
+}

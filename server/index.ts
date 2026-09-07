@@ -11,6 +11,8 @@ import cors from 'cors';
 
 import { AppError, findApplicationRoot, getModuleDirectory, IS_PLATFORM, terminalTextStyles } from '@/shared/utils.js';
 import {
+    claudeSessionConfiguration,
+    claudeExecutionRecords,
     closeSessionsWatcher,
     initializeSessionsWatcher,
     providerRuntimeService,
@@ -110,6 +112,9 @@ createWebSocketServer(server, {
         runtime: providerRuntimeService,
     },
     shell: {
+        prepareClaudeSession: (id, provider, projectPath) => claudeSessionConfiguration.prepareShell(id, provider, projectPath),
+        beginExecution: (record) => claudeExecutionRecords.begin(record),
+        finishExecution: (id, failed) => claudeExecutionRecords.finish(id, failed),
         resolveProviderSessionId: (sessionId, provider) => {
             const dbSession = sessionsDb.getSessionById(sessionId);
             if (dbSession) {

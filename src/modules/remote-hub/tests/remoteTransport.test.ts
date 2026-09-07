@@ -1,6 +1,6 @@
+import assert from 'node:assert/strict';
 import { test } from 'vitest';
 import type { HubGroupState } from '@/shared/types';
-import assert from 'node:assert/strict';
 
 import { remoteTransportUrl, scopedRemoteStorage } from '@/modules/remote-transport';
 import { moveHubMember, memberKey } from '@/modules/remote-hub/utils/hubClient';

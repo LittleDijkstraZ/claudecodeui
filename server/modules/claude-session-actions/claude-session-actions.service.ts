@@ -5,6 +5,7 @@ import path from 'node:path';
 import { deleteSession, forkSession, getSessionMessages, query } from '@anthropic-ai/claude-agent-sdk';
 import type { RewindFilesResult, SessionMessage } from '@anthropic-ai/claude-agent-sdk';
 
+import { claudeUsageService } from '@/modules/claude-usage/index.js';
 import { claudeSessionActionsDb, projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { isClaudeSessionActive } from '@/modules/providers/index.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
@@ -165,6 +166,7 @@ export function createClaudeSessionActionsService(overrides: Partial<Dependencie
 
     async fork(sessionId: string, input: { messageId?: string; title?: string }) {
       const createBranch = async (session: Session) => {
+        await claudeUsageService.getSnapshot(sessionId);
         const history = await messages(session);
         if (!history.length) fail('There are no saved messages to branch from.', 'CLAUDE_HISTORY_UNAVAILABLE');
         const messageId = input.messageId ? nativeMessageId(history, input.messageId, false) : undefined;
@@ -172,6 +174,7 @@ export function createClaudeSessionActionsService(overrides: Partial<Dependencie
         const fork = await dependencies.fork(session.provider_session_id, { dir: session.project_path, upToMessageId: messageId, title });
         const filename = await dependencies.ensureFork(session, fork.sessionId);
         const newSessionId = claudeSessionActionsDb.createBranch(sessionId, fork.sessionId, filename, title, messageId);
+        await claudeUsageService.inheritContext(sessionId, newSessionId);
         return { ...detail(newSessionId), parentSessionId: sessionId, sharesProjectFiles: true, inheritedFileCheckpoints: false };
       };
       // A fixed saved message is an immutable boundary: SDK fork reads a buffer
@@ -209,6 +212,7 @@ export function createClaudeSessionActionsService(overrides: Partial<Dependencie
           fail('The conversation or files changed after the preview. Preview again.', 'REWIND_PREVIEW_STALE');
         }
         if (!preview.files.canRewind) fail(preview.files.error || 'This message has no usable file checkpoint.', 'CLAUDE_CHECKPOINT_UNAVAILABLE');
+        await claudeUsageService.getSnapshot(sessionId);
         // Consume once: a failed or partially successful restore must be freshly inspected.
         previews.delete(input.previewToken);
         let branch: { sessionId: string; filename: string; fingerprint: string } | null = null;
@@ -236,6 +240,8 @@ export function createClaudeSessionActionsService(overrides: Partial<Dependencie
           }
           const contextRevision = randomUUID();
           if (branch) {
+            if (backupSessionId) await claudeUsageService.inheritContext(sessionId, backupSessionId);
+            await claudeUsageService.getSnapshot(sessionId);
             chatRunRegistry.forgetCompletedRun(sessionId);
             chatRunRegistry.notifyContextReset(sessionId, contextRevision);
           }

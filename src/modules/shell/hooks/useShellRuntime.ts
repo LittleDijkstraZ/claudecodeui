@@ -3,11 +3,12 @@ import type { MutableRefObject, RefObject } from 'react';
 import type { FitAddon } from '@xterm/addon-fit';
 import type { Terminal } from '@xterm/xterm';
 
-import type { Project, ProjectSession } from '@/shared/types';
+import type { Project, ProjectSession, ShellExecutionBinding } from '@/shared/types';
 import { useShellConnection } from '@/modules/shell/hooks/useShellConnection';
 import { useShellTerminal } from '@/modules/shell/hooks/useShellTerminal';
 
 type UseShellRuntimeOptions = {
+  terminalInstanceId?: string;
   selectedProject: Project | null | undefined;
   selectedSession: ProjectSession | null | undefined;
   initialCommand: string | null | undefined;
@@ -21,6 +22,7 @@ type UseShellRuntimeOptions = {
 };
 
 type UseShellRuntimeResult = {
+  executionBinding: ShellExecutionBinding | null;
   terminalContainerRef: RefObject<HTMLDivElement>;
   terminalRef: MutableRefObject<Terminal | null>;
   wsRef: MutableRefObject<WebSocket | null>;
@@ -28,10 +30,12 @@ type UseShellRuntimeResult = {
   isInitialized: boolean;
   isConnecting: boolean;
   connectToShell: (options?: { forceRestart?: boolean }) => void;
+  terminateShell: () => Promise<boolean>;
   disconnectFromShell: (options?: { suppressAutoConnect?: boolean }) => void;
 };
 
 export function useShellRuntime({
+  terminalInstanceId,
   selectedProject,
   selectedSession,
   initialCommand,
@@ -93,7 +97,8 @@ export function useShellRuntime({
     closeSocket,
   });
 
-  const { isConnected, isConnecting, connectToShell, disconnectFromShell } = useShellConnection({
+  const { executionBinding, terminateShell, isConnected, isConnecting, connectToShell, disconnectFromShell } = useShellConnection({
+    terminalInstanceId,
     wsRef,
     terminalRef,
     fitAddonRef,
@@ -138,6 +143,8 @@ export function useShellRuntime({
   }, [disconnectFromShell, isInitialized, selectedSession?.id]);
 
   return {
+    executionBinding,
+    terminateShell,
     terminalContainerRef,
     terminalRef,
     wsRef,

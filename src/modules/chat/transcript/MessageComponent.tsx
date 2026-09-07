@@ -16,6 +16,8 @@ import MessageSpeakControl from '@/modules/chat/transcript/MessageSpeakControl';
 import { useIsExportingTranscript } from '@/modules/chat/context/TranscriptRenderContext';
 import { MemoryCitations } from '@/modules/chat/transcript/MemoryCitations';
 import { getIntrinsicMessageKey } from '@/modules/chat/utils/messageKeys';
+import { AgentSummary } from '@/modules/chat/agents/AgentSummary';
+import { useWorkspacePanelActions } from '@/modules/workspace-panels';
 import MessageSessionActions from '@/modules/chat/session-actions/MessageSessionActions';
 
 type MessageComponentProps = {
@@ -51,6 +53,7 @@ const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write', 'ApplyPatch']);
  */
 const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, showRawParameters, showThinking, selectedProject, provider, onEditMessage, onForkFromMessage, revealTarget }: MessageComponentProps) => {
   const { t } = useTranslation('chat');
+  const workspaceActions = useWorkspacePanelActions();
   const isGrouped = prevMessage && prevMessage.type === message.type &&
     ((prevMessage.type === 'assistant') ||
       (prevMessage.type === 'user') ||
@@ -218,7 +221,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
             {message.isSubagentContainer ? (
               /* A spawned agent owns its whole card — header, timeline and
                  result — so it never goes through the tool input/result pair. */
-              <SubagentPanel
+              !isExporting && workspaceActions ? <AgentSummary message={message} /> : <SubagentPanel
                 revealTarget={matchingRevealTarget}
                 toolInput={message.toolInput}
                 toolResult={message.toolResult}

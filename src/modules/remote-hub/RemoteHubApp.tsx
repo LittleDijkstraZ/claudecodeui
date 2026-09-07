@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useHubPanes } from '@/modules/remote-hub/hooks/useHubPanes';
 import { changeHubGroups, loadHubGroups, hubApi } from '@/shared/api';
 import type { HubRemote, HubRemoteState, HubConversation, HubGroup, HubGroupState } from '@/shared/types';
+
 import { Bell, ChevronDown, ChevronRight, ExternalLink, Folder, Layers, MoreHorizontal, Pin, Plus, RefreshCw, Server, Settings, Trash2, X } from 'lucide-react';
 
 import { ThemeProvider } from '@/shared/context/ThemeContext';
-import { ActionMenu, Button, Dialog, DialogContent, DialogTitle, Input } from '@/shared/ui';
+import { SessionAttentionIndicator, SessionRunningIndicator, ActionMenu, Button, Dialog, DialogContent, DialogTitle, Input } from '@/shared/ui';
 import { useConversationGroupDrag } from '@/modules/sidebar';
 import { memberKey, moveHubMember, normalizeConversation } from '@/modules/remote-hub/utils/hubClient';
 import { useHubConnections } from '@/modules/remote-hub/hooks/useHubConnections';
@@ -48,8 +50,7 @@ function Hub() {
   const [selection, setSelection] = useState<HubConversation | null>(null);
   // Allows login to a machine before any conversation is selected.
   const [loginRemote, setLoginRemote] = useState<string | null>(null);
-  // Separates embedded navigation from title-only selection updates.
-  const [paneLocation, setPaneLocation] = useState<{remoteId:string;sessionId:string|null;version:number}|null>(null);
+  const { panes, navigate: navigatePane, register: registerPane, remoteForSource, markReady, acceptSelection, openSettings } = useHubPanes();
   // Retains the current group or conversation dialog operation.
   const [modal, setModal] = useState<Modal | null>(null);
   // Allows the sidebar to be collapsed on a narrow workspace.
@@ -66,7 +67,6 @@ function Hub() {
   }>>([]);
   // Scopes a detached window to one group until the user expands its scope.
   const [groupWindow, setGroupWindow] = useState(new URLSearchParams(window.location.search).get('group'));
-  const frames = useRef<HTMLIFrameElement | null>(null);
   const importBusy = useRef(new Set<string>());
   const groupChannel = useRef<BroadcastChannel | null>(null);
   const onNotification = useCallback((remoteId: string, sessionId: string, label: string) => {
@@ -88,6 +88,10 @@ function Hub() {
   // Displays pending page loads independently for each remote project.
   const [loadingRows, setLoadingRows] = useState<Set<string>>(new Set());
   const projectLoads = useRef(new Set<string>());
+  useEffect(() => {
+    if (!selection || !states[selection.remoteId]?.attention?.includes(selection.sessionId)) return;
+    setStates(current => ({ ...current, [selection.remoteId]: { ...current[selection.remoteId], attention: current[selection.remoteId].attention.filter(id => id !== selection.sessionId) } }));
+  }, [selection, states, setStates]);
   const allConversations = useMemo(() => Object.values(states).flatMap(s => s.conversations), [states]);
   const byKey = useMemo(() => new Map(allConversations.map(c => [memberKey(c), c])), [allConversations]);
   const resolvedMember = (member: HubConversation) => byKey.get(memberKey(member)) ?? member;
@@ -138,7 +142,7 @@ function Hub() {
   const openMember = (member: HubConversation) => {
     setSelection(resolvedMember(member));
     setLoginRemote(null);
-    setPaneLocation(current=>({remoteId:member.remoteId,sessionId:member.sessionId,version:(current?.version??0)+1}));
+    navigatePane(member.remoteId, member.sessionId);
     if (window.innerWidth < 760) setSidebarOpen(false);
     const url = new URL(window.location.href);
     url.searchParams.set('remote', member.remoteId);
@@ -152,13 +156,16 @@ function Hub() {
       remoteId = params.get('remote');
     const fromLink = allConversations.find(c => c.sessionId === id && c.remoteId === remoteId);
     const fromGroup = groups.groups.find(g => g.id === groupWindow)?.members[0];
-    if (fromLink || fromGroup) { const member=fromLink??fromGroup!; setSelection(member); setPaneLocation(current=>({remoteId:member.remoteId,sessionId:member.sessionId,version:(current?.version??0)+1})); }
-  }, [allConversations, groups, groupWindow, selection, loginRemote]);
+    if (fromLink || fromGroup) { const member=fromLink??fromGroup!; setSelection(member); navigatePane(member.remoteId, member.sessionId); }
+  }, [allConversations, groups, groupWindow, selection, loginRemote, navigatePane]);
   useEffect(() => {
     const message = (event: MessageEvent) => {
-      if (event.origin !== location.origin || event.source !== frames.current?.contentWindow || event.data?.kind !== 'cloudcli:selection') return;
-      const remoteId = paneLocation?.remoteId;
-      if (!remoteId || typeof event.data.sessionId !== 'string') return;
+      if (event.origin !== location.origin) return;
+      const remoteId = remoteForSource(event.source);
+      if (!remoteId) return;
+      if (event.data?.kind === 'cloudcli:ready') { markReady(remoteId); return; }
+      if (event.data?.kind !== 'cloudcli:selection' || typeof event.data.sessionId !== 'string') return;
+      if (remoteId !== (selection?.remoteId ?? loginRemote) || !acceptSelection(remoteId, event.data.sessionId)) return;
       const next = {
         remoteId,
         sessionId: event.data.sessionId,
@@ -173,7 +180,7 @@ function Hub() {
     };
     window.addEventListener('message', message);
     return () => window.removeEventListener('message', message);
-  }, [paneLocation?.remoteId]);
+  }, [selection?.remoteId, loginRemote, remoteForSource, markReady, acceptSelection]);
   // Import each remote user's existing groups once. Membership order is fetched
   // from that remote in pages, then becomes independent local hub metadata.
   useEffect(() => {
@@ -283,19 +290,22 @@ function Hub() {
     const member = resolvedMember(raw),
       key = memberKey(member),
       status = states[member.remoteId]?.status;
-    const running = states[member.remoteId]?.running.includes(member.sessionId);
+    const running = Boolean(states[member.remoteId]?.running.includes(member.sessionId));
+    const attention = Boolean(states[member.remoteId]?.attention.includes(member.sessionId)) && (!selection || memberKey(selection) !== key);
+    const recent = !running && !attention && Boolean(member.lastActivity && Date.now() - Date.parse(member.lastActivity) < 10 * 60_000);
     const before = group?.members[index - 1],
       after = group?.members[index + 1];
     const target = drag.dropTarget?.sessionId === key ? drag.dropTarget.position : null;
     return <div key={key} data-testid="hub-conversation-row" data-group-id={group?.id} data-session-id={key} {...group ? drag.rowProps(group.id, key) : {}} className={`relative flex h-8 min-w-0 items-center gap-1 rounded-md px-1 hover:bg-accent ${selection && memberKey(selection) === key ? 'bg-primary/10' : ''} ${drag.dragState?.sessionId === key ? 'opacity-50' : ''}`}>
+      <SessionAttentionIndicator needsAttention={attention} isRecent={recent} className="absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2" />
       {target && <span className={`pointer-events-none absolute inset-x-0 h-0.5 bg-primary ${target === 'before' ? 'top-0' : 'bottom-0'}`} />}
-      {group ? <button {...drag.dragHandleProps(group.id, key)} disabled={saving} aria-label={`拖动 ${member.title}`} className="h-7 w-5 shrink-0 cursor-grab text-muted-foreground">⋮</button> : <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${running ? 'animate-pulse bg-emerald-500' : 'bg-muted-foreground/40'}`} />}
+      {group ? <button {...drag.dragHandleProps(group.id, key)} disabled={saving} aria-label={`拖动 ${member.title}`} className="h-7 w-5 shrink-0 cursor-grab text-muted-foreground">⋮</button> : <span className="w-1 shrink-0" />}
       <a href={`/?remote=${member.remoteId}&session=${member.sessionId}`} className="flex min-w-0 flex-1 items-center gap-1.5 text-[13px]" title={`${member.title}\n${remotes.find(r => r.id === member.remoteId)?.name}\n${member.projectPath}`} onClick={e => {
         if (e.button || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.defaultPrevented) return;
         e.preventDefault();
         openMember(member);
       }}>
-        <span className="min-w-0 flex-1 truncate">{member.title}</span><span className={`max-w-16 truncate text-[10px] ${status === 'online' ? 'text-muted-foreground' : 'text-amber-600'}`}>{running ? '● ' : ''}{remotes.find(r => r.id === member.remoteId)?.name}</span>
+        <span className="min-w-0 flex-1 truncate">{member.title}</span><SessionRunningIndicator isProcessing={running} /><span className={`max-w-16 truncate text-[10px] ${status === 'online' ? 'text-muted-foreground' : 'text-amber-600'}`}>{remotes.find(r => r.id === member.remoteId)?.name}</span>
       </a>
       <ActionMenu label="会话菜单" ariaLabel={`${member.title} 的菜单`} icon={MoreHorizontal} iconOnly portal variant="ghost" triggerClassName="h-7 w-7 p-0" disabled={saving} items={[{
         key: 'assign',
@@ -333,7 +343,7 @@ function Hub() {
     </div>;
   };
   const groupsToShow = [...groups.groups].sort((a, b) => Number(b.isPinned) - Number(a.isPinned)).filter(g => !groupWindow || g.id === groupWindow);
-  const openFrame = paneLocation ? `/remote/${paneLocation.remoteId}/${paneLocation.sessionId ? 'session/'+encodeURIComponent(paneLocation.sessionId) : ''}?embedded=1` : null;
+
   return <div className="fixed inset-0 flex bg-background text-foreground">
     {sidebarOpen && <aside className="absolute inset-y-0 left-0 z-30 flex w-[320px] max-w-[88vw] flex-col border-r border-border bg-card md:relative md:max-w-none" data-testid="hub-sidebar">
       <div className="flex h-14 items-center gap-2 px-4"><Layers className="h-5 w-5 text-primary" /><strong className="flex-1">CloudCLI</strong><Button variant="ghost" size="icon" aria-label="通知" onClick={() => {
@@ -346,7 +356,7 @@ function Hub() {
       <div className="space-y-1 px-3 pb-3">{remotes.map(remote => <div key={remote.id} className="flex items-center gap-2 text-xs"><span className={`h-1.5 w-1.5 rounded-full ${states[remote.id]?.status === 'online' ? 'bg-emerald-500' : states[remote.id]?.status === 'loading' ? 'bg-muted-foreground' : 'bg-amber-500'}`} /><span className="min-w-0 flex-1 truncate" title={remote.name}>{remote.name}</span><button className="rounded px-1.5 py-1 text-muted-foreground hover:bg-accent" onClick={() => {
             setLoginRemote(remote.id);
             setSelection(null);
-            setPaneLocation(current=>({remoteId:remote.id,sessionId:null,version:(current?.version??0)+1}));
+            navigatePane(remote.id, null);
           }}>{states[remote.id]?.status === 'login' ? '登录' : states[remote.id]?.status === 'offline' ? '离线' : states[remote.id]?.status === 'online' ? '已连接' : '连接中'}</button><button aria-label={`刷新 ${remote.name}`} onClick={() => void refresh(remote.id)} className="p-1"><RefreshCw className="h-3 w-3" /></button></div>)}</div>
       <div className="mx-3 flex gap-1 rounded-lg bg-muted p-1">{([['groups', '分组'], ['projects', '项目'], ['recent', '最近'], ['running', '运行中']] as const).map(([id, label]) => <button key={id} onClick={() => setMode(id)} className={`flex-1 rounded-md py-1.5 text-xs ${mode === id ? 'bg-background shadow-sm' : ''}`}>{label}</button>)}</div>
       <div className="flex gap-2 p-3"><Input value={query} onChange={e => setQuery(e.target.value)} placeholder="搜索会话、文件夹或机器…" className="h-9 text-xs" /><Button size="icon" className="h-9 w-9 shrink-0" aria-label="新建对话" onClick={() => setModal({
@@ -439,11 +449,18 @@ function Hub() {
       <div className="border-t border-border px-4 py-3 text-[11px] leading-relaxed text-muted-foreground">通过本机 SSH 隧道连接 · Claude 在远端运行</div>
     </aside>}
     <main className="flex min-w-0 flex-1 flex-col">
-      <header className="flex min-h-12 items-center gap-2 border-b border-border px-3"><Button variant="ghost" size="icon" aria-label="展开侧栏" onClick={() => setSidebarOpen(!sidebarOpen)}><Layers className="h-4 w-4" /></Button><div className="min-w-0 flex-1"><div className="truncate text-sm font-medium">{selection?.title ?? (loginRemote ? '连接远端' : '所有远端，一个窗口')}</div>{selectedRemote && <div className="flex items-center gap-1 text-xs text-muted-foreground"><Server className="h-3 w-3" /><span>{selectedRemote.name}</span>{selection?.projectPath && <span className="truncate"> · {selection.projectPath}</span>}</div>}</div>{selectedRemote && <Button variant="ghost" size="sm" onClick={() => frames.current?.contentWindow?.postMessage({
-          kind: 'cloudcli:settings'
-        }, location.origin)}><Settings className="h-3.5 w-3.5" />机器设置</Button>}</header>
+      <header className="flex min-h-12 items-center gap-2 border-b border-border px-3"><Button variant="ghost" size="icon" aria-label="展开侧栏" onClick={() => setSidebarOpen(!sidebarOpen)}><Layers className="h-4 w-4" /></Button><div className="min-w-0 flex-1"><div className="truncate text-sm font-medium">{selection?.title ?? (loginRemote ? '连接远端' : '所有远端，一个窗口')}</div>{selectedRemote && <div className="flex items-center gap-1 text-xs text-muted-foreground"><Server className="h-3 w-3" /><span>{selectedRemote.name}</span>{selection?.projectPath && <span className="truncate"> · {selection.projectPath}</span>}</div>}</div>{selectedRemote && <Button variant="ghost" size="sm" onClick={() => openSettings(selectedRemote.id)}><Settings className="h-3.5 w-3.5" />机器设置</Button>}</header>
       {selectedRemote && states[selectedRemote.id]?.status === 'offline' && <div role="status" className="bg-amber-50 px-4 py-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-200">{selectedRemote.name} 连接中断，其他机器仍可使用。<button className="ml-2 underline" onClick={() => void refresh(selectedRemote.id)}>重新连接</button></div>}
-      {openFrame ? <iframe name="cloudcli-remote" key={paneLocation?.version} ref={frames} src={openFrame} title={`${selectedRemote?.name} 对话`} className="min-h-0 w-full flex-1 border-0" allow="clipboard-read; clipboard-write; fullscreen" /> : <div className="flex flex-1 items-center justify-center p-8 text-center"><div className="max-w-sm"><Server className="mx-auto mb-4 h-8 w-8 text-muted-foreground" /><h1 className="text-lg font-semibold">选择一段对话，继续工作</h1><p className="mt-3 text-sm leading-relaxed text-muted-foreground">先在侧栏连接各台机器。登录使用对应远端的 CloudCLI 账号，项目操作和 Claude 执行都发生在那里。</p><Button className="mt-5" onClick={() => setModal({
+      {panes.map(pane => <iframe
+        name="cloudcli-remote" key={pane.remoteId}
+        ref={frame => registerPane(pane.remoteId, frame)}
+        src={`/remote/${encodeURIComponent(pane.remoteId)}/${pane.initialSessionId ? 'session/' + encodeURIComponent(pane.initialSessionId) : ''}?embedded=1`}
+        title={`${remotes.find(remote => remote.id === pane.remoteId)?.name ?? pane.remoteId} 对话`}
+        hidden={selectedRemote?.id !== pane.remoteId}
+        className={selectedRemote?.id === pane.remoteId ? 'min-h-0 w-full flex-1 border-0' : 'hidden'}
+        allow="clipboard-read; clipboard-write; fullscreen"
+      />)}
+      {selectedRemote ? null : <div className="flex flex-1 items-center justify-center p-8 text-center"><div className="max-w-sm"><Server className="mx-auto mb-4 h-8 w-8 text-muted-foreground" /><h1 className="text-lg font-semibold">选择一段对话，继续工作</h1><p className="mt-3 text-sm leading-relaxed text-muted-foreground">先在侧栏连接各台机器。登录使用对应远端的 CloudCLI 账号，项目操作和 Claude 执行都发生在那里。</p><Button className="mt-5" onClick={() => setModal({
             kind: 'new'
           })}>新建对话</Button></div></div>}
     </main>

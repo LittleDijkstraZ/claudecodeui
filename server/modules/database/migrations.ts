@@ -4,6 +4,8 @@ import {
   APP_CONFIG_TABLE_SCHEMA_SQL,
   CONVERSATION_GROUPS_SCHEMA_SQL,
   CLAUDE_SESSION_BRANCHES_SCHEMA_SQL,
+  CLAUDE_USAGE_SCHEMA_SQL,
+  CLAUDE_EXECUTIONS_SCHEMA_SQL,
   LAST_SCANNED_AT_SQL,
   NOTIFICATION_CHANNEL_ENDPOINTS_TABLE_SCHEMA_SQL,
   PROJECTS_TABLE_SCHEMA_SQL,
@@ -571,6 +573,8 @@ export const runMigrations = (db: Database) => {
     db.exec(CONVERSATION_GROUPS_SCHEMA_SQL);
     addConversationGroupOrdering(db);
     db.exec(CLAUDE_SESSION_BRANCHES_SCHEMA_SQL);
+    db.exec(CLAUDE_USAGE_SCHEMA_SQL);
+    db.exec(CLAUDE_EXECUTIONS_SCHEMA_SQL);
 
     db.exec('CREATE INDEX IF NOT EXISTS idx_session_ids_lookup ON sessions(session_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_provider_session_id ON sessions(provider_session_id)');

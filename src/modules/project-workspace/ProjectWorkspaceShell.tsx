@@ -1,4 +1,4 @@
-import { SideChatDock } from '@/modules/remote-hub';
+import { WorkspacePanelsProvider } from '@/modules/workspace-panels';
 import ProjectHubBridge from '@/modules/project-workspace/ProjectHubBridge';
 import { memo } from 'react';
 import ProjectGroupDialogs from '@/modules/project-workspace/ProjectGroupDialogs';
@@ -18,6 +18,7 @@ function ProjectWorkspaceShell({
   navigate,
 }: ProjectWorkspaceShellProps) {
   return (
+    <WorkspacePanelsProvider>
     <div
       className="fixed inset-0 flex bg-background"
       style={{ bottom: 'var(--keyboard-height, 0px)' }}
@@ -35,11 +36,11 @@ function ProjectWorkspaceShell({
         />
       </div>
 
-      <SideChatDock />
       <ProjectCommandPalette />
       <QuickSettingsPanel />
       <ProjectGroupDialogs isMobile={isMobile} navigate={navigate} />
     </div>
+    </WorkspacePanelsProvider>
   );
 }
 

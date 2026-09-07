@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
 
-import type { Project, ProjectSession } from '@/shared/types';
+import type { Project, ProjectSession, ShellTerminationRegistrar } from '@/shared/types';
 import { Shell } from '@/modules/shell';
 import StandaloneShellEmptyState from '@/modules/standalone-shell/StandaloneShellEmptyState';
 import StandaloneShellHeader from '@/modules/standalone-shell/StandaloneShellHeader';
@@ -17,6 +17,11 @@ type StandaloneShellProps = {
   title?: string | null;
   className?: string;
   showHeader?: boolean;
+  /** Original remote/project/session shown for a retained terminal instance. */
+  bindingLabel?: string;
+  /** Keep multiple remote terminals in the same project independent. */
+  terminalInstanceId?: string;
+  onTerminateReady?: ShellTerminationRegistrar;
   compact?: boolean;
   minimal?: boolean;
 };
@@ -34,6 +39,9 @@ export default function StandaloneShell({
   title = null,
   className = '',
   showHeader = true,
+  bindingLabel,
+  terminalInstanceId,
+  onTerminateReady,
   compact = false,
   minimal = false,
 }: StandaloneShellProps) {
@@ -64,6 +72,7 @@ export default function StandaloneShell({
 
       <div className="min-h-0 w-full flex-1">
         <Shell
+          bindingLabel={bindingLabel} terminalInstanceId={terminalInstanceId} onTerminateReady={onTerminateReady}
           selectedProject={project}
           selectedSession={session}
           initialCommand={command}

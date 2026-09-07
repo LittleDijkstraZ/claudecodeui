@@ -390,6 +390,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     let hasUpdates = false;
 
     for (const targetProvider of PROVIDERS) {
+      if (targetProvider === 'claude') continue;
       const currentEffort = providerEfforts[targetProvider] ?? DEFAULT_EFFORT_VALUE;
       const nextEffort = reconcileStoredEffort(targetProvider, providerModels[targetProvider], currentEffort);
       if (nextEffort === currentEffort) {
@@ -687,6 +688,19 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     }
   }, [sessionSelection, setStoredProviderEffort]);
 
+  // Changes made in the bound terminal's shared settings panel must update the Chat composer too.
+  useEffect(() => {
+    const update = (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+      if (detail?.sessionId !== selectedSessionId || selectedSessionProvider !== 'claude') return;
+      sessionSelectionLoadRequestIdRef.current += 1;
+      setSessionSelection({ provider: 'claude', sessionId: selectedSessionId!, model: detail.next.model,
+        effort: detail.next.ultracode ? 'ultracode' : detail.next.effort });
+    };
+    window.addEventListener('claude-session-settings-updated', update);
+    return () => window.removeEventListener('claude-session-settings-updated', update);
+  }, [selectedSessionId, selectedSessionProvider]);
+
   // The open session's model wins over the per-provider default, so switching
   // sessions shows (and sends) what each session actually runs with.
   const currentProviderModel = sessionModel ?? providerModels[provider];
@@ -694,13 +708,10 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     return getEffortOptionsForModel(provider, currentProviderModel);
   }, [currentProviderModel, getEffortOptionsForModel, provider]);
   const currentProviderEffort = useMemo(() => {
-    return reconcileStoredEffort(
-      provider,
-      currentProviderModel,
-      activeSessionSelection?.effort
-        ?? providerEfforts[provider]
-        ?? DEFAULT_EFFORT_VALUE,
-    );
+    const selectedEffort = activeSessionSelection?.effort ?? providerEfforts[provider] ?? DEFAULT_EFFORT_VALUE;
+    // Keep an explicitly requested Claude effort visible when support changes;
+    // the remote validates it and returns an actionable error instead of silently downgrading.
+    return provider === 'claude' ? selectedEffort : reconcileStoredEffort(provider, currentProviderModel, selectedEffort);
   }, [activeSessionSelection?.effort, currentProviderModel, provider, providerEfforts, reconcileStoredEffort]);
   const currentProviderModelOptions = useMemo(
     () => providerModelCatalog[provider]?.OPTIONS ?? [],

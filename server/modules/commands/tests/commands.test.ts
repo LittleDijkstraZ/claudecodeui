@@ -112,3 +112,10 @@ test('cost and status commands report the same resolved model as /models', async
   assert.equal((cost.data as { model: string }).model, 'haiku');
   assert.equal((status.data as { model: string }).model, 'haiku');
 });
+
+test('cost command preserves a versioned usage snapshot without reinterpreting consumption as context', async () => {
+  const tokenUsage = { schemaVersion: 2, provider: 'claude', sessionId: 'session-one', revision: 12,
+    context: { usedTokens: 80_000 }, turn: { models: { actual: { cacheReadTokens: 8_000_000 } } }, session: { estimatedCostUsd: null } };
+  const result = await executeCommand('/cost', { provider: 'claude', tokenUsage });
+  assert.deepEqual((result.data as { tokenUsage: unknown }).tokenUsage, tokenUsage);
+});

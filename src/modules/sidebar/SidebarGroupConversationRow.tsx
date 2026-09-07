@@ -2,7 +2,7 @@ import type { ButtonHTMLAttributes, HTMLAttributes, MouseEvent } from 'react';
 import { Archive, ArrowDown, ArrowUp, FolderInput, FolderMinus, MoreHorizontal } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
-import { ActionMenu, LLMProviderLogo } from '@/shared/ui';
+import { SessionAttentionIndicator, SessionRunningIndicator, ActionMenu, LLMProviderLogo } from '@/shared/ui';
 import { cn } from '@/shared/utils';
 import type { GroupConversation } from '@/shared/types';
 import { formatCompactAge } from '@/modules/sidebar/utils/sidebarProjectFormatting';
@@ -11,6 +11,8 @@ type SidebarGroupConversationRowProps = {
   conversation: GroupConversation;
   groupId: string;
   selected: boolean;
+  isProcessing?: boolean;
+  needsAttention?: boolean;
   currentTime: Date;
   disabled: boolean;
   isDragging: boolean;
@@ -29,7 +31,7 @@ type SidebarGroupConversationRowProps = {
 
 /** Used by sidebar conversation groups for compact rows whose menus manage membership and order. */
 export default function SidebarGroupConversationRow({
-  conversation, groupId, selected, currentTime, disabled, isDragging, dropPosition,
+  conversation, groupId, selected, isProcessing = false, needsAttention = false, currentTime, disabled, isDragging, dropPosition,
   dragRowProps, dragHandleProps, canMoveUp, canMoveDown,
   onSelect, onOpenAssignment, onRemove, onMoveUp, onMoveDown, t,
 }: SidebarGroupConversationRowProps) {
@@ -57,6 +59,7 @@ export default function SidebarGroupConversationRow({
         isDragging && 'opacity-50',
       )}
     >
+      <SessionAttentionIndicator needsAttention={needsAttention && !selected} isRecent={!isProcessing && !(needsAttention && !selected) && Boolean(conversation.lastActivity && currentTime.getTime() - Date.parse(conversation.lastActivity) < 10 * 60_000)} className="absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2" />
       {dropPosition && <span aria-hidden className={cn('pointer-events-none absolute inset-x-0 z-10 h-0.5 rounded bg-primary', dropPosition === 'before' ? 'top-0' : 'bottom-0')} />}
       <button
         {...dragHandleProps}
@@ -78,7 +81,8 @@ export default function SidebarGroupConversationRow({
       >
         <span className="min-w-0 flex-1 truncate text-[13px] leading-4">{conversation.sessionTitle}</span>
         {conversation.isArchived && <Archive className="h-3 w-3 shrink-0 text-muted-foreground" aria-label={t('groups.archived')} />}
-        {age && <time className="shrink-0 text-[10px] tabular-nums text-muted-foreground/70" dateTime={conversation.lastActivity ?? undefined}>{age}</time>}
+        <SessionRunningIndicator isProcessing={isProcessing} />
+        {!isProcessing && age && <time className="shrink-0 text-[10px] tabular-nums text-muted-foreground/70" dateTime={conversation.lastActivity ?? undefined}>{age}</time>}
       </a>
       <ActionMenu
         label={t('groups.conversationOptions')}

@@ -2,13 +2,15 @@ import { ChevronRight, Layers, MessageSquare, MoreHorizontal } from 'lucide-reac
 import type { MouseEvent } from 'react';
 import type { TFunction } from 'i18next';
 
-import { ActionMenu, Button, LLMProviderLogo } from '@/shared/ui';
+import { SessionAttentionIndicator, SessionRunningIndicator, ActionMenu, Button, LLMProviderLogo } from '@/shared/ui';
 import { cn } from '@/shared/utils';
 import { useConversationGroups } from '@/modules/sidebar/context/ConversationGroupsContext';
 import type { ProjectSession, RecentConversationListItem } from '@/shared/types';
 import { formatCompactAge } from '@/modules/sidebar/utils/sidebarProjectFormatting';
 
 type SidebarRecentConversationsProps = {
+  activeSessions: ReadonlySet<string>;
+  attentionSessionIds: ReadonlySet<string>;
   conversations: RecentConversationListItem[];
   total: number;
   hasMore: boolean;
@@ -45,6 +47,7 @@ function RecentConversationSkeleton() {
 
 /** Rendered by SidebarContent in the recents search mode to list recently active sessions across all projects. */
 export default function SidebarRecentConversations({
+  activeSessions, attentionSessionIds,
   conversations,
   total,
   hasMore,
@@ -103,6 +106,8 @@ export default function SidebarRecentConversations({
       <div className="space-y-0.5">
         {conversations.map((conversation) => {
           const isSelected = String(selectedSession?.id ?? '') === conversation.sessionId;
+          const isProcessing = activeSessions.has(conversation.sessionId);
+          const needsAttention = attentionSessionIds.has(conversation.sessionId) && !isSelected;
           const age = formatCompactAge(conversation.lastActivity, currentTime);
 
           const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
@@ -118,7 +123,8 @@ export default function SidebarRecentConversations({
           };
 
           return (
-            <div key={conversation.sessionId} className="group flex min-w-0 items-center">
+            <div key={conversation.sessionId} className="group relative flex min-w-0 items-center">
+            <SessionAttentionIndicator needsAttention={needsAttention} isRecent={!isProcessing && !needsAttention && Boolean(conversation.lastActivity && currentTime.getTime() - Date.parse(conversation.lastActivity) < 10 * 60_000)} className="absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2" />
             <a
               href={`/session/${conversation.sessionId}`}
               onClick={handleClick}
@@ -154,7 +160,8 @@ export default function SidebarRecentConversations({
                 </span>
               </span>
 
-              <ChevronRight className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground/40 transition-transform group-hover:translate-x-0.5 group-hover:text-muted-foreground" />
+              <SessionRunningIndicator isProcessing={isProcessing} />
+              {!isProcessing && <ChevronRight className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground/40 transition-transform group-hover:translate-x-0.5 group-hover:text-muted-foreground" />}
             </a>
               <ActionMenu
                 label={t('conversationGroups.moveToGroup', { ns: 'common' })}

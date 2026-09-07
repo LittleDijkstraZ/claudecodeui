@@ -9,6 +9,8 @@ import { MarkdownContent } from '@/modules/chat/tools/ContentRenderers/MarkdownC
 
 type SubagentPanelProps = {
   revealTarget?: MessageRevealTarget;
+  /** The workspace Agents view keeps the timeline expanded. */
+  displayMode?: 'inline' | 'panel';
   /** Raw tool input of the call that spawned the agent, used for the prompt. */
   toolInput: unknown;
   toolResult?: ToolResult | null;
@@ -90,7 +92,7 @@ const SubagentNote = memo(({ activity }: { activity: SubagentActivity }) => {
 SubagentNote.displayName = 'SubagentNote';
 
 /**
- * Rendered by chat's MessageComponent for any tool call that spawned a
+ * Rendered by chat's AgentsPanel and transcript export for any tool call that spawned a
  * subagent — Claude's `Agent`/`Task` and Codex's `spawn_agent` both normalize
  * to the same shape, so both render through this one panel.
  *
@@ -100,6 +102,7 @@ SubagentNote.displayName = 'SubagentNote';
  */
 export const SubagentPanel = memo(({
   toolInput,
+  displayMode = 'inline',
   revealTarget,
   toolResult,
   subagent,
@@ -112,7 +115,7 @@ export const SubagentPanel = memo(({
   // only wanted on demand.
   const isExporting = useIsExportingTranscript();
   const [isOpen, setIsOpen] = useState(false);
-  const showTimeline = isOpen || isExporting;
+  const showTimeline = displayMode === 'panel' || isOpen || isExporting;
   // Raised by the "show more" step so a long run can be inspected in full
   // without paying for it up front.
   const [renderLimit, setRenderLimit] = useState(INITIALLY_RENDERED_ACTIVITIES);
@@ -144,7 +147,7 @@ export const SubagentPanel = memo(({
 
   return (
     <div className="my-1 border-l-2 border-l-purple-500 py-0.5 pl-3 dark:border-l-purple-400">
-      <button
+      {displayMode === 'inline' && <button
         type="button"
         aria-expanded={isOpen}
         onClick={() => setIsOpen((previous) => !previous)}
@@ -180,7 +183,7 @@ export const SubagentPanel = memo(({
             </>
           )}
         </span>
-      </button>
+      </button>}
 
       {showTimeline && (
         <div className="mt-1.5 space-y-2 pl-[18px]">
@@ -191,7 +194,7 @@ export const SubagentPanel = memo(({
           {prompt && (
             <div className="rounded border border-border/40 bg-muted/40 p-2 text-xs text-muted-foreground">
               <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground/60">Task</div>
-              <div className="line-clamp-6 whitespace-pre-wrap break-words">{prompt}</div>
+              <div className={cn('whitespace-pre-wrap break-words', displayMode === 'inline' && 'line-clamp-6')}>{prompt}</div>
             </div>
           )}
 

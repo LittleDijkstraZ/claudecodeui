@@ -23,6 +23,7 @@ import type {
   AnyRecord,
   ApiSuccessShape,
   AppErrorOptions,
+  ClaudeUsageModelCounters,
   NormalizedMessage,
   ProviderCurrentActiveModel,
   ProviderModelsDefinition,
@@ -1198,4 +1199,24 @@ export function findApplicationRoot(startDirectory: string): string {
   return path.basename(parentDirectory) === 'dist-server'
     ? path.dirname(parentDirectory)
     : parentDirectory;
+}
+
+
+//----------------- CLAUDE USAGE ACCOUNTING ------------
+/** Adds disjoint model consumption for the Claude reducer and durable snapshot builder.
+ * Thinking remains an output subset; unknown or malformed cost never becomes a known price.
+ * Callers must deduplicate requests and difference cumulative results before using this helper. */
+export function addClaudeUsageModels(target: Record<string, ClaudeUsageModelCounters>, source: Record<string, ClaudeUsageModelCounters>): void {
+  const cost = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+  for (const [name, addition] of Object.entries(source)) {
+    const previous = target[name];
+    const next: ClaudeUsageModelCounters = { ...addition };
+    for (const key of ['inputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'outputTokens'] as const) next[key] += previous?.[key] ?? 0;
+    if (previous?.thinkingTokens !== undefined || addition.thinkingTokens !== undefined) next.thinkingTokens = (previous?.thinkingTokens ?? 0) + (addition.thinkingTokens ?? 0);
+    const additionCost = cost(addition.estimatedCostUsd);
+    const previousCost = previous ? cost(previous.estimatedCostUsd) : 0;
+    next.estimatedCostUsd = additionCost === null || previousCost === null ? null : additionCost + previousCost;
+    if (previous?.costBasis === 'unknown' || additionCost === null) next.costBasis = 'unknown';
+    target[name] = next;
+  }
 }

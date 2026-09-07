@@ -343,3 +343,38 @@ ${SESSION_DRAFTS_TABLE_SCHEMA_SQL}
 
 ${SUPERSEDED_PROVIDER_SESSIONS_TABLE_SCHEMA_SQL}
 `;
+
+/** Used by database migrations to retain requested settings and real observations for each remote Chat/Shell execution. */
+export const CLAUDE_EXECUTIONS_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS claude_executions (
+ execution_id TEXT PRIMARY KEY NOT NULL,
+ session_id TEXT NOT NULL,
+ record_json TEXT NOT NULL,
+ started_at TEXT NOT NULL,
+ FOREIGN KEY(session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_claude_executions_session ON claude_executions(session_id, started_at DESC);
+`;
+
+
+/** Claude usage migrations store only counters, public model IDs, and opaque execution/request IDs. */
+export const CLAUDE_USAGE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS claude_usage_sessions (
+ session_id TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE,
+ revision INTEGER NOT NULL DEFAULT 0, native_context_id TEXT, context_json TEXT, latest_execution_id TEXT,
+ history_json TEXT NOT NULL DEFAULT '{}', history_coverage TEXT NOT NULL DEFAULT 'new-session',
+ updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE TABLE IF NOT EXISTS claude_usage_executions (
+ execution_id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+ provider_session_id TEXT, state_json TEXT NOT NULL,
+ started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+ updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_claude_usage_executions_session ON claude_usage_executions(session_id);
+CREATE TABLE IF NOT EXISTS claude_usage_requests (
+ session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+ request_id TEXT NOT NULL, kind TEXT NOT NULL, model TEXT, counters_json TEXT,
+ PRIMARY KEY (session_id, request_id)
+);
+`;

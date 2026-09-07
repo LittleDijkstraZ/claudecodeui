@@ -1,3 +1,4 @@
+import { claudeSessionConfiguration } from '@/modules/providers/services/claude-session-configuration.service.js';
 import express, { type Request, type Response } from 'express';
 
 import { providerAuthService } from '@/modules/providers/services/provider-auth.service.js';
@@ -558,6 +559,18 @@ router.delete(
  * pass the default it would otherwise send, so a session that has not been
  * sent on yet resolves to that instead of the catalog default.
  */
+router.get('/claude/sessions/:sessionId/execution-settings', asyncHandler(async (req, res) => {
+  const data = await claudeSessionConfiguration.read(parseSessionId(req.params.sessionId), readOptionalQueryString(req.query.executionId));
+  res.json(createApiSuccessResponse(data));
+}));
+router.put('/claude/sessions/:sessionId/execution-settings', asyncHandler(async (req, res) => {
+  const body = req.body;
+  if (!body || typeof body.model !== 'string' || typeof body.effort !== 'string' || typeof body.ultracode !== 'boolean' || typeof body.revision !== 'string') {
+    throw new AppError('Model, effort, Ultracode and revision are required.', { code: 'INVALID_EXECUTION_SETTINGS', statusCode: 400 });
+  }
+  res.json(createApiSuccessResponse(await claudeSessionConfiguration.update(parseSessionId(req.params.sessionId), body)));
+}));
+
 router.get(
   '/:provider/sessions/:sessionId/active-model',
   asyncHandler(async (req: Request, res: Response) => {

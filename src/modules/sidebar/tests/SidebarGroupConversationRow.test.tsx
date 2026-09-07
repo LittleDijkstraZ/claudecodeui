@@ -72,3 +72,17 @@ test('modified anchor clicks preserve browser navigation behavior', () => {
   assert.equal(clickAnchor(props((...args) => calls.push(args)), { ctrlKey: true }), false);
   assert.deepEqual(calls, []);
 });
+
+test('running and attention state update in place without losing the single-line controls', () => {
+  const base = { ...props(), selected: false, isProcessing: true, needsAttention: true };
+  const { container, rerender } = render(<SidebarGroupConversationRow {...base} />);
+  const row = container.querySelector('[data-testid="group-conversation-row"]');
+  assert.ok(container.querySelector('[data-session-status="running"]'));
+  assert.ok(container.querySelector('[data-session-status="attention"].bg-amber-500'));
+  assert.ok(container.querySelector('button[aria-haspopup="menu"]'));
+  rerender(<SidebarGroupConversationRow {...base} isProcessing={false} selected />);
+  assert.equal(container.querySelector('[data-testid="group-conversation-row"]'), row);
+  assert.equal(container.querySelector('[data-session-status="running"]'), null);
+  assert.equal(container.querySelector('[data-session-status="attention"]'), null);
+  assert.ok(container.querySelector('a[aria-current="page"]'));
+});

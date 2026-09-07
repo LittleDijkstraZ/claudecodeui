@@ -102,7 +102,7 @@ function ComposerModelMenu({
           if (!isOpen) onRefreshModels?.();
           setIsOpen((current) => !current);
         }}
-        className="flex h-8 max-w-20 shrink-0 items-center gap-1 rounded-lg border border-border/60 bg-muted/40 px-2 text-xs font-medium text-foreground transition-colors hover:bg-muted sm:max-w-56"
+        className="cloudcli-composer-model flex h-8 min-w-0 shrink items-center gap-1 rounded-lg border border-border/60 bg-muted/40 px-2 text-xs font-medium text-foreground transition-colors hover:bg-muted"
         aria-haspopup="menu"
         aria-expanded={isOpen}
         aria-label={ariaLabel}
@@ -110,7 +110,7 @@ function ComposerModelMenu({
       >
         <span className="truncate">{triggerLabel}</span>
         {hasModelSection && hasEffortSection && effort !== DEFAULT_EFFORT_VALUE && (
-          <span className="hidden shrink-0 capitalize text-muted-foreground sm:inline">· {effortLabel}</span>
+          <span className="cloudcli-composer-effort shrink-0 capitalize text-muted-foreground">· {effortLabel}</span>
         )}
       </button>
 

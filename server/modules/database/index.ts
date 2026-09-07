@@ -28,3 +28,9 @@ export { vapidKeysDb } from '@/modules/database/repositories/vapid-keys.js';
 export { scheduledMessagesDb } from './repositories/scheduled-messages.db.js';
 export type { ScheduledMessageRow, ScheduledMessageStatus } from './repositories/scheduled-messages.db.js';
 export { claudeSessionActionsDb } from './repositories/claude-session-actions.db.js';
+
+// Claude usage service owns durable per-session token/cost accounting through this repository.
+export { claudeUsageDb } from './repositories/claude-usage.db.js';
+
+// Used by Providers to persist remote execution settings evidence.
+export { claudeExecutionsDb } from './repositories/claude-executions.db.js';

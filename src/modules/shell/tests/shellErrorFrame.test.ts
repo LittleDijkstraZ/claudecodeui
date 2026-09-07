@@ -17,6 +17,7 @@ vi.mock('@/modules/shell/utils/socket', async (importOriginal) => ({
 
 class FakeSocket {
   static last: FakeSocket | null = null;
+  static OPEN = 1;
 
   readyState = 1;
   onopen: (() => void) | null = null;
@@ -44,11 +45,12 @@ function renderConnection() {
   const write = vi.fn();
   const clearTerminalScreen = vi.fn();
   const closeSocket = vi.fn();
+  const wsRef = ref<WebSocket | null>(null);
   const terminalRef = ref({ write, cols: 80, rows: 24 } as unknown as Terminal | null);
 
   const view = renderHook(() =>
     useShellConnection({
-      wsRef: ref<WebSocket | null>(null),
+      wsRef,
       terminalRef,
       fitAddonRef: ref({ fit: vi.fn() } as unknown as FitAddon | null),
       selectedProjectRef: ref<Project | null | undefined>({
@@ -132,5 +134,45 @@ describe('shell socket error frames', () => {
     });
 
     expect(write).toHaveBeenCalledWith('hello');
+  });
+
+  it('waits for the stopped acknowledgement before declaring termination successful', async () => {
+    const { view, socket } = renderConnection();
+    let settled = false;
+    const result = view.result.current.terminateShell().then((value) => { settled = true; return value; });
+    expect(socket.sent.map((frame) => JSON.parse(frame))).toContainEqual({ type: 'terminate' });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    act(() => { socket.onmessage?.({ data: JSON.stringify({ type: 'terminated' }) }); });
+    expect(await result).toBe(true);
+  });
+
+  it('retains an unknown disconnected process and reports rejected stops', async () => {
+    const { view, socket } = renderConnection();
+    const rejected = view.result.current.terminateShell();
+    act(() => { socket.onmessage?.({ data: JSON.stringify({ type: 'error', message: 'Unable to stop', terminalEnded: false }) }); });
+    expect(await rejected).toBe(false);
+    const disconnected = view.result.current.terminateShell();
+    act(() => { socket.readyState = 3; socket.onclose?.(); });
+    expect(await disconnected).toBe(false);
+    expect(await view.result.current.terminateShell()).toBe(false);
+  });
+
+  it('times out a stop without acknowledgement', async () => {
+    vi.useFakeTimers();
+    try {
+      const { view } = renderConnection();
+      const result = view.result.current.terminateShell();
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+      expect(await result).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('allows closing an acknowledged ended process without reconnecting and starting a new one', async () => {
+    const { view, socket } = renderConnection();
+    act(() => { socket.onmessage?.({ data: JSON.stringify({ type: 'process_exit', exitCode: 0 }) }); });
+    socket.readyState = 3;
+    expect(await view.result.current.terminateShell()).toBe(true);
+    expect(socket.sent.some((frame) => JSON.parse(frame).type === 'init')).toBe(false);
   });
 });

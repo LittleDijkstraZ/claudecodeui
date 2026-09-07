@@ -3,7 +3,7 @@ import type { MutableRefObject } from 'react';
 import type { FitAddon } from '@xterm/addon-fit';
 import type { Terminal } from '@xterm/xterm';
 
-import type { Project, ProjectSession } from '@/shared/types';
+import type { Project, ProjectSession, ShellExecutionBinding } from '@/shared/types';
 import { TERMINAL_INIT_DELAY_MS } from '@/shared/constants';
 import { getShellWebSocketUrl, parseShellMessage, sendSocketMessage } from '@/modules/shell/utils/socket';
 import { readSelectedProvider } from '@/shared/selectedProvider';
@@ -13,6 +13,7 @@ const ANSI_ESCAPE_REGEX =
 const PROCESS_EXIT_REGEX = /Process exited with code (\d+)/;
 
 type UseShellConnectionOptions = {
+  terminalInstanceId?: string;
   wsRef: MutableRefObject<WebSocket | null>;
   terminalRef: MutableRefObject<Terminal | null>;
   fitAddonRef: MutableRefObject<FitAddon | null>;
@@ -30,14 +31,17 @@ type UseShellConnectionOptions = {
 };
 
 type UseShellConnectionResult = {
+  executionBinding: ShellExecutionBinding | null;
   isConnected: boolean;
   isConnecting: boolean;
   closeSocket: () => void;
   connectToShell: (options?: { forceRestart?: boolean }) => void;
+  terminateShell: () => Promise<boolean>;
   disconnectFromShell: (options?: { suppressAutoConnect?: boolean }) => void;
 };
 
 export function useShellConnection({
+  terminalInstanceId,
   wsRef,
   terminalRef,
   fitAddonRef,
@@ -53,11 +57,23 @@ export function useShellConnection({
   clearTerminalScreen,
   onOutputRef,
 }: UseShellConnectionOptions): UseShellConnectionResult {
+  // Server-confirmed terminal binding remains tied to its launch across navigation and reconnects.
+  const [executionBinding, setExecutionBinding] = useState<ShellExecutionBinding | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const connectingRef = useRef(false);
   const forceRestartOnInitRef = useRef(false);
   const suppressAutoConnectRef = useRef(false);
+  const terminalEndedRef = useRef(true);
+  const pendingTermination = useRef<{ promise: Promise<boolean>; resolve: (stopped: boolean) => void; timer: ReturnType<typeof setTimeout> } | null>(null);
+  const finishTermination = useCallback((stopped: boolean) => {
+    const pending = pendingTermination.current;
+    if (!pending) return;
+    pendingTermination.current = null;
+    clearTimeout(pending.timer);
+    pending.resolve(stopped);
+  }, []);
+  useEffect(() => () => finishTermination(false), [finishTermination]);
 
   const handleProcessCompletion = useCallback(
     (output: string) => {
@@ -93,6 +109,17 @@ export function useShellConnection({
         return;
       }
 
+      if (message.type === 'process_exit' || message.type === 'terminated') {
+        terminalEndedRef.current = true;
+        finishTermination(true);
+        return;
+      }
+
+      if (message.type === 'session_binding' && typeof message.executionId === 'string' && typeof message.appSessionId === 'string') {
+        setExecutionBinding(message as unknown as ShellExecutionBinding);
+        return;
+      }
+
       if (message.type === 'output') {
         const output = typeof message.data === 'string' ? message.data : '';
         handleProcessCompletion(output);
@@ -102,6 +129,8 @@ export function useShellConnection({
       }
 
       if (message.type === 'error') {
+        finishTermination(false);
+        if (message.terminalEnded === true) terminalEndedRef.current = true;
         // The server sends this instead of spawning a PTY, then keeps the
         // socket open — so without writing it out the terminal just stays
         // blank forever under a green "connected" dot. Deliberately not
@@ -114,7 +143,7 @@ export function useShellConnection({
         return;
       }
     },
-    [handleProcessCompletion, onOutputRef, terminalRef],
+    [finishTermination, handleProcessCompletion, onOutputRef, terminalRef],
   );
 
   const connectWebSocket = useCallback(
@@ -133,15 +162,18 @@ export function useShellConnection({
 
         connectingRef.current = true;
 
+        terminalEndedRef.current = false;
         const socket = new WebSocket(wsUrl);
         wsRef.current = socket;
 
         socket.onopen = () => {
+          if (wsRef.current !== socket) return;
           setIsConnected(true);
           setIsConnecting(false);
           connectingRef.current = false;
 
           window.setTimeout(() => {
+            if (wsRef.current !== socket || socket.readyState !== WebSocket.OPEN || suppressAutoConnectRef.current) return;
             const currentTerminal = terminalRef.current;
             const currentFitAddon = fitAddonRef.current;
             const currentProject = selectedProjectRef.current;
@@ -155,6 +187,7 @@ export function useShellConnection({
 
             sendSocketMessage(socket, {
               type: 'init',
+              terminalInstanceId,
               projectPath: currentProject.fullPath || currentProject.path || '',
               sessionId: isPlainShellRef.current ? null : selectedSessionRef.current?.id || null,
               hasSession: isPlainShellRef.current ? false : Boolean(selectedSessionRef.current),
@@ -172,11 +205,14 @@ export function useShellConnection({
         };
 
         socket.onmessage = (event) => {
+          if (wsRef.current !== socket) return;
           const rawPayload = typeof event.data === 'string' ? event.data : String(event.data ?? '');
           handleSocketMessage(rawPayload);
         };
 
         socket.onclose = () => {
+          if (wsRef.current !== socket) return;
+          finishTermination(false);
           setIsConnected(false);
           setIsConnecting(false);
           connectingRef.current = false;
@@ -184,6 +220,8 @@ export function useShellConnection({
         };
 
         socket.onerror = () => {
+          if (wsRef.current !== socket) return;
+          finishTermination(false);
           setIsConnected(false);
           setIsConnecting(false);
           connectingRef.current = false;
@@ -196,9 +234,11 @@ export function useShellConnection({
       }
     },
     [
+      terminalInstanceId,
       bypassPermissionsRef,
       clearTerminalScreen,
       fitAddonRef,
+      finishTermination,
       handleSocketMessage,
       initialCommandRef,
       isConnected,
@@ -236,6 +276,21 @@ export function useShellConnection({
     forceRestartOnInitRef.current = false;
   }, [clearTerminalScreen, closeSocket]);
 
+  const terminateShell = useCallback((): Promise<boolean> => {
+    if (terminalEndedRef.current) { suppressAutoConnectRef.current = true; return Promise.resolve(true); }
+    if (pendingTermination.current) return pendingTermination.current.promise;
+    const socket = wsRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return Promise.resolve(false);
+    let resolve!: (stopped: boolean) => void;
+    const promise = new Promise<boolean>((done) => { resolve = done; });
+    pendingTermination.current = { promise, resolve, timer: setTimeout(() => finishTermination(false), 5000) };
+    try {
+      sendSocketMessage(socket, { type: 'terminate' });
+      suppressAutoConnectRef.current = true;
+    } catch { finishTermination(false); }
+    return promise;
+  }, [finishTermination, wsRef]);
+
   useEffect(() => {
     if (
       !autoConnect ||
@@ -251,6 +306,8 @@ export function useShellConnection({
   }, [autoConnect, connectToShell, isConnected, isConnecting, isInitialized]);
 
   return {
+    executionBinding,
+    terminateShell,
     isConnected,
     isConnecting,
     closeSocket,

@@ -5,7 +5,8 @@ import path from 'node:path';
 import pty, { type IPty } from 'node-pty';
 import { WebSocket, type RawData } from 'ws';
 
-import { parseIncomingJsonObject } from '@/shared/utils.js';
+import { parseIncomingJsonObject } from '@/shared/index.js';
+import type { ClaudeExecutionRecord } from '@/shared/types.js';
 
 type ShellIncomingMessage = {
   type?: string;
@@ -20,6 +21,7 @@ type ShellIncomingMessage = {
   isPlainShell?: boolean;
   forceRestart?: boolean;
   bypassPermissions?: boolean;
+  terminalInstanceId?: string;
 };
 
 type PtySessionEntry = {
@@ -29,9 +31,12 @@ type PtySessionEntry = {
   timeoutId: NodeJS.Timeout | null;
   projectPath: string;
   sessionId: string | null;
+  execution?: ClaudeExecutionRecord;
+  stopRequested?: boolean;
 };
 
 const ptySessionsMap = new Map<string, PtySessionEntry>();
+const pendingPtyKeys = new Set<string>();
 const PTY_SESSION_TIMEOUT = 30 * 60 * 1000;
 const SHELL_URL_PARSE_BUFFER_LIMIT = 32768;
 const ANSI_ESCAPE_SEQUENCE_REGEX = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g;
@@ -107,6 +112,9 @@ type ShellWebSocketDependencies = {
     provider: string,
   ) => string | null | undefined;
   spawnPty?: typeof pty.spawn;
+  prepareClaudeSession?: (sessionId: string, provider: string, projectPath: string) => Promise<{ executable: string; args: string[]; record: ClaudeExecutionRecord }>;
+  beginExecution?: (record: ClaudeExecutionRecord) => void;
+  finishExecution?: (executionId: string, failed?: boolean) => void;
 };
 
 /**
@@ -162,12 +170,12 @@ function resolveResumeSessionId(
     resumeSessionId = dependencies.resolveProviderSessionId(sessionId, provider);
   } catch (error) {
     console.error('Failed to resolve provider session ID:', error);
-    resumeSessionId = undefined;
+    throw new Error('Unable to resolve the existing provider session.');
   }
 
-  const resolvedSessionId = resumeSessionId === undefined ? sessionId : resumeSessionId;
+  const resolvedSessionId = resumeSessionId;
   if (!resolvedSessionId || !SAFE_SESSION_ID_PATTERN.test(resolvedSessionId)) {
-    return '';
+    throw new Error('The selected conversation has no valid provider session to resume.');
   }
 
   return resolvedSessionId;
@@ -203,9 +211,9 @@ function buildShellCommand(
   if (provider === 'codex') {
     if (resumeSessionId) {
       if (os.platform() === 'win32') {
-        return `codex resume "${resumeSessionId}"; if ($LASTEXITCODE -ne 0) { codex }`;
+        return `codex resume "${resumeSessionId}"`;
       }
-      return `codex resume "${resumeSessionId}" || codex`;
+      return `codex resume "${resumeSessionId}"`;
     }
     return 'codex';
   }
@@ -226,9 +234,9 @@ function buildShellCommand(
   const command = initialCommand || `claude${bypassFlag}`;
   if (resumeSessionId) {
     if (os.platform() === 'win32') {
-      return `claude --resume "${resumeSessionId}"${bypassFlag}; if ($LASTEXITCODE -ne 0) { claude${bypassFlag} }`;
+      return `claude --resume "${resumeSessionId}"${bypassFlag}`;
     }
-    return `claude --resume "${resumeSessionId}"${bypassFlag} || claude${bypassFlag}`;
+    return `claude --resume "${resumeSessionId}"${bypassFlag}`;
   }
   return command;
 }
@@ -302,6 +310,10 @@ export function handleShellConnection(
   let shellProcess: IPty | null = null;
   let ptySessionKey: string | null = null;
   let urlDetectionBuffer = '';
+  let initializing = false;
+  let terminated = false;
+  let launchingExecutionId: string | null = null;
+  let reservedPtyKey: string | null = null;
   const announcedAuthUrls = new Set<string>();
 
   ws.on('message', async (rawMessage) => {
@@ -311,7 +323,28 @@ export function handleShellConnection(
         throw new Error('Invalid websocket payload');
       }
 
+      if (data.type === 'terminate') {
+        const entry = ptySessionKey ? ptySessionsMap.get(ptySessionKey) : null;
+        if (entry && entry.ws !== ws) throw new Error('This terminal has reconnected elsewhere. Close it from its active connection.');
+        terminated = true;
+        if (entry) {
+          if (entry.stopRequested) return;
+          entry.stopRequested = true;
+          try { entry.pty.kill(); }
+          catch (error) { entry.stopRequested = false; terminated = false; throw error; }
+          // A stop request is not proof of exit. The onExit event sends the ack
+          // and releases this exact execution after the remote PTY actually ends.
+        } else {
+          ws.send(JSON.stringify({ type: 'terminated' }));
+        }
+        return;
+      }
+
       if (data.type === 'init') {
+        if (terminated) throw new Error('This terminal was stopped. Open a new terminal to continue.');
+        if (initializing) return;
+        if (shellProcess) throw new Error('This terminal is already bound. Open a separate terminal for another conversation.');
+        initializing = true;
         const projectPath = readString(data.projectPath, process.cwd());
         const sessionId = readString(data.sessionId) || null;
         const hasSession = readBoolean(data.hasSession);
@@ -336,7 +369,10 @@ export function handleShellConnection(
           isPlainShell && initialCommand
             ? `_cmd_${Buffer.from(initialCommand).toString('base64').slice(0, 16)}`
             : '';
-        ptySessionKey = `${projectPath}_${sessionId ?? 'default'}${commandSuffix}`;
+        const instanceId = readString(data.terminalInstanceId);
+        if (instanceId && !/^[a-zA-Z0-9_.:-]{1,120}$/.test(instanceId)) throw new Error('Invalid terminal instance ID');
+        ptySessionKey = `${isPlainShell ? 'plain-shell' : provider}_${path.resolve(projectPath)}_${sessionId ?? 'default'}${commandSuffix}${isPlainShell ? `_${instanceId || 'default'}` : ''}`;
+        if (!isPlainShell && provider === 'claude' && (!hasSession || !sessionId || initialCommand)) throw new Error('Select an existing Claude conversation to open its session terminal. Use plain terminal mode for commands.');
 
         if (isLoginCommand || forceRestart) {
           const oldSession = ptySessionsMap.get(ptySessionKey);
@@ -344,6 +380,7 @@ export function handleShellConnection(
             if (oldSession.timeoutId) {
               clearTimeout(oldSession.timeoutId);
             }
+            if (oldSession.execution) dependencies.finishExecution?.(oldSession.execution.executionId, true);
             oldSession.pty.kill();
             ptySessionsMap.delete(ptySessionKey);
           }
@@ -377,6 +414,8 @@ export function handleShellConnection(
           }
 
           existingSession.ws = ws;
+          if (existingSession.execution) ws.send(JSON.stringify({ type: 'session_binding', ...existingSession.execution }));
+          initializing = false;
           return;
         }
 
@@ -387,21 +426,33 @@ export function handleShellConnection(
             throw new Error('Not a directory');
           }
         } catch {
-          ws.send(JSON.stringify({ type: 'error', message: 'Invalid project path' }));
-          return;
+          throw new Error('Invalid project path');
         }
 
         const safeSessionIdPattern = /^[a-zA-Z0-9_.\-:]+$/;
         if (sessionId && !safeSessionIdPattern.test(sessionId)) {
-          ws.send(JSON.stringify({ type: 'error', message: 'Invalid session ID' }));
-          return;
+          throw new Error('Invalid session ID');
         }
 
-        const shellCommand = buildShellCommand(data, dependencies);
-        const resumeSessionId = resolveResumeSessionId(data, dependencies);
-        const shell = os.platform() === 'win32' ? 'powershell.exe' : 'bash';
-        const shellArgs =
-          os.platform() === 'win32' ? ['-Command', shellCommand] : ['-c', shellCommand];
+        if (pendingPtyKeys.has(ptySessionKey)) throw new Error('This terminal is still starting. Reconnect after it starts.');
+        reservedPtyKey = ptySessionKey;
+        pendingPtyKeys.add(reservedPtyKey);
+        const prepared = !isPlainShell && provider === 'claude'
+          ? await dependencies.prepareClaudeSession?.(sessionId!, provider, resolvedProjectPath)
+          : null;
+        if (!isPlainShell && provider === 'claude' && !prepared) throw new Error('Session-bound Claude launch is unavailable.');
+        if (terminated || ws.readyState !== WebSocket.OPEN) { initializing = false; pendingPtyKeys.delete(reservedPtyKey); reservedPtyKey = null; return; }
+        const shellCommand = prepared ? '' : buildShellCommand(data, dependencies);
+        const resumeSessionId = prepared?.record.providerSessionId || (isPlainShell ? '' : resolveResumeSessionId(data, dependencies));
+        const shell = prepared?.executable || (os.platform() === 'win32' ? 'powershell.exe' : 'bash');
+        const shellArgs = prepared?.args || (isPlainShell && !shellCommand.trim()
+          ? (os.platform() === 'win32' ? ['-NoExit'] : ['-i'])
+          : (os.platform() === 'win32' ? ['-Command', shellCommand] : ['-c', shellCommand]));
+        if (prepared && readBoolean(data.bypassPermissions)) shellArgs.push('--dangerously-skip-permissions');
+        if (prepared) {
+          dependencies.beginExecution?.(prepared.record);
+          launchingExecutionId = prepared.record.executionId;
+        }
         const termCols = readNumber(data.cols, 80);
         const termRows = readNumber(data.rows, 24);
         const prioritizedPath = prioritizeUserNpmGlobalBin(process.env);
@@ -427,15 +478,22 @@ export function handleShellConnection(
           timeoutId: null,
           projectPath,
           sessionId,
+          execution: prepared?.record,
         });
+        launchingExecutionId = null;
+        if (reservedPtyKey) pendingPtyKeys.delete(reservedPtyKey);
+        reservedPtyKey = null;
+        initializing = false;
+        if (prepared) ws.send(JSON.stringify({ type: 'session_binding', ...prepared.record }));
 
+        const launchedProcess = shellProcess;
         shellProcess.onData((chunk) => {
           if (!ptySessionKey) {
             return;
           }
 
           const session = ptySessionsMap.get(ptySessionKey);
-          if (!session) {
+          if (!session || session.pty !== launchedProcess) {
             return;
           }
 
@@ -511,11 +569,13 @@ export function handleShellConnection(
           }
 
           const session = ptySessionsMap.get(ptySessionKey);
-          if (session && session.pty !== shellProcess) {
+          if (session && session.pty !== launchedProcess) {
             return;
           }
 
           if (session && session.ws && session.ws.readyState === WebSocket.OPEN) {
+            if (session.stopRequested) session.ws.send(JSON.stringify({ type: 'terminated' }));
+            session.ws.send(JSON.stringify({ type: 'process_exit', exitCode: exitCode.exitCode }));
             session.ws.send(
               JSON.stringify({
                 type: 'output',
@@ -530,6 +590,7 @@ export function handleShellConnection(
             clearTimeout(session.timeoutId);
           }
 
+          if (session?.execution) dependencies.finishExecution?.(session.execution.executionId, exitCode.exitCode !== 0);
           ptySessionsMap.delete(ptySessionKey);
           shellProcess = null;
         });
@@ -559,25 +620,31 @@ export function handleShellConnection(
       }
 
       if (data.type === 'input') {
-        if (shellProcess) {
+        if (shellProcess && ptySessionKey && ptySessionsMap.get(ptySessionKey)?.ws === ws) {
           shellProcess.write(readString(data.data));
         }
         return;
       }
 
       if (data.type === 'resize') {
-        if (shellProcess) {
+        if (shellProcess && ptySessionKey && ptySessionsMap.get(ptySessionKey)?.ws === ws) {
           shellProcess.resize(readNumber(data.cols, 80), readNumber(data.rows, 24));
         }
       }
     } catch (error) {
+      initializing = false;
+      if (reservedPtyKey) pendingPtyKeys.delete(reservedPtyKey);
+      reservedPtyKey = null;
+      if (launchingExecutionId) dependencies.finishExecution?.(launchingExecutionId, true);
+      launchingExecutionId = null;
       const message = error instanceof Error ? error.message : String(error);
       console.error('[ERROR] Shell WebSocket error:', message);
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(
           JSON.stringify({
-            type: 'output',
-            data: `\r\n\x1b[31mError: ${message}\x1b[0m\r\n`,
+            type: 'error',
+            message,
+            terminalEnded: !shellProcess,
           })
         );
       }
@@ -611,6 +678,7 @@ export function handleShellConnection(
         return;
       }
 
+      if (session.execution) dependencies.finishExecution?.(session.execution.executionId, true);
       session.pty.kill();
       ptySessionsMap.delete(ptySessionKey as string);
     }, PTY_SESSION_TIMEOUT);

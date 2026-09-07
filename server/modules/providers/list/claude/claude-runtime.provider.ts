@@ -13,12 +13,16 @@
  */
 
 import crypto from 'crypto';
+import { claudeSettingsFlags, resolveClaudeExecutionSettings } from '@/modules/providers/services/claude-execution-settings.js';
+import { claudeExecutionRecords } from '@/modules/providers/services/claude-execution-records.js';
+import { shellConfigurationObservation } from '@/modules/providers/services/claude-shell-observer.js';
+import { claudeUsageService } from '@/modules/claude-usage/index.js';
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import type { EffortLevel, McpServerConfig, Options, Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { McpServerConfig, Options, Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 
 import type { AnyRecord, IProviderRuntime, ProviderModelsDefinition, ProviderPermissionDecision, ProviderRuntimeContext, ProviderRuntimeWriter } from '@/shared/index.js';
 import { createClaudeTextStream } from '@/modules/providers/list/claude/claude-text-stream.js';
@@ -32,8 +36,7 @@ import {
   createNormalizedMessage
 } from '@/shared/index.js';
 import {
-  CLAUDE_PREDEFINED_MODELS,
-  CLAUDE_ULTRACODE_EFFORT
+  CLAUDE_PREDEFINED_MODELS
 } from '@/modules/providers/list/claude/claude-models.provider.js';
 import {
   createNotificationEvent,
@@ -65,6 +68,7 @@ type RuntimeDependencies = {
   query: typeof query;
   loadMcpConfig: typeof loadMcpConfig;
   waitCeilingMs: number;
+  usage: typeof claudeUsageService | null;
 };
 
 const activeSessions = new Map<string, ActiveSession>();
@@ -100,43 +104,6 @@ const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEO
 const BG_WAIT_CEILING_MS = 30 * 60 * 1000;
 
 const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion', 'ExitPlanMode']);
-
-// Ultracode pairs xhigh effort with session-scoped workflow orchestration.
-// The CLI requires Workflows to be enabled for the flag to take effect.
-const ULTRACODE_SDK_EFFORT = 'xhigh';
-
-function resolveClaudeEffort(model: string, effort: unknown, modelsDefinition: ProviderModelsDefinition = CLAUDE_PREDEFINED_MODELS) {
-  const selectedModel = modelsDefinition?.OPTIONS?.find((option) => option.value === model) || null;
-  const allowedEfforts = selectedModel?.effort?.values
-    ?.map((value) => value.value) || [];
-  return typeof effort === 'string' && effort !== 'default' && allowedEfforts.includes(effort)
-    ? effort
-    : undefined;
-}
-
-/**
- * Writes the resolved effort choice onto the SDK options, expanding `ultracode` into the
- * xhigh effort level plus the session-scoped settings it requires.
- * @param {Object} sdkOptions - SDK options being built
- * @param {string|undefined} resolvedEffort - Catalog-validated effort selection
- */
-function applyClaudeEffort(sdkOptions: Options, resolvedEffort: string | undefined) {
-  if (!resolvedEffort) {
-    return;
-  }
-
-  if (resolvedEffort !== CLAUDE_ULTRACODE_EFFORT) {
-    sdkOptions.effort = resolvedEffort as EffortLevel;
-    return;
-  }
-
-  sdkOptions.effort = ULTRACODE_SDK_EFFORT;
-  sdkOptions.settings = {
-    ...((sdkOptions.settings as Record<string, unknown>) || {}),
-    ultracode: true,
-    enableWorkflows: true
-  };
-}
 
 function createRequestId() {
   if (typeof crypto.randomUUID === 'function') {
@@ -311,16 +278,10 @@ export function mapCliOptionsToSDK(options: AnyRecord = {}): Options {
   // Omit the override so the remote CLI can resolve its own environment/settings.
   if (requestedModel !== 'default') sdkOptions.model = requestedModel;
 
-  const resolvedEffort = resolveClaudeEffort(
-    requestedModel,
-    effort,
-    options.effortModels || CLAUDE_PREDEFINED_MODELS,
-  );
-  applyClaudeEffort(sdkOptions, resolvedEffort);
-  // Explicit ordinary choices disable a saved Ultracode flag for this invocation;
-  // omitted effort inherits the remote configuration.
-  if (resolvedEffort !== CLAUDE_ULTRACODE_EFFORT && (resolvedEffort || effort === 'default')) {
-    sdkOptions.settings = { ...sdkOptions.settings as Record<string, unknown>, ultracode: false };
+  if (effort !== undefined) {
+    Object.assign(sdkOptions, claudeSettingsFlags(resolveClaudeExecutionSettings(
+      { model: requestedModel, effort }, options.effortModels || CLAUDE_PREDEFINED_MODELS,
+    )));
   }
 
   sdkOptions.systemPrompt = {
@@ -693,12 +654,17 @@ async function loadMcpConfig(cwd?: string): Promise<Record<string, McpServerConf
  */
 async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderRuntimeWriter, context: ProviderRuntimeContext, dependencies: RuntimeDependencies) {
   const { sessionId, sessionSummary } = options;
+  const executionId = options.executionId || crypto.randomUUID();
+  let usageRun: Awaited<ReturnType<typeof claudeUsageService.beginRun>> | null = null;
+  const publishUsage = (snapshot: unknown) => {
+    if (snapshot) ws.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: snapshot, sessionId: sessionId || capturedSessionId || null, provider: 'claude' }));
+  };
   // Callers pass the stable app session id; the SDK only understands the
   // provider-native id recorded on the session row.
   const providerSessionId = context.resolveProviderSessionId(sessionId);
   // Provider-native id as the SDK reports it (starts as the resume id, or is
   // captured from the stream for brand-new sessions).
-  let capturedSessionId = providerSessionId;
+  let capturedSessionId = options.resumeFromScratch ? null : providerSessionId;
   let sessionCreatedSent = false;
   // Process-map key: the app session id when the caller supplied one, else
   // the provider-native id once captured (legacy/direct API callers).
@@ -724,9 +690,6 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
   // True while the process is being held open for background work, so a later
   // `result` can be recognised as that work reporting back.
   let heldForBackgroundWork = false;
-  // Set once a turn publishes a budget read from an assistant message, so the
-  // turn-ending `result` is only mined for usage when nothing better arrived.
-  let assistantBudgetSent = false;
 
   // A new turn supersedes any earlier one still holding this session's process
   // open, so held runs cannot stack up across a conversation.
@@ -752,10 +715,22 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
   // Hoisted above the try so the catch's cleanup can tell whether this run
   // still owns the activeSessions entry (or was superseded by a newer run).
   let queryInstance: Query | null = null;
+  let executionRecorded = false;
   const textStream = createClaudeTextStream((message, sid) => context.normalizeMessage(transformMessage(message as AnyRecord), sid));
 
   try {
-    const resolvedModel = await context.resolveResumeModel(sessionId, options.model);
+    if ('expectedProviderSessionId' in options && options.expectedProviderSessionId !== providerSessionId) throw new Error('The conversation changed before Claude started. Retry using its current state.');
+    if (options.executionSettings && sessionId) {
+      claudeExecutionRecords.begin({ executionId, appSessionId: sessionId, providerSessionId: capturedSessionId || null,
+        surface: 'chat', projectPath: options.cwd, requested: options.executionSettings,
+        startedAt: new Date().toISOString(), endedAt: null, status: 'running', observed: {} });
+      executionRecorded = true;
+    }
+    if (dependencies.usage && sessionId) {
+      usageRun = await dependencies.usage.beginRun({ sessionId, executionId, providerSessionId: capturedSessionId || null });
+      publishUsage(usageRun.snapshot());
+    }
+    const resolvedModel = options.executionSettings?.model ?? await context.resolveResumeModel(sessionId, options.model);
     let effortModels = CLAUDE_PREDEFINED_MODELS;
     try {
       effortModels = await context.getProviderModels();
@@ -800,6 +775,19 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
         }]
       }]
     };
+
+    if (executionRecorded) {
+      const observeHook = async (input: Record<string, unknown>) => {
+        if (input.agent_id || input.parent_tool_use_id) return {};
+        const observation = shellConfigurationObservation(input);
+        if (observation) claudeExecutionRecords.observe(executionId, { ...observation, source: 'chat-hook' });
+        return {};
+      };
+      sdkOptions.hooks.SessionStart = [{ hooks: [observeHook] }];
+      sdkOptions.hooks.PostModelSwitch = [{ hooks: [observeHook] }];
+      sdkOptions.hooks.PostToolUse = [{ hooks: [observeHook] }];
+      sdkOptions.hooks.Stop = [{ hooks: [observeHook] }];
+    }
 
     // Caveat: in 'auto' and 'bypassPermissions' modes the SDK resolves approval
     // at the permission-mode step and skips this callback, so interactive tools
@@ -916,6 +904,20 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
       void queryInstance.supportedModels().then(rememberClaudeSupportedModels).catch(() => {});
     }
 
+    // This optional method exists in the installed SDK but is not a public
+    // compatibility promise. Query only the execution already requested by the user.
+    const settingsQuery = queryInstance as Query & { getSettings?: () => Promise<unknown> };
+    if (executionRecorded && typeof settingsQuery.getSettings === 'function') {
+      void settingsQuery.getSettings().then((result) => {
+        const applied = (result as { applied?: Record<string, unknown> } | null)?.applied;
+        if (!applied) return;
+        const observed: { effort?: string | null; ultracode?: boolean; source: string } = { source: 'runtime-applied-settings' };
+        if (typeof applied.effort === 'string' || applied.effort === null) observed.effort = applied.effort;
+        if (typeof applied.ultracode === 'boolean') observed.ultracode = applied.ultracode;
+        if ('effort' in observed || 'ultracode' in observed) claudeExecutionRecords.observe(executionId, observed);
+      }).catch(() => {});
+    }
+
     // Track the query instance for abort capability
     if (sessionKey()) {
       addSession(sessionKey()!, queryInstance, ws, releasePromptStream);
@@ -965,16 +967,27 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
         ws.send(msg);
       }
 
-      // Extract and send token budget updates from assistant usage payloads,
-      // falling back to the turn's cumulative bill only for SDK builds that
-      // report no per-assistant usage at all.
-      const tokenBudgetData = extractTokenBudget(message)
-        || (assistantBudgetSent ? null : extractCumulativeTokenBudget(message));
-      if (tokenBudgetData) {
-        if (message.type === 'assistant') {
-          assistantBudgetSent = true;
+      if (executionRecorded && !message.parent_tool_use_id && !message.isSidechain) {
+        if (message.session_id) claudeExecutionRecords.bind(executionId, message.session_id);
+        const model = message.type === 'assistant' ? message.message?.model : message.type === 'system' && message.subtype === 'init' ? message.model : undefined;
+        if (typeof model === 'string' && model && model !== '<synthetic>' && model !== 'synthetic') {
+          claudeExecutionRecords.observe(executionId, { model, source: message.type === 'assistant' ? 'response' : 'initialization' });
         }
-        ws.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: tokenBudgetData, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+      }
+      if (usageRun) {
+        if (capturedSessionId) usageRun.bindProviderSessionId(capturedSessionId);
+        publishUsage(usageRun.observe(message));
+        // Explicit summary mode uses the existing process's local estimate;
+        // the SDK's default full report may invoke the token-count API.
+        if (message.type === 'result' && typeof queryInstance.getContextUsage === 'function') {
+          try { publishUsage(usageRun.observeContextSummary(await queryInstance.getContextUsage({ detail: 'summary' }))); }
+          catch { /* The last sampling observation remains available on older runtimes. */ }
+        }
+      } else {
+        // Injected transports/legacy callers can report per-request context,
+        // but a cumulative result bill is never a context-window fallback.
+        const budget = extractTokenBudget(message);
+        if (budget) publishUsage(budget);
       }
 
       const workflowProgress = backgroundWork.observe(message);
@@ -1081,6 +1094,7 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
     // Complete
 
   } catch (error) {
+    lastResultFailed = true;
     console.error('SDK query error:', error);
 
     // Clean up session on error — only while this run still owns the map entry
@@ -1124,6 +1138,8 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
       error
     });
   } finally {
+    if (executionRecorded) claudeExecutionRecords.finish(executionId, lastResultFailed);
+    publishUsage(usageRun?.finish());
     // Always close stdin — otherwise an aborted or failed run leaves the CLI
     // process (and its MCP servers) alive until the server exits.
     if (idleReleaseTimer) {
@@ -1200,7 +1216,9 @@ function getPendingApprovalsForSession(sessionId: string) {
 
 /** Used by the Claude provider and provider tests to construct the SDK runtime with a replaceable model transport. */
 export function createClaudeRuntime(overrides: Partial<RuntimeDependencies> = {}): IProviderRuntime {
-  const dependencies: RuntimeDependencies = { query, loadMcpConfig, waitCeilingMs: BG_WAIT_CEILING_MS, ...overrides };
+  const dependencies: RuntimeDependencies = { query, loadMcpConfig, waitCeilingMs: BG_WAIT_CEILING_MS,
+    // A test transport never opens an install database unless its fixture injects usage explicitly.
+    usage: overrides.query ? null : claudeUsageService, ...overrides };
   return {
     run: (command, options, writer, context) => queryClaudeSDK(command, options, writer, context, dependencies),
     abort: abortClaudeSDKSession,

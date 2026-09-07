@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next';
 import { ArrowDownIcon } from 'lucide-react';
 
+import { useWorkspacePanelActions } from '@/modules/workspace-panels';
+import { getIntrinsicMessageKey } from '@/modules/chat/utils/messageKeys';
 import { useTasksSettings } from '@/modules/task-master';
 import { useWebSocket } from '@/shared/context/WebSocketContext';
 import PermissionContext from '@/modules/chat/context/PermissionContext';
@@ -80,6 +82,7 @@ function ChatInterface({
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
   const { subscribe } = useWebSocket();
   const { t } = useTranslation('chat');
+  const workspaceActions = useWorkspacePanelActions();
   const processingSessions = useProcessingSessions();
   const {
     markSessionProcessing: onSessionProcessing,
@@ -87,6 +90,7 @@ function ChatInterface({
   } = useSessionProtectionActions();
 
   const sessionStore = useSessionStore();
+  const chatRootRef = useRef<HTMLDivElement>(null);
   // When each session's `chat.subscribe` was last sent; idle acks older than
   // a later local request are discarded as stale.
   const statusCheckSentAtRef = useRef(new Map<string, number>());
@@ -145,6 +149,7 @@ function ChatInterface({
     revealMessage,
     finishMessageReveal,
     loadEarlierMessages,
+    loadOlderMessages,
     loadAllMessages,
     loadFullTranscript,
     allMessagesLoaded,
@@ -220,8 +225,46 @@ function ChatInterface({
     setChangeJumpError(null);
   }, [viewedSessionId, newSessionTrigger]);
 
+  useEffect(() => () => workspaceActions?.publishAgents(null), [workspaceActions]);
+
+  // Surface a failed explicit older-history fetch inside the Agents pane.
+  const [agentHistoryError, setAgentHistoryError] = useState<string | null>(null);
+  const agentHistorySession = useRef(viewedSessionId);
+  const loadEarlierAgentActivity = useCallback(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    setAgentHistoryError(null);
+    const sessionId = viewedSessionId;
+    void loadOlderMessages(container).catch(error => {
+      // Ignore a late failure after the selected conversation changes.
+      if (agentHistorySession.current !== sessionId) return;
+      setAgentHistoryError(error instanceof Error ? error.message : String(error));
+    });
+  }, [loadOlderMessages, scrollContainerRef, viewedSessionId]);
+  useEffect(() => { agentHistorySession.current = viewedSessionId; setAgentHistoryError(null); }, [viewedSessionId]);
+
+  const agentMessages = useMemo(() => chatMessages.filter(message => message.isSubagentContainer), [chatMessages]);
+  const revealAgentOrigin = useCallback((messageKey: string) => {
+    workspaceActions?.collapsePanel();
+    if (!revealMessage(messageKey)) { setChangeJumpError(viewedSessionId); return; }
+    setChangeReveal({ sessionId: viewedSessionId, messageKey, requestId: ++revealSequence.current });
+  }, [revealMessage, viewedSessionId, workspaceActions]);
+  useEffect(() => {
+    workspaceActions?.publishAgents({
+      sessionId: viewedSessionId, project: selectedProject, messages: agentMessages,
+      hasEarlierMessages: hasMoreMessages, isLoadingEarlierMessages: isLoadingMoreMessages,
+      loadEarlierMessages: loadEarlierAgentActivity, historyError: agentHistoryError, revealOrigin: revealAgentOrigin, onFileOpen,
+    });
+  }, [workspaceActions, viewedSessionId, selectedProject, agentMessages, hasMoreMessages, isLoadingMoreMessages, loadEarlierAgentActivity, agentHistoryError, revealAgentOrigin, onFileOpen]);
+
   const jumpToChange = useCallback((change: ConversationFileChange) => {
     setChangeJumpError(null);
+    // Agent edits live in the Agents timeline, so select that agent before
+    // expanding and revealing the exact child tool rather than a hidden row.
+    if (workspaceActions && agentMessages.some(message => getIntrinsicMessageKey(message) === change.sourceMessageKey)) {
+      workspaceActions.openAgent(change.sourceMessageKey, change.sourceToolId);
+      return;
+    }
     if (!revealMessage(change.sourceMessageKey)) {
       setChangeJumpError(viewedSessionId);
       return;
@@ -232,7 +275,7 @@ function ChatInterface({
       toolId: change.sourceToolId,
       requestId: ++revealSequence.current,
     });
-  }, [revealMessage, viewedSessionId]);
+  }, [revealMessage, viewedSessionId, workspaceActions, agentMessages]);
 
   useEffect(() => {
     if (!isActive || !activeReveal || settledReveal.current === activeReveal.requestId || !scrollContainerRef.current) {
@@ -376,6 +419,9 @@ function ChatInterface({
         return;
       }
 
+      // Escape belongs to the focused surface. A terminal/editor alongside
+      // chat must never cancel the main agent while handling its own key.
+      if (!(event.target instanceof Node) || !chatRootRef.current?.contains(event.target)) return;
       event.preventDefault();
       handleAbortSession();
     };
@@ -491,7 +537,7 @@ function ChatInterface({
         revision={`${isProcessing}-${chatMessages.length}-${contextRevision}`}
         onRewound={reloadRewoundSession}
       >
-      <div className="flex h-full min-h-0 flex-col">
+      <div ref={chatRootRef} className="flex h-full min-h-0 flex-col">
         <ChatMessagesPane
           revealTarget={activeReveal}
           scrollContainerRef={scrollContainerRef}

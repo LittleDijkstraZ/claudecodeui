@@ -5,6 +5,7 @@ import path from 'node:path';
 
 import Database from 'better-sqlite3';
 
+import { claudeUsageService } from '@/modules/claude-usage/index.js';
 import { sessionsDb } from '@/modules/database/index.js';
 import type { AnyRecord } from '@/shared/types.js';
 import { AppError, getOpenCodeDatabasePath } from '@/shared/utils.js';
@@ -481,4 +482,10 @@ export function createProviderTokenUsageService(
 /**
  * Used by the provider routes to serve token usage from only an app session id.
  */
-export const providerTokenUsageService = createProviderTokenUsageService();
+const legacyProviderTokenUsageService = createProviderTokenUsageService();
+export const providerTokenUsageService = {
+  async getSessionTokenUsage(sessionId: string) {
+    if (sessionsDb.getSessionById(sessionId)?.provider === 'claude') return claudeUsageService.getSnapshot(sessionId);
+    return legacyProviderTokenUsageService.getSessionTokenUsage(sessionId);
+  },
+};

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { SessionExecutionSettings } from '@/modules/session-configuration';
 import { api } from '@/shared/api';
 import type { LLMProvider } from '@/shared/types';
 
@@ -40,9 +41,12 @@ export default function ModelIdentitySummary({ provider, sessionId, selectedMode
       : t('modelIdentity.actual', { defaultValue: 'Actual model' });
   const reportedModel = current?.reportedModel || t('modelIdentity.unconfirmed', { defaultValue: 'Unconfirmed' });
   return (
+    <>
     <div className="mx-auto flex w-full max-w-[54.25rem] flex-wrap gap-x-3 gap-y-1 px-4 py-1 text-[11px] text-muted-foreground" data-testid="model-identity-summary">
       <span className="min-w-0 break-all">{t('modelIdentity.selected', { defaultValue: 'Selected' })}: <code>{selectedModel}</code></span>
       <span className="min-w-0 break-all" title={current?.reportedAt || undefined}>{label}: <code>{reportedModel}</code></span>
     </div>
+    <SessionExecutionSettings provider={provider} sessionId={sessionId} surface="chat" />
+    </>
   );
 }

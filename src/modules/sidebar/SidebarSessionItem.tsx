@@ -2,7 +2,7 @@ import { memo, useEffect, useRef, useState } from 'react';
 import { Check, Copy, Edit2, GitBranch, Layers, Loader2, MoreHorizontal, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
-import { ActionMenu, Badge, Dialog, DialogContent, DialogTitle, LLMProviderLogo, Tooltip, buttonVariants } from '@/shared/ui';
+import { SessionAttentionIndicator, SessionRunningIndicator, ActionMenu, Badge, Dialog, DialogContent, DialogTitle, LLMProviderLogo, buttonVariants } from '@/shared/ui';
 import { cn, copyTextToClipboard } from '@/shared/utils';
 import type { LLMProvider, Project, ProjectSession, SessionWithProvider } from '@/shared/types';
 import { api } from '@/shared/api';
@@ -203,27 +203,7 @@ function SidebarSessionItem({
 
   return (
     <div className="group relative">
-      {(showAttentionIndicator || showRecentIndicator) && (
-        <div className="absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2 transform">
-          <Tooltip
-            content={showAttentionIndicator
-              ? t('tooltips.attentionRequiredIndicator', { defaultValue: 'Session needs attention' })
-              : t('tooltips.activeSessionIndicator')}
-            position="right"
-          >
-            <div
-              role="status"
-              aria-label={showAttentionIndicator
-                ? t('tooltips.attentionRequiredIndicator', { defaultValue: 'Session needs attention' })
-                : t('tooltips.activeSessionIndicator')}
-              className={cn(
-                'h-2 w-2 animate-pulse rounded-full',
-                showAttentionIndicator ? 'bg-amber-500' : 'bg-green-500',
-              )}
-            />
-          </Tooltip>
-        </div>
-      )}
+      <SessionAttentionIndicator needsAttention={showAttentionIndicator} isRecent={showRecentIndicator} className="absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2" />
 
       {isCompact && (
       <div>
@@ -259,11 +239,7 @@ function SidebarSessionItem({
                 </div>
                 {isProcessing ? (
                   <span className="ml-auto flex-shrink-0">
-                    <Tooltip content={t('tooltips.processingSessionIndicator', 'Processing session')} position="top">
-                      <span className="flex h-5 w-5 items-center justify-center rounded-md text-muted-foreground">
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                      </span>
-                    </Tooltip>
+                    <SessionRunningIndicator isProcessing={isProcessing} />
                   </span>
                 ) : compactSessionAge && (
                   <span className="ml-auto flex-shrink-0 text-[11px] text-muted-foreground">{compactSessionAge}</span>
@@ -485,11 +461,7 @@ function SidebarSessionItem({
                       isEditing ? 'opacity-0' : 'group-hover:opacity-0',
                     )}
                   >
-                    <Tooltip content={t('tooltips.processingSessionIndicator', 'Processing session')} position="top">
-                      <span className="flex h-5 w-5 items-center justify-center rounded-md text-muted-foreground">
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                      </span>
-                    </Tooltip>
+                    <SessionRunningIndicator isProcessing={isProcessing} />
                   </span>
                 ) : compactSessionAge && (
                   <span

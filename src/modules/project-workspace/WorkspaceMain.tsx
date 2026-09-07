@@ -1,20 +1,22 @@
-import React, { useCallback, useEffect, type Dispatch, type SetStateAction } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
+import type { Dispatch, SetStateAction } from 'react';
+import { useTranslation } from 'react-i18next';
 
-import { ChatInterface } from '@/modules/chat';
-import { FileTree } from '@/modules/file-tree';
-import { StandaloneShell } from '@/modules/standalone-shell';
+import { ChatInterface, AgentsPanel } from '@/modules/chat';
 import { GitPanel } from '@/modules/git-panel';
 import { PluginTabContent } from '@/modules/plugins';
 import { BrowserUsePanel, useBrowserUseEnabled } from '@/modules/browser-use';
 import { usePaletteOpsRegister } from '@/modules/command-palette';
 import { TaskMasterPanel, useTaskMasterProjectSync, useTasksSettings } from '@/modules/task-master';
-import type { AppTab, Project, ProjectSession, SessionEstablishedContext, SessionNavigationOptions, SettingsMainTab } from '@/shared/types';
+import type { AppTab, CodeEditorDiffInfo, CodeEditorFile, Project, ProjectSession, SessionEstablishedContext, SessionNavigationOptions, SettingsMainTab, WorkspacePanelTab } from '@/shared/types';
 import { useUiPreferences } from '@/shared/context/UiPreferencesContext';
 import { useFileOpenResolver } from '@/modules/project-workspace/hooks/useFileOpenResolver';
-import { EditorSidebar, useEditorSidebar } from '@/modules/code-editor';
+import { SideChatPanel, WorkspacePanelLayout, useWorkspacePanelActions, useWorkspacePanels } from '@/modules/workspace-panels';
 import WorkspaceHeader from '@/modules/project-workspace/WorkspaceHeader';
 import WorkspaceStateView from '@/modules/project-workspace/WorkspaceStateView';
 import WorkspaceErrorBoundary from '@/modules/project-workspace/WorkspaceErrorBoundary';
+import WorkspaceFilesPanel from '@/modules/project-workspace/WorkspaceFilesPanel';
+import WorkspaceTerminals from '@/modules/project-workspace/WorkspaceTerminals';
 
 type WorkspaceMainProps = {
   selectedProject: Project | null;
@@ -37,197 +39,80 @@ type WorkspaceMainProps = {
   onProjectsRefresh: () => void;
 };
 
-/** Rendered by ProjectMainRegion to show the selected project's active tab: chat, files, shell, git, tasks, browser or a plugin. */
+/** Used by ProjectMainRegion to keep chat primary and retain auxiliary views in a common right panel. */
 function WorkspaceMain({
-  selectedProject,
-  selectedSession,
-  activeTab,
-  setActiveTab,
-  ws,
-  sendMessage,
-  isMobile,
-  onMenuClick,
-  isLoading,
-  onNavigateToSession,
-  onSessionEstablished,
-  onShowSettings,
-  externalMessageUpdate,
-  newSessionTrigger,
-  onProjectSelect,
-  onProjectsRefresh,
+  selectedProject, selectedSession, activeTab, setActiveTab, ws, sendMessage, isMobile, onMenuClick, isLoading,
+  onNavigateToSession, onSessionEstablished, onShowSettings, externalMessageUpdate, newSessionTrigger,
+  onProjectSelect, onProjectsRefresh,
 }: WorkspaceMainProps) {
+  const { t } = useTranslation('common');
   const preferences = useUiPreferences();
   const { showRawParameters, showThinking, sendByCtrlEnter } = preferences;
-
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
   const browserUseEnabled = useBrowserUseEnabled();
-
+  const panel = useWorkspacePanels();
+  const panelActions = useWorkspacePanelActions();
   useTaskMasterProjectSync(selectedProject);
-
   const shouldShowTasksTab = Boolean(tasksEnabled && isTaskMasterInstalled);
   const shouldShowBrowserTab = browserUseEnabled;
-
-  const {
-    editingFile,
-    editorWidth,
-    editorExpanded,
-    hasManualWidth,
-    resizeHandleRef,
-    handleFileOpen,
-    handleCloseEditor,
-    handleToggleEditorExpand,
-    handleResizeStart,
-  } = useEditorSidebar({
-    selectedProject,
-    isMobile,
-  });
-
-  // Resolves bare/partial file references (e.g. links inside chat messages) to
-  // real project files before opening them in the in-app editor.
+  // Bind the editor to the project that opened it, even if a later chat selects another folder.
+  const [editing, setEditing] = useState<{ file: CodeEditorFile; project: Project } | null>(null);
+  const handleFileOpen = useCallback((filePath: string, diffInfo: CodeEditorDiffInfo | null = null) => {
+    if (!selectedProject) return;
+    const path = filePath.replace(/\\/g, '/');
+    setEditing({ file: { name: path.split('/').pop() || filePath, path: filePath, projectId: selectedProject.projectId, diffInfo }, project: selectedProject });
+    panelActions?.openPanel('files');
+  }, [selectedProject, panelActions]);
   const resolvedFileOpen = useFileOpenResolver(selectedProject, handleFileOpen);
-
-  useEffect(() => {
-    if (!shouldShowTasksTab && activeTab === 'tasks') {
-      setActiveTab('chat');
-    }
-  }, [shouldShowTasksTab, activeTab, setActiveTab]);
-
-  useEffect(() => {
-    if (!shouldShowBrowserTab && activeTab === 'browser') {
-      setActiveTab('chat');
-    }
-  }, [shouldShowBrowserTab, activeTab, setActiveTab]);
-
-  // Stable so React.memo(ChatInterface) can bail out: an inline arrow here made
-  // every WorkspaceMain render re-render the whole chat tree, including during
-  // an editor-divider drag.
-  const showAllTasks = useCallback(() => {
-    setActiveTab('tasks');
-  }, [setActiveTab]);
-
-  const openFile = useCallback((filePath: string) => {
-    setActiveTab('files');
-    handleFileOpen(filePath);
-  }, [handleFileOpen, setActiveTab]);
-
-  // Opens the editor side panel in place, keeping the current tab (e.g. chat).
-  const openFileInEditor = useCallback((filePath: string) => {
-    resolvedFileOpen(filePath);
-  }, [resolvedFileOpen]);
-
-  // Stable arguments keep usePaletteOpsRegister's effect from tearing down and
-  // rewriting the whole palette registry on every render.
+  const openFile = useCallback((path: string) => handleFileOpen(path), [handleFileOpen]);
+  const openFileInEditor = useCallback((path: string) => { resolvedFileOpen(path); }, [resolvedFileOpen]);
   usePaletteOpsRegister({ openFile, openFileInEditor });
-
-  if (isLoading) {
-    return <WorkspaceStateView mode="loading" isMobile={isMobile} onMenuClick={onMenuClick} />;
-  }
-
-  if (!selectedProject) {
-    return <WorkspaceStateView mode="empty" isMobile={isMobile} onMenuClick={onMenuClick} />;
-  }
-
-  return (
-    <div className="flex h-full flex-col">
-      <WorkspaceHeader
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
-        selectedProject={selectedProject}
-        selectedSession={selectedSession}
-        shouldShowTasksTab={shouldShowTasksTab}
-        shouldShowBrowserTab={shouldShowBrowserTab}
-        isMobile={isMobile}
-        onMenuClick={onMenuClick}
-      />
-
-      <div className="flex min-h-0 flex-1 overflow-hidden">
-        <div className={`flex min-h-0 min-w-[200px] flex-col overflow-hidden ${editorExpanded ? 'hidden' : ''} flex-1`}>
-          <div className={`h-full ${activeTab === 'chat' ? 'block' : 'hidden'}`}>
-            <WorkspaceErrorBoundary showDetails>
-              <ChatInterface
-                isActive={activeTab === 'chat'}
-                selectedProject={selectedProject}
-                selectedSession={selectedSession}
-                ws={ws}
-                sendMessage={sendMessage}
-                onFileOpen={handleFileOpen}
-                onNavigateToSession={onNavigateToSession}
-                onSessionEstablished={onSessionEstablished}
-                onShowSettings={onShowSettings}
-                showRawParameters={showRawParameters}
-                showThinking={showThinking}
-                sendByCtrlEnter={sendByCtrlEnter}
-                externalMessageUpdate={externalMessageUpdate}
-                newSessionTrigger={newSessionTrigger}
-                onShowAllTasks={tasksEnabled ? showAllTasks : null}
-              />
-            </WorkspaceErrorBoundary>
-          </div>
-
-          {activeTab === 'files' && (
-            <div className="h-full overflow-hidden">
-              <FileTree selectedProject={selectedProject} onFileOpen={handleFileOpen} />
-            </div>
-          )}
-
-          {activeTab === 'shell' && (
-            <div className="h-full w-full overflow-hidden">
-              <StandaloneShell
-                project={selectedProject}
-                session={selectedSession}
-                showHeader={false}
-                isActive={activeTab === 'shell'}
-              />
-            </div>
-          )}
-
-          {activeTab === 'git' && (
-            <div className="h-full overflow-hidden">
-              <GitPanel
-                selectedProject={selectedProject}
-                isMobile={isMobile}
-                onFileOpen={handleFileOpen}
-                onProjectSelect={onProjectSelect}
-                onProjectsRefresh={onProjectsRefresh}
-              />
-            </div>
-          )}
-
-          {shouldShowTasksTab && <TaskMasterPanel isVisible={activeTab === 'tasks'} />}
-
-          {shouldShowBrowserTab && activeTab === 'browser' && (
-            <div className="h-full overflow-hidden">
-              <BrowserUsePanel isVisible={activeTab === 'browser'} onShowSettings={onShowSettings} />
-            </div>
-          )}
-
-          {activeTab.startsWith('plugin:') && (
-            <div className="h-full overflow-hidden">
-              <PluginTabContent
-                pluginName={activeTab.replace('plugin:', '')}
-                selectedProject={selectedProject}
-                selectedSession={selectedSession}
-              />
-            </div>
-          )}
-        </div>
-
-        <EditorSidebar
-          editingFile={editingFile}
-          isMobile={isMobile}
-          editorExpanded={editorExpanded}
-          editorWidth={editorWidth}
-          hasManualWidth={hasManualWidth}
-          resizeHandleRef={resizeHandleRef}
-          onResizeStart={handleResizeStart}
-          onCloseEditor={handleCloseEditor}
-          onToggleEditorExpand={handleToggleEditorExpand}
-          projectPath={selectedProject.path}
-          fillSpace={activeTab === 'files'}
-        />
-      </div>
-    </div>
-  );
+  const showAllTasks = useCallback(() => panelActions?.openPanel('tasks'), [panelActions]);
+  const selectView = useCallback((tab: AppTab | WorkspacePanelTab) => {
+    if (tab === 'chat') panelActions?.collapsePanel();
+    else panelActions?.openPanel(tab);
+  }, [panelActions]);
+  // Existing command-palette and workspace shortcuts still request AppTab values.
+  // Consume those requests as panel navigation without hiding or remounting chat.
+  useEffect(() => {
+    if (activeTab !== 'chat') { selectView(activeTab); setActiveTab('chat'); }
+  }, [activeTab, selectView, setActiveTab]);
+  const visible = (tab: WorkspacePanelTab) => Boolean(panel?.open && panel.tab === tab);
+  const retained = (tab: WorkspacePanelTab) => Boolean(panel?.visited.has(tab));
+  const title = panel?.tab === 'agents' ? t('workspacePanel.agents', { defaultValue: 'Agents' })
+    : panel?.tab === 'sideChat' ? t('workspacePanel.sideChat', { defaultValue: 'Side chat' })
+      : panel?.tab === 'git' ? t('workspacePanel.sourceControl', { defaultValue: 'Source Control' })
+        : panel?.tab.startsWith('plugin:') ? panel.tab.slice(7)
+          : t(`tabs.${panel?.tab ?? 'files'}`);
+  const main = <div className="h-full min-h-0">
+    {isLoading ? <WorkspaceStateView mode="loading" isMobile={isMobile} onMenuClick={onMenuClick} />
+      : !selectedProject ? <WorkspaceStateView mode="empty" isMobile={isMobile} onMenuClick={onMenuClick} />
+        : <WorkspaceErrorBoundary showDetails><ChatInterface
+          isActive
+          selectedProject={selectedProject} selectedSession={selectedSession} ws={ws} sendMessage={sendMessage}
+          onFileOpen={handleFileOpen} onNavigateToSession={onNavigateToSession} onSessionEstablished={onSessionEstablished}
+          onShowSettings={onShowSettings} showRawParameters={showRawParameters} showThinking={showThinking}
+          sendByCtrlEnter={sendByCtrlEnter} externalMessageUpdate={externalMessageUpdate} newSessionTrigger={newSessionTrigger}
+          onShowAllTasks={tasksEnabled ? showAllTasks : null}
+        /></WorkspaceErrorBoundary>}
+  </div>;
+  return <div className="flex h-full min-h-0 min-w-0 flex-col">
+    {selectedProject && <WorkspaceHeader
+      activeTab={panel?.open ? panel.tab : 'chat'} setActiveTab={selectView}
+      selectedProject={selectedProject} selectedSession={selectedSession} shouldShowTasksTab={shouldShowTasksTab}
+      shouldShowBrowserTab={shouldShowBrowserTab} isMobile={isMobile} onMenuClick={onMenuClick}
+    />}
+    <WorkspacePanelLayout main={main} title={title}>
+      {retained('shell') && <div className={`h-full ${visible('shell') ? 'block' : 'hidden'}`}><WorkspaceTerminals project={selectedProject} session={selectedSession} visible={visible('shell')} /></div>}
+      {retained('files') && <div className={`h-full ${visible('files') ? 'block' : 'hidden'}`}><WorkspaceFilesPanel project={selectedProject} editingFile={editing?.file ?? null} editingProject={editing?.project ?? null} onFileOpen={openFile} onClose={() => setEditing(null)} /></div>}
+      {retained('git') && <div className={`h-full ${visible('git') ? 'block' : 'hidden'}`}>{selectedProject && <GitPanel selectedProject={selectedProject} isMobile={isMobile} onFileOpen={handleFileOpen} onProjectSelect={onProjectSelect} onProjectsRefresh={onProjectsRefresh} />}</div>}
+      {retained('agents') && <div className={`h-full ${visible('agents') ? 'block' : 'hidden'}`}><AgentsPanel /></div>}
+      {shouldShowTasksTab && retained('tasks') && <TaskMasterPanel isVisible={visible('tasks')} />}
+      {shouldShowBrowserTab && retained('browser') && <div className={`h-full ${visible('browser') ? 'block' : 'hidden'}`}><BrowserUsePanel isVisible={visible('browser')} onShowSettings={onShowSettings} /></div>}
+      {[...(panel?.visited ?? [])].filter(tab => tab.startsWith('plugin:')).map(tab => <div key={tab} className={`h-full ${visible(tab) ? 'block' : 'hidden'}`}><PluginTabContent pluginName={tab.slice(7)} selectedProject={selectedProject} selectedSession={selectedSession} /></div>)}
+      <SideChatPanel onNavigateToSession={onNavigateToSession} />
+    </WorkspacePanelLayout>
+  </div>;
 }
 
 export default React.memo(WorkspaceMain);

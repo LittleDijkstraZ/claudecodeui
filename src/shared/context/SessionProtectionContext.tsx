@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
 } from 'react';
 import type { ReactNode } from 'react';
 
@@ -12,6 +13,7 @@ import {
 } from '@/shared/hooks/useSessionProtection';
 import type { IsSessionProcessing, MarkSessionIdle, MarkSessionProcessing, SessionActivityMap, SyncProcessingSessions } from '@/shared/types';
 import { api } from '@/shared/api';
+import { useWebSocket } from '@/shared/context/WebSocketContext';
 
 type RunningSessionApiItem = {
   sessionId?: unknown;
@@ -75,13 +77,28 @@ const parseStartedAt = (value: unknown): number | undefined => {
 export function SessionProtectionProvider({ children }: { children: ReactNode }) {
   const {
     processingSessions,
-    markSessionProcessing,
-    markSessionIdle,
-    syncProcessingSessions,
+    markSessionProcessing: applyProcessing,
+    markSessionIdle: applyIdle,
+    syncProcessingSessions: applySnapshot,
     isSessionProcessing,
   } = useSessionProtection();
 
+  const { subscribe } = useWebSocket();
+  const activityRevision = useRef(0);
+  const snapshotRequest = useRef(0);
+  const markSessionProcessing = useCallback<MarkSessionProcessing>((...args) => { activityRevision.current++; applyProcessing(...args); }, [applyProcessing]);
+  const markSessionIdle = useCallback<MarkSessionIdle>((...args) => { activityRevision.current++; applyIdle(...args); }, [applyIdle]);
+  const syncProcessingSessions = useCallback<SyncProcessingSessions>((...args) => { activityRevision.current++; applySnapshot(...args); }, [applySnapshot]);
+
+  useEffect(() => subscribe(event => {
+    if (event.kind !== 'session_activity' || typeof event.sessionId !== 'string') return;
+    if (event.status === 'running' || event.status === 'permission') markSessionProcessing(event.sessionId);
+    if (event.status === 'complete' || event.status === 'error') markSessionIdle(event.sessionId);
+  }), [subscribe, markSessionProcessing, markSessionIdle]);
+
   const refreshRunningSessions = useCallback(async () => {
+    const version = activityRevision.current;
+    const request = ++snapshotRequest.current;
     try {
       const response = await api.runningSessions();
       if (!response.ok) {
@@ -89,9 +106,11 @@ export function SessionProtectionProvider({ children }: { children: ReactNode })
       }
 
       const payload = (await response.json()) as RunningSessionsApiPayload;
+      // A snapshot requested before live activity must not restore a completed run or erase a new one.
+      if (version !== activityRevision.current || request !== snapshotRequest.current) return;
       const sessions = Array.isArray(payload.data?.sessions) ? payload.data.sessions : [];
 
-      syncProcessingSessions(
+      applySnapshot(
         sessions
           .map((session) => {
             if (typeof session.sessionId !== 'string' || !session.sessionId) {
@@ -110,7 +129,7 @@ export function SessionProtectionProvider({ children }: { children: ReactNode })
     } catch (error) {
       console.error('[SessionProtection] Failed to sync running sessions:', error);
     }
-  }, [syncProcessingSessions]);
+  }, [applySnapshot]);
 
   useEffect(() => {
     void refreshRunningSessions();

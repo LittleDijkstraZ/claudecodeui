@@ -265,6 +265,10 @@ Custom commands can be created in:
     const provider = readModelProvider(context?.provider);
     const model = await resolveCommandModel(providerModelsService, provider, context);
 
+    if (tokenUsage.schemaVersion === 2 && tokenUsage.provider === 'claude') {
+      return { type: 'builtin', action: 'cost', data: { tokenUsage, provider, model } };
+    }
+
     const reportedUsed =
       Number(
         tokenUsage.used ?? tokenUsage.totalUsed ?? tokenUsage.total_tokens ?? 0,

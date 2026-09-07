@@ -1,7 +1,7 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
-import type { Project, ProjectSession } from '@/shared/types';
+import type { ChatMessage, Project, ProjectSession, SubagentInfo } from '@/shared/types';
 
 //----------------- DEPLOYMENT MODE ------------
 
@@ -228,3 +228,12 @@ export const getPageTitle = (
 
 /** Namespaces all embedded-machine browser data, including auth and drafts. */
 export const remoteStorageKey = (remoteId: string, key: string) => `cloudcli:remote:${remoteId}:${key}`;
+
+// ---------------------------
+
+//----------------- RECORDED SUBAGENT STATE ------------
+
+/** Uses the provider lifecycle when reported, with tool-result fallback for older normalized agent records. */
+export function getSubagentStatus(message: ChatMessage): SubagentInfo['status'] {
+  return message.subagent?.status ?? (message.toolResult ? (message.toolResult.isError ? 'failed' : 'completed') : 'running');
+}

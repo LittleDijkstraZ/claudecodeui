@@ -18,6 +18,8 @@ import {
   X,
 } from 'lucide-react';
 
+import { ClaudeUsageDetails } from '@/modules/chat/modals/TokenUsageModal';
+import { isClaudeUsageSnapshot } from '@/modules/chat/utils/claudeUsageSnapshot';
 import { Badge, Button, Dialog, DialogContent, DialogTitle, Input } from '@/shared/ui';
 import type {
   LLMProvider,
@@ -419,6 +421,7 @@ function ModelsContent({
 }
 
 function CostContent({ data }: { data: CostCommandData }) {
+  if (isClaudeUsageSnapshot(data.tokenUsage)) return <ClaudeUsageDetails usage={data.tokenUsage} />;
   const used = Number(data.tokenUsage?.used ?? 0);
   const total = Number(data.tokenUsage?.total ?? 0);
   const model = data.model || 'Unknown';

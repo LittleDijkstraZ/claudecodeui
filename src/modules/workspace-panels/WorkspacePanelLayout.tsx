@@ -1,0 +1,78 @@
+import { useEffect, useRef, useState } from 'react';
+import type { KeyboardEvent, PointerEvent, ReactNode } from 'react';
+import { Maximize2, Minimize2, PanelRightClose } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+
+import { Button } from '@/shared/ui';
+import { useWorkspacePanelActions, useWorkspacePanels } from '@/modules/workspace-panels/context/WorkspacePanelsContext';
+
+const DEFAULT_WIDTH = 500;
+const MIN_WIDTH = 300;
+const MIN_MAIN_WIDTH = 320;
+
+/** Used by project-workspace to give every right-hand view the same retained, resizable frame. */
+export function WorkspacePanelLayout({ main, children, title }: { main: ReactNode; children: ReactNode; title: string }) {
+  const { t } = useTranslation('common');
+  const panel = useWorkspacePanels();
+  const actions = useWorkspacePanelActions();
+  const containerRef = useRef<HTMLDivElement>(null);
+  // Measure the actual chat workspace, which may itself be inside a hub iframe.
+  const [availableWidth, setAvailableWidth] = useState(0);
+  // Retain the last chosen split width independently of maximize and collapse.
+  const [width, setWidth] = useState(() => {
+    const saved = Number(localStorage.getItem('cloudcli.workspace-panel-width'));
+    return Number.isFinite(saved) && saved >= MIN_WIDTH ? saved : DEFAULT_WIDTH;
+  });
+  // Shield sibling iframes during a drag so they cannot consume the pointer.
+  const [resizing, setResizing] = useState(false);
+  const dragRef = useRef<{ pointerId: number; startX: number; width: number } | null>(null);
+  const narrow = availableWidth > 0 && availableWidth < 760;
+  const effectiveWidth = Math.max(MIN_WIDTH, Math.min(width, availableWidth - MIN_MAIN_WIDTH));
+
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element) return;
+    const observer = new ResizeObserver(() => { if (element.clientWidth > 0) setAvailableWidth(element.clientWidth); });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  useEffect(() => { localStorage.setItem('cloudcli.workspace-panel-width', String(width)); }, [width]);
+
+  const beginResize = (event: PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || narrow || panel?.maximized) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = { pointerId: event.pointerId, startX: event.clientX, width: effectiveWidth };
+    setResizing(true);
+  };
+  const moveResize = (event: PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    setWidth(Math.max(MIN_WIDTH, Math.min(availableWidth - MIN_MAIN_WIDTH, drag.width + drag.startX - event.clientX)));
+  };
+  const endResize = () => { dragRef.current = null; setResizing(false); };
+  const keyResize = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    event.preventDefault();
+    setWidth(current => Math.max(MIN_WIDTH, Math.min(availableWidth - MIN_MAIN_WIDTH, current + (event.key === 'ArrowLeft' ? 32 : -32))));
+  };
+
+  return <div ref={containerRef} className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden" data-testid="workspace-panel-layout">
+    <div className={`min-h-0 min-w-0 flex-1 ${panel?.open && (narrow || panel.maximized) ? 'hidden' : 'flex flex-col'}`} data-testid="workspace-main-chat">{main}</div>
+    <aside
+      aria-label={t('workspacePanel.title', { defaultValue: 'Workspace panel' })}
+      className={`${panel?.open ? 'flex' : 'hidden'} min-h-0 flex-col overflow-hidden border-l border-border bg-background ${narrow || panel?.maximized ? 'absolute inset-0 z-30' : 'relative shrink-0'}`}
+      style={narrow || panel?.maximized ? undefined : { width: effectiveWidth }}
+      data-testid="workspace-right-panel"
+    >
+      {!narrow && !panel?.maximized && <div role="separator" aria-label={t('workspacePanel.resize', { defaultValue: 'Resize workspace panel' })} aria-orientation="vertical" aria-valuemin={MIN_WIDTH} aria-valuemax={Math.max(MIN_WIDTH, availableWidth - MIN_MAIN_WIDTH)} aria-valuenow={Math.round(effectiveWidth)} tabIndex={0} onPointerDown={beginResize} onPointerMove={moveResize} onPointerUp={endResize} onPointerCancel={endResize} onLostPointerCapture={endResize} onKeyDown={keyResize} className="absolute inset-y-0 left-0 z-50 w-1.5 cursor-col-resize touch-none hover:bg-primary/60 focus-visible:bg-primary/60 focus-visible:outline-none" />}
+      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
+        <h2 className="min-w-0 flex-1 truncate text-xs font-medium">{title}</h2>
+        <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={t(panel?.maximized ? 'workspacePanel.restore' : 'workspacePanel.maximize', { defaultValue: panel?.maximized ? 'Restore split view' : 'Maximize panel' })} onClick={actions?.toggleMaximized}>{panel?.maximized ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}</Button>
+        <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={t('workspacePanel.collapse', { defaultValue: 'Collapse panel; keep work running' })} onClick={actions?.collapsePanel}><PanelRightClose className="h-3.5 w-3.5" /></Button>
+      </div>
+      <div className="relative min-h-0 flex-1 overflow-hidden">{children}</div>
+    </aside>
+    {resizing && <div className="absolute inset-0 z-40 cursor-col-resize" aria-hidden />}
+  </div>;
+}

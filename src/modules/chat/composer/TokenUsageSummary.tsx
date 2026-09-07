@@ -1,6 +1,9 @@
-import { memo } from 'react';
+import { memo, useState } from 'react';
 import { ActivityIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+
+import TokenUsageModal from '@/modules/chat/modals/TokenUsageModal';
+import { isClaudeUsageSnapshot } from '@/modules/chat/utils/claudeUsageSnapshot';
 
 type TokenUsageSummaryProps = {
   usage: Record<string, unknown> | null;
@@ -38,6 +41,8 @@ const readUsageNumber = (value: unknown) => {
  */
 function TokenUsageSummary({ usage, onClick }: TokenUsageSummaryProps) {
   const { t } = useTranslation();
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const ledger = isClaudeUsageSnapshot(usage) ? usage : null;
   const breakdown =
     usage?.breakdown && typeof usage.breakdown === 'object'
       ? usage.breakdown as Record<string, unknown>
@@ -46,23 +51,25 @@ function TokenUsageSummary({ usage, onClick }: TokenUsageSummaryProps) {
   const outputTokens = readUsageNumber(usage?.outputTokens ?? breakdown?.output);
   const usedTokens = readUsageNumber(usage?.used) || inputTokens + outputTokens;
 
-  return (
+  const contextTokens = ledger?.context.usedTokens;
+  return (<>
     <button
       type="button"
-      onClick={onClick}
+      onClick={() => { if (ledger) setDetailsOpen(true); else onClick?.(); }}
       className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border/70 bg-background/70 px-2 text-xs text-muted-foreground shadow-sm transition-colors hover:border-primary/25 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 sm:gap-2 sm:px-2.5"
-      title={t('chat:misc.tokensUsed', { count: usedTokens })}
+      title={ledger ? t('chat:usage.context') : t('chat:misc.tokensUsed', { count: usedTokens })}
       aria-label={t('chat:misc.showTokenUsage')}
     >
       <span className="grid h-5 w-5 place-items-center rounded-md bg-primary/10 text-primary">
         <ActivityIcon className="h-3.5 w-3.5" />
       </span>
-      <span className="font-medium text-foreground">{formatTokenCount(usedTokens)}</span>
+      <span className="font-medium text-foreground">{ledger ? (contextTokens == null ? t('chat:usage.unknown') : `≈ ${formatTokenCount(contextTokens)}`) : formatTokenCount(usedTokens)}</span>
       <span className="hidden text-muted-foreground/70 sm:inline">
-        {t('chat:misc.tokensLabel', { count: usedTokens })}
+        {ledger ? t('chat:usage.contextShort') : t('chat:misc.tokensLabel', { count: usedTokens })}
       </span>
     </button>
-  );
+    {detailsOpen && ledger && <TokenUsageModal usage={ledger} onClose={() => setDetailsOpen(false)} />}
+  </>);
 }
 
 /** Memoized: the composer re-renders on every keystroke and this row's numbers only move when a turn ends. */

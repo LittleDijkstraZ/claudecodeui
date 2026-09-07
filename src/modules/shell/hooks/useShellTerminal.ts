@@ -294,7 +294,8 @@ export function useShellTerminal({
     window.setTimeout(() => {
       const currentFitAddon = fitAddonRef.current;
       const currentTerminal = terminalRef.current;
-      if (!currentFitAddon || !currentTerminal) {
+      // A retained hidden terminal must not resize its live PTY to zero.
+      if (!currentFitAddon || !currentTerminal || terminalContainer.clientWidth === 0 || terminalContainer.clientHeight === 0) {
         return;
       }
 
@@ -323,7 +324,8 @@ export function useShellTerminal({
       resizeTimeoutRef.current = window.setTimeout(() => {
         const currentFitAddon = fitAddonRef.current;
         const currentTerminal = terminalRef.current;
-        if (!currentFitAddon || !currentTerminal) {
+        // A retained hidden terminal must not resize its live PTY to zero.
+        if (!currentFitAddon || !currentTerminal || terminalContainer.clientWidth === 0 || terminalContainer.clientHeight === 0) {
           return;
         }
 

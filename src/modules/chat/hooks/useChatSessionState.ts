@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { MutableRefObject } from 'react';
 
 import { api } from '@/shared/api';
+import { acceptClaudeUsageSnapshot, isClaudeUsageSnapshot } from '@/modules/chat/utils/claudeUsageSnapshot';
 import type { MarkSessionIdle, SessionActivityMap,Project,ProjectSession,LLMProvider,NormalizedMessage,ChatMessage,DiffCalculator } from '@/shared/types';
 import type { SessionStore } from '@/modules/chat/hooks/useSessionStore';
 import { SESSION_MESSAGES_PAGE_SIZE } from '@/modules/chat/utils/sessionMessagePagination';
@@ -198,7 +199,24 @@ export function useChatSessionState({
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const [totalMessages, setTotalMessages] = useState(0);
   const [isUserScrolledUp, setIsUserScrolledUp] = useState(false);
-  const [tokenBudget, setTokenBudget] = useState<Record<string, unknown> | null>(null);
+  const [rawTokenBudget, setRawTokenBudget] = useState<Record<string, unknown> | null>(null);
+  // Embedded remote panes have independent closures; explicit scope also guards
+  // asynchronous requests if a pane is ever reused for another machine.
+  const usageScopeRef = useRef(window.__REMOTE_ID__ || window.location.origin);
+  const usageSessionRef = useRef(selectedSession?.id || currentSessionId);
+  usageSessionRef.current = selectedSession?.id || currentSessionId;
+  const usageSnapshotsRef = useRef(new Map<string, Record<string, unknown>>());
+  const setTokenBudget = useCallback((incoming: Record<string, unknown> | null) => {
+    if (usageScopeRef.current !== (window.__REMOTE_ID__ || window.location.origin)) return;
+    const id = usageSessionRef.current;
+    if (!incoming) { setRawTokenBudget(null); return; }
+    if (!id) return;
+    const accepted = acceptClaudeUsageSnapshot(usageSnapshotsRef.current.get(id), incoming, id, usageScopeRef.current) as Record<string, unknown> | undefined;
+    if (!accepted) return;
+    usageSnapshotsRef.current.set(id, accepted);
+    setRawTokenBudget(accepted);
+  }, []);
+  const tokenBudget = isClaudeUsageSnapshot(rawTokenBudget) && rawTokenBudget.sessionId !== usageSessionRef.current ? null : rawTokenBudget;
   const [visibleMessageCount, setVisibleMessageCount] = useState(INITIAL_VISIBLE_MESSAGES);
   const [allMessagesLoaded, setAllMessagesLoaded] = useState(false);
   const [isLoadingAllMessages, setIsLoadingAllMessages] = useState(false);
@@ -1015,28 +1033,26 @@ export function useChatSessionState({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatMessages.length, isActive, isLoadingSessionMessages, searchTarget]);
 
-  // Initial token usage fetch for providers with file-backed usage data.
+  // REST uses the same revision reducer as history and live frames. Capture
+  // identity before awaiting; a late request must never update another tab.
   useEffect(() => {
-    if (!selectedSession?.id) {
-      setTokenBudget(null);
-      return;
-    }
-    const fetchInitialTokenUsage = async () => {
+    const sessionId = selectedSession?.id;
+    const scope = window.__REMOTE_ID__ || window.location.origin;
+    let cancelled = false;
+    if (!sessionId) { setTokenBudget(null); return; }
+    const cached = usageSnapshotsRef.current.get(sessionId);
+    setRawTokenBudget(cached ?? null);
+    void (async () => {
       try {
-        // The provider module resolves storage and provider details from the session id.
-        const response = await api.providers.sessionTokenUsage(selectedSession.id);
-        if (response.ok) {
-          const payload = await response.json();
-          setTokenBudget(payload.data ?? null);
-        } else {
-          setTokenBudget(null);
-        }
-      } catch (error) {
-        console.error('Failed to fetch initial token usage:', error);
-      }
-    };
-    fetchInitialTokenUsage();
-  }, [selectedSession?.id]);
+        const response = await api.providers.sessionTokenUsage(sessionId);
+        if (!response.ok) return;
+        const payload = await response.json();
+        if (cancelled || usageSessionRef.current !== sessionId || scope !== (window.__REMOTE_ID__ || window.location.origin)) return;
+        setTokenBudget(payload.data ?? null);
+      } catch (error) { console.error('Failed to fetch initial token usage:', error); }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedSession?.id, setTokenBudget]);
 
   const visibleMessages = useMemo(() => {
     if (chatMessages.length <= visibleMessageCount) return chatMessages;
@@ -1190,6 +1206,7 @@ export function useChatSessionState({
     revealMessage,
     finishMessageReveal,
     loadEarlierMessages,
+    loadOlderMessages,
     loadAllMessages,
     loadFullTranscript,
     allMessagesLoaded,

@@ -533,7 +533,7 @@ export type ModelCommandData = {
 
 /** Result payload of the chat `/cost` slash command, carrying the session's token usage totals and input/output breakdown for the command modal's usage view. */
 export type CostCommandData = {
-  tokenUsage?: {
+  tokenUsage?: ClaudeUsageSnapshot | {
     used?: number;
     total?: number;
   };
@@ -1692,6 +1692,8 @@ export type HubRemoteState = {
   total: number;
   running: string[];
   error?: string;
+  /** Unread completion, failure, or permission notices for this remote only. */
+  attention: string[];
 };
 
 //----------------- CLAUDE SESSION ACTIONS ------------
@@ -1761,3 +1763,71 @@ export type DiagramSize = { width: number; height: number };
 export type DiagramPoint = { x: number; y: number };
 /** Diagram translation and scale in the zoom viewer. */
 export type DiagramTransform = DiagramPoint & { scale: number };
+
+//----------------- CLAUDE USAGE ACCOUNTING ------------
+/** Non-overlapping billed token buckets. Thinking is an optional subset of output and must never be added to the total. */
+export type ClaudeUsageBuckets = {
+  inputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; outputTokens: number; thinkingTokens?: number;
+};
+/** SDK-reported model consumption. Missing or unknown pricing stays null; costs are estimates, never invoices. */
+export type ClaudeUsageModelCounters = ClaudeUsageBuckets & {
+  estimatedCostUsd: number | null; costBasis: 'list' | 'managed' | 'unknown'; contextWindow?: number; canonicalModel?: string;
+};
+/** Latest main sampling window, distinct from cumulative billed work. Capacity is SDK-observed, not inferred from an alias. */
+export type ClaudeUsageContext = {
+  usedTokens: number | null; model: string | null; capacityTokens: number | null; compactionWindowTokens: number | null;
+  measurement: 'last-request' | 'sdk-local-estimate' | 'post-compact' | 'unavailable'; observedAt: string;
+};
+/** Consumption of a turn. The public snapshot aggregates the whole user-started execution, including Workflow follow-ups; the internal reducer also uses this shape for result deltas. Request-only coverage is explicitly partial. */
+export type ClaudeUsageTurn = {
+  id: string; status: 'running' | 'complete' | 'error' | 'interrupted'; models: Record<string, ClaudeUsageModelCounters>;
+  estimatedCostUsd: number | null; coverage: 'sdk-query-pipeline' | 'observed-requests';
+};
+/** Shared REST/history/live snapshot. Revision is durable and monotonic per stable app session on one remote. */
+export type ClaudeUsageSnapshot = {
+  schemaVersion: 2; provider: 'claude'; sessionId: string; nativeContextId: string | null; revision: number; updatedAt: string;
+  context: ClaudeUsageContext; turn: (ClaudeUsageTurn & { executionId: string }) | null;
+  session: { models: Record<string, ClaudeUsageModelCounters>; tokens: ClaudeUsageBuckets; estimatedCostUsd: number | null;
+    knownEstimatedCostUsd: number; provisional: boolean; historicalCoverage: 'observed-requests' | 'new-session' | 'inherited-context';
+    warnings: string[]; };
+};
+
+// ---------------------------
+
+//----------------- RIGHT WORKSPACE PANELS ------------
+
+/** A retained workspace view shown beside the primary conversation. */
+export type WorkspacePanelTab = Exclude<AppTab, 'chat'> | 'agents' | 'sideChat';
+
+/** The normalized agents in the viewed conversation and callbacks back to that conversation. */
+export type WorkspaceAgentsSnapshot = {
+  sessionId: string | null;
+  project: Project | null;
+  messages: ChatMessage[];
+  hasEarlierMessages: boolean;
+  isLoadingEarlierMessages: boolean;
+  loadEarlierMessages: () => void;
+  historyError?: string | null;
+  revealOrigin: (messageKey: string) => void;
+  onFileOpen?: (filePath: string, diffInfo?: unknown) => void;
+};
+
+/** An explicit request to inspect an agent or one recorded tool in its timeline. */
+export type WorkspaceAgentReveal = { messageKey: string; toolId?: string; requestId: number };
+
+//----------------- CLAUDE EXECUTION SETTINGS ------------
+/** Next-launch choices shared by remote Chat and the bound Claude terminal; revision prevents stale updates. */
+export type ClaudeSessionSettings = { model: string; effort: string; ultracode: boolean; revision: string };
+/** Explicit server binding for a terminal; never reconstructed from the currently selected sidebar conversation. */
+export type ShellExecutionBinding = { executionId: string; appSessionId: string; providerSessionId: string | null; projectPath: string; surface: 'shell' };
+/** Requested versus reported settings from one execution, independent of next-launch choices. */
+export type ClaudeSessionExecutionSnapshot = {
+  sessionId: string; providerSessionId: string | null; projectPath: string; next: ClaudeSessionSettings;
+  execution: null | { executionId: string; appSessionId: string; providerSessionId: string | null; surface: 'chat'|'shell'; isLive?: boolean; requested: ClaudeSessionSettings; status: string; startedAt: string; endedAt: string | null; observed: { model?: string; effort?: string | null; ultracode?: boolean; source?: string; observedAt?: string } };
+};
+// ---------------------------
+
+//----------------- RETAINED TERMINAL CONTROLS ------------
+
+/** Registers an explicit PTY termination action with the owning retained workspace terminal. */
+export type ShellTerminationRegistrar = (terminate: (() => Promise<boolean>) | null) => void;

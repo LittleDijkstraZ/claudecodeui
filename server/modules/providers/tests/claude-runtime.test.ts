@@ -30,7 +30,7 @@ test('explicit ordinary/default effort disables saved ultracode only for this in
     assert.deepEqual(options.settings, { ultracode: false });
     assert.equal(options.effort, effort === 'default' ? undefined : effort);
   }
-  for (const effort of [undefined, 'invalid']) {
+  for (const effort of [undefined]) {
     const options = mapCliOptionsToSDK({ model: 'fixture', effort, effortModels: models });
     assert.equal(options.settings, undefined);
     assert.equal(options.effort, undefined);
@@ -38,12 +38,10 @@ test('explicit ordinary/default effort disables saved ultracode only for this in
 });
 
 test('ultracode is not passed through for a model without that supported choice', () => {
-  const options = mapCliOptionsToSDK({
+  assert.throws(() => mapCliOptionsToSDK({
     model: 'limited', effort: 'ultracode',
     effortModels: { DEFAULT: 'limited', OPTIONS: [{ value: 'limited', label: 'Limited', effort: { values: [{ value: 'high' }] } }] },
-  });
-  assert.equal(options.effort, undefined);
-  assert.equal(options.settings, undefined);
+  }), /not reported support/);
 });
 
 const nativeSession = 'fixture-native-session';

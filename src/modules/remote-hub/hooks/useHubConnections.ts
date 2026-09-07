@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+
 import { hubApi, remoteToken } from '@/shared/api';
 import type { HubRemote, HubRemoteState } from '@/shared/types';
-
 import { normalizeConversation } from '@/modules/remote-hub/utils/hubClient';
 const initial = (): HubRemoteState => ({
   status: 'loading',
   projects: [],
   conversations: [],
   total: 0,
-  running: []
+  running: [],
+  attention: []
 });
 export function useHubConnections(remotes: HubRemote[], onNotification: (remoteId: string, sessionId: string, label: string) => void) {
   // Each remote retains independent data and failure state so one outage cannot blank the others.
@@ -16,12 +17,14 @@ export function useHubConnections(remotes: HubRemote[], onNotification: (remoteI
   const busy = useRef(new Map<string, number>());
   const latestStates = useRef(states);
   latestStates.current = states;
+  const activityRevision = useRef(new Map<string, number>());
   const notificationKeys = useRef(new Set<string>());
   const generation = useRef(0);
   const notifyRef = useRef(onNotification);
   notifyRef.current = onNotification;
   const refresh = useCallback(async (remoteId: string) => {
     const version = generation.current;
+    const snapshotRevision = activityRevision.current.get(remoteId) ?? 0;
     if (busy.current.get(remoteId) === version) return;
     busy.current.set(remoteId, version);
     try {
@@ -44,9 +47,8 @@ export function useHubConnections(remotes: HubRemote[], onNotification: (remoteI
           projects,
           conversations: (recent.conversations ?? []).map((row: Record<string, unknown>) => normalizeConversation(remoteId, row)),
           total: recent.total ?? 0,
-          running: (running.sessions ?? []).map((s: {
-            sessionId: string;
-          }) => s.sessionId)
+          running: (activityRevision.current.get(remoteId) ?? 0) !== snapshotRevision ? current[remoteId]?.running ?? [] : (running.sessions ?? []).map((s: { sessionId: string }) => s.sessionId),
+          attention: current[remoteId]?.attention ?? []
         }
       }));
     } catch (error) {
@@ -98,6 +100,19 @@ export function useHubConnections(remotes: HubRemote[], onNotification: (remoteI
         socket.onmessage = event => {
           try {
             const message = JSON.parse(event.data);
+            if (message.kind === 'session_activity' && typeof message.sessionId === 'string' && ['running', 'complete', 'error', 'permission'].includes(message.status)) {
+              activityRevision.current.set(remote.id, (activityRevision.current.get(remote.id) ?? 0) + 1);
+              setStates(current => {
+                const previous = current[remote.id] ?? initial();
+                const running = new Set(previous.running);
+                const attention = new Set(previous.attention);
+                if (message.status === 'running' || message.status === 'permission') running.add(message.sessionId);
+                else running.delete(message.sessionId);
+                if (message.status === 'running') attention.delete(message.sessionId);
+                else attention.add(message.sessionId);
+                return { ...current, [remote.id]: { ...previous, running: [...running], attention: [...attention] } };
+              });
+            }
             if (['session_upserted', 'session_activity', 'session_context_reset', 'session_deleted', 'projects_updated'].includes(message.kind)) void refresh(remote.id);
             if (message.kind === 'session_activity' && typeof message.sessionId === 'string' && typeof message.eventId === 'string' && ['complete', 'error', 'permission'].includes(message.status)) {
               const key = `${remote.id}:${message.eventId}`;
