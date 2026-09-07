@@ -1,4 +1,4 @@
-import { Database } from 'better-sqlite3';
+import type { Database } from 'better-sqlite3';
 
 import {
   APP_CONFIG_TABLE_SCHEMA_SQL,
@@ -63,11 +63,15 @@ const migrateLegacySessionNames = (db: Database): void => {
 
   if (hasSessionsTable) {
     console.log('Running migration: Merging session_names into sessions');
+    // Fresh schemas already have the mapping column. Import provider-keyed
+    // legacy names explicitly without backfilling unrelated pending app rows.
+    const hasProviderMapping = getTableInfo(db, 'sessions').some((column) => column.name === 'provider_session_id');
     db.exec(`
-      INSERT INTO sessions (session_id, provider, custom_name, created_at, updated_at)
+      INSERT INTO sessions (session_id, provider, ${hasProviderMapping ? 'provider_session_id,' : ''} custom_name, created_at, updated_at)
       SELECT
         session_id,
         COALESCE(provider, 'claude'),
+        ${hasProviderMapping ? 'session_id,' : ''}
         custom_name,
         COALESCE(created_at, CURRENT_TIMESTAMP),
         COALESCE(updated_at, CURRENT_TIMESTAMP)
@@ -395,17 +399,25 @@ const rebuildSessionsTableWithProjectSchema = (db: Database): void => {
  * Rows that existed before this migration were always keyed directly by the
  * provider-native session id, so backfilling `provider_session_id` with
  * `session_id` keeps every legacy row resolvable through the new mapping.
+ * Once the column exists, NULL means a pending app session and must survive
+ * subsequent startup migrations until the provider announces a native id.
  */
 const addProviderSessionIdMapping = (db: Database): void => {
   const sessionsTableInfo = getTableInfo(db, 'sessions');
   const columnNames = sessionsTableInfo.map((column) => column.name);
 
-  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'provider_session_id', 'TEXT');
-  db.exec(`
-    UPDATE sessions
-    SET provider_session_id = session_id
-    WHERE provider_session_id IS NULL
-  `);
+  if (columnNames.includes('provider_session_id')) return;
+
+  // Keep column creation and the one-time backfill atomic: an interrupted
+  // migration must not leave an existing column with unmapped legacy rows.
+  db.transaction(() => {
+    addColumnToTableIfNotExists(db, 'sessions', columnNames, 'provider_session_id', 'TEXT');
+    db.exec(`
+      UPDATE sessions
+      SET provider_session_id = session_id
+      WHERE provider_session_id IS NULL
+    `);
+  })();
 };
 
 /**
