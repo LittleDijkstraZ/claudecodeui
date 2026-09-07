@@ -15,7 +15,11 @@ import type { ConversationFileChange } from '../types/conversationChanges';
 import type { MessageRevealTarget } from '../types/messageReveal';
 import { deriveConversationChanges } from '../utils/conversationChanges';
 import { revealConversationChange } from '../utils/revealConversationChange';
+import { ClaudeSessionActionsProvider } from '../session-actions/ClaudeSessionActionsProvider';
+import type { RewindResult } from '../session-actions/claudeSessionActionsApi';
+import { SESSION_MESSAGES_PAGE_SIZE } from '../../../stores/sessionMessagePagination';
 
+import ModelIdentitySummary from './subcomponents/ModelIdentitySummary';
 import ChatMessagesPane from './subcomponents/ChatMessagesPane';
 import ChatComposer from './subcomponents/ChatComposer';
 import CommandResultModal from './subcomponents/CommandResultModal';
@@ -78,6 +82,7 @@ function ChatInterface({
     cyclePermissionMode,
     providerModelCatalog,
     providerModelsLoading,
+    refreshProviderModels,
     providerModelActions,
     selectProviderModel,
     selectProviderEffort,
@@ -135,6 +140,37 @@ function ChatInterface({
   });
 
   const viewedSessionId = selectedSession?.id ?? currentSessionId ?? null;
+  const appliedContextRevisions = useRef(new Map<string, Promise<void>>());
+  const [contextRevision, setContextRevision] = useState(0);
+  const [contextRefreshError, setContextRefreshError] = useState<string | null>(null);
+  const reloadRewoundSession = useCallback((result: Pick<RewindResult, 'sessionId' | 'contextChanged' | 'contextRevision'>): Promise<void> => {
+    if (!result.contextChanged) return Promise.resolve();
+    const key = `${result.sessionId}:${result.contextRevision}`;
+    const pending = appliedContextRevisions.current.get(key);
+    if (pending) return pending;
+    const reload = (async () => {
+      lastSeqRef.current.delete(result.sessionId);
+      await sessionStore.resetHistory(result.sessionId);
+      if (result.sessionId !== viewedSessionId) return;
+      setContextRefreshError(null);
+      const slot = await sessionStore.fetchFromServer(result.sessionId, { limit: SESSION_MESSAGES_PAGE_SIZE });
+      if (!slot || slot.status === 'error') throw new Error(t('sessionActions.refreshFailed'));
+      await requestLatestMessages(result.sessionId, true);
+      setContextRevision(value => value + 1);
+      scrollToBottomAndReset();
+    })();
+    appliedContextRevisions.current.set(key, reload);
+    if (appliedContextRevisions.current.size > 50) appliedContextRevisions.current.delete(appliedContextRevisions.current.keys().next().value!);
+    void reload.catch(() => appliedContextRevisions.current.delete(key));
+    return reload;
+  }, [sessionStore, viewedSessionId, requestLatestMessages, scrollToBottomAndReset, t]);
+
+  useEffect(() => subscribe(event => {
+    if (event.kind !== 'session_context_reset' || !event.sessionId || typeof event.contextRevision !== 'string') return;
+    void reloadRewoundSession({ sessionId: event.sessionId, contextChanged: true, contextRevision: event.contextRevision })
+      .catch(reason => setContextRefreshError(reason instanceof Error ? reason.message : String(reason)));
+  }), [subscribe, reloadRewoundSession]);
+
   const changeTurns = useMemo(() => deriveConversationChanges(chatMessages), [chatMessages]);
   const [changeReveal, setChangeReveal] = useState<(MessageRevealTarget & { sessionId: string | null }) | null>(null);
   const [changeJumpError, setChangeJumpError] = useState<string | null>(null);
@@ -366,6 +402,13 @@ function ChatInterface({
 
   return (
     <PermissionContext.Provider value={permissionContextValue}>
+      <ClaudeSessionActionsProvider
+        sessionId={viewedSessionId}
+        provider={provider}
+        isProcessing={isProcessing}
+        revision={`${isProcessing}-${chatMessages.length}-${contextRevision}`}
+        onRewound={reloadRewoundSession}
+      >
       <div className="flex h-full min-h-0 flex-col">
         <ChatMessagesPane
           revealTarget={activeReveal}
@@ -432,6 +475,7 @@ function ChatInterface({
             </div>
           )}
 
+          {contextRefreshError && <p role="alert" className="px-4 pb-2 text-xs text-destructive">{contextRefreshError}</p>}
           <ConversationChangesBar
             key={viewedSessionId ?? `draft-${newSessionTrigger ?? 0}`}
             turns={changeTurns}
@@ -447,6 +491,12 @@ function ChatInterface({
             </p>
           )}
 
+          <ModelIdentitySummary
+            provider={provider}
+            sessionId={viewedSessionId}
+            selectedModel={currentProviderModel}
+            revision={`${isProcessing}-${chatMessages.length}`}
+          />
           <ChatComposer
           pendingPermissionRequests={pendingPermissionRequests}
           handlePermissionDecision={handlePermissionDecision}
@@ -465,6 +515,7 @@ function ChatInterface({
           availableModelOptions={currentProviderModelOptions}
           onSelectModel={handleSelectComposerModel}
           modelsLoading={providerModelsLoading}
+          onRefreshModels={() => { void refreshProviderModels(); }}
           tokenBudget={tokenBudget}
           onShowTokenUsage={showCostModal}
           slashCommandsCount={slashCommandsCount}
@@ -527,6 +578,7 @@ function ChatInterface({
         currentSessionId={currentSessionId || selectedSession?.id || null}
         onSelectProviderModel={selectProviderModel}
       />
+      </ClaudeSessionActionsProvider>
     </PermissionContext.Provider>
   );
 }

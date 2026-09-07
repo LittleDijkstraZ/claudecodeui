@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
@@ -28,6 +29,8 @@ type ChatRunStatus = 'running' | 'completed';
  */
 type ChatRun = {
   appSessionId: string;
+  runId: string;
+  activityErrorSent: boolean;
   provider: LLMProvider;
   providerSessionId: string | null;
   status: ChatRunStatus;
@@ -61,6 +64,27 @@ const MAX_BUFFERED_EVENTS_PER_RUN = 5000;
  * path all consult it instead of asking each provider runtime individually.
  */
 const runs = new Map<string, ChatRun>();
+const sessionMutations = new Set<string>();
+const projectMutations = new Set<string>();
+const activityObservers = new WeakMap<RealtimeClientConnection, string | number | null>();
+
+function broadcastSessionActivity(run: ChatRun, status: 'running' | 'complete' | 'error' | 'permission'): void {
+  // Never let a superseded run update the activity of a newer run under the same app id.
+  if (runs.get(run.appSessionId) !== run) return;
+  const owner = run.writer.userId;
+  if (owner === null) return;
+  const payload = JSON.stringify({
+    kind: 'session_activity', sessionId: run.appSessionId, provider: run.provider,
+    status, runId: run.runId, seq: run.lastSeq, eventId: `${run.runId}:${status}:${run.lastSeq}`,
+  });
+  for (const client of connectedClients) {
+    const observer = activityObservers.get(client);
+    // The active writer already receives its full stream. Observers receive
+    // metadata only and must never attach to or replace that writer's socket.
+    if (client === run.writer.ws || client.readyState !== WS_OPEN_STATE || observer === undefined || observer === null || String(observer) !== String(owner)) continue;
+    try { client.send(payload); } catch { /* A closed observer cannot fail the user's active run. */ }
+  }
+}
 
 async function broadcastCanonicalSessionUpsert(appSessionId: string): Promise<void> {
   const row = sessionsDb.getSessionById(appSessionId);
@@ -157,6 +181,15 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
     run.events.splice(0, run.events.length - MAX_BUFFERED_EVENTS_PER_RUN);
   }
 
+  if (message.kind === 'permission_request') {
+    broadcastSessionActivity(run, 'permission');
+  } else if (message.kind === 'error') {
+    broadcastSessionActivity(run, 'error');
+    run.activityErrorSent = true;
+  } else if (message.kind === 'complete' && !run.activityErrorSent) {
+    broadcastSessionActivity(run, typeof message.exitCode === 'number' && message.exitCode !== 0 ? 'error' : 'complete');
+  }
+
   return outbound;
 }
 
@@ -205,6 +238,11 @@ function recordProviderSessionId(run: ChatRun, providerSessionId: string): void 
  * regardless of which provider runtime produced them.
  */
 export const chatRunRegistry = {
+  /** The authenticated websocket handler registers metadata observers without subscribing to any chat stream. */
+  registerActivityObserver(connection: RealtimeClientConnection, userId: string | number | null): void {
+    activityObservers.set(connection, userId);
+  },
+
   /**
    * Starts tracking a run and returns it, or `null` when a run is already in
    * progress for the session (callers must reject the duplicate send).
@@ -217,12 +255,14 @@ export const chatRunRegistry = {
     userId: string | number | null;
   }): ChatRun | null {
     const existing = runs.get(input.appSessionId);
-    if (existing && existing.status === 'running') {
+    if (sessionMutations.has(input.appSessionId) || projectMutations.has(sessionsDb.getSessionById(input.appSessionId)?.project_path ?? '') || (existing && existing.status === 'running')) {
       return null;
     }
 
     const run: ChatRun = {
       appSessionId: input.appSessionId,
+      runId: randomUUID(),
+      activityErrorSent: false,
       provider: input.provider,
       providerSessionId: input.providerSessionId,
       status: 'running',
@@ -245,7 +285,39 @@ export const chatRunRegistry = {
     });
 
     runs.set(input.appSessionId, run);
+    broadcastSessionActivity(run, 'running');
     return run;
+  },
+
+  /** Used by Claude session actions to make idle checks and send exclusion atomic. */
+  reserveSessionMutation(appSessionId: string): (() => void) | null {
+    if (sessionMutations.has(appSessionId) || runs.get(appSessionId)?.status === 'running') return null;
+    sessionMutations.add(appSessionId);
+    return () => { sessionMutations.delete(appSessionId); };
+  },
+
+  /** Used by file rewind to exclude concurrent edits from any CloudCLI conversation in the project. */
+  reserveProjectMutation(projectPath: string): (() => void) | null {
+    if (projectMutations.has(projectPath) || Array.from(runs.values()).some(run =>
+      run.status === 'running' && sessionsDb.getSessionById(run.appSessionId)?.project_path === projectPath)) return null;
+    projectMutations.add(projectPath);
+    return () => { projectMutations.delete(projectPath); };
+  },
+
+  /** Used after a rewind so reconnect never replays the discarded conversation tail. */
+  forgetCompletedRun(appSessionId: string): void {
+    if (runs.get(appSessionId)?.status !== 'running') runs.delete(appSessionId);
+  },
+
+  /** Used by rewind to replace stale history in every window after the database mapping commits. */
+  notifyContextReset(appSessionId: string, contextRevision: string): void {
+    const payload = JSON.stringify({ kind: 'session_context_reset', sessionId: appSessionId, contextRevision, timestamp: new Date().toISOString() });
+    for (const client of connectedClients) {
+      if (client.readyState === WS_OPEN_STATE) {
+        try { client.send(payload); } catch { /* A disconnected window refreshes authoritative history on reconnect. */ }
+      }
+    }
+    void broadcastCanonicalSessionUpsert(appSessionId).catch(() => {});
   },
 
   getRun(appSessionId: string): ChatRun | undefined {
@@ -339,5 +411,7 @@ export const chatRunRegistry = {
    */
   clearAll(): void {
     runs.clear();
+    sessionMutations.clear();
+    projectMutations.clear();
   },
 };

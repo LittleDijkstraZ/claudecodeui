@@ -65,11 +65,170 @@ arrival, an in-flight history request completing after a newer jump, and mobile
 Chinese layout. The progress tab remains in normal layout flow so it cannot
 overlap the changes bar.
 
+## Claude side chats and rewind
+
+Side chats use the Agent SDK's disk-only `forkSession` operation. A branch can
+copy the whole saved main conversation or stop at one selected saved message.
+It receives an independent provider session ID and can continue for multiple
+turns. A branch at an explicit saved message can be opened while the parent
+is still running; a whole-history branch without a fixed boundary requires the
+parent to be idle. Its remote machine and project directory stay the same as its parent;
+conversation branching does not isolate project files. Branch ancestry is
+stored in `claude_session_branches`, outside the Claude transcript.
+
+Rewind offers conversation-only, files-only, and combined modes. The boundary
+is explicit: the selected user message is retained and later context is
+removed. Conversation rewind creates an SDK fork through that message and
+atomically remaps the existing stable app session to the shortened provider
+transcript. Subsequent sends therefore use the shortened Claude context. The
+previous complete conversation remains available as an archived recovery entry;
+rewind does not hand-edit the provider's transcript or only hide UI messages.
+Completed replay buffers are discarded and all connected windows receive a
+context-reset revision so stale cached replies cannot reappear on reconnect.
+
+Files-only rewind preserves conversation context. Native `rewindFiles` dry-run
+results supply the affected-file preview; confirmation uses a short-lived token
+bound to the signed-in user, message, mode, provider mapping, transcript, and
+current file metadata. A changed source requires a new preview. A file restore
+also excludes simultaneous CloudCLI runs in the same project, while unrelated
+projects and machines remain usable. An active or background Claude session
+must finish or stop before a rewind. External processes editing the same files
+are outside this coordination mechanism.
+
+Normal Claude runs enable native file checkpointing and replay user-message
+UUIDs. Only changes captured by Claude's Write, Edit, and NotebookEdit tools
+are in scope. Bash commands, experiment scripts, database operations, and most
+subagent edits are not covered. Old conversations may have no usable native
+checkpoint. SDK forks do not copy previous file-history snapshots: a side chat
+or conversation rewind starts collecting its own checkpoints on future edits,
+while a rewind recovery entry retains the old conversation's checkpoints.
+Require Claude Code 2.1.216 or later for the native symlink/hard-link protections.
+A real restore can still fail or skip files even when its dry-run succeeds;
+the UI must report the returned failure instead of claiming full success.
+
+Combined restore prepares the new transcript before restoring files, then
+switches the app mapping only after successful file restoration. A failed file
+restore keeps the old conversation context. A failed context commit after a
+successful file restore reports that partial outcome. An unused prepared fork
+is cleaned up with the SDK; a fork already adopted, grouped, or continued by
+another caller is retained. Database migrations create the relationship table
+after the existing session/project repairs and preserve group memberships on
+the stable app session.
+
+Reference behavior is documented in [SDK sessions](https://code.claude.com/docs/en/agent-sdk/sessions),
+[the TypeScript SDK reference](https://code.claude.com/docs/en/agent-sdk/typescript),
+and [file checkpointing](https://code.claude.com/docs/en/agent-sdk/file-checkpointing).
+Tests use injected SDK operations and fictional temporary data; the actual SDK
+fork can also be checked against a temporary transcript without launching the
+machine's installed Claude or sending a model question.
+
+## Model version, context capacity, and reported model
+
+Keep three separate choices: model version/alias, context capacity, and
+reasoning effort. A `[1m]` suffix is a context-capacity variant, not a model
+version. Preserve the exact wire ID when sending a selected version and offer
+only capacity variants supplied by that remote's catalog. Never infer a new
+variant simply by appending `[1m]` to an arbitrary model ID. Ultracode remains
+the separate settings behavior described above.
+
+The default option follows the owning remote's Claude configuration by omitting
+the model override. Named aliases remain available alongside explicit model
+IDs from remote settings, the configured remote API's models endpoint, and
+metadata from an already requested SDK query. Catalog discovery does not start
+an extra Claude conversation or send a test prompt. Requests use that remote's
+configured endpoint and credential type; credentials, raw API errors, and
+endpoint URLs do not enter the browser catalog. A catalog is informational,
+not a guarantee that every listed model supports every account or request.
+
+Display the selected model independently from the model actually reported in
+the session. The latter comes from the latest non-synthetic main-thread
+assistant response in its mapped transcript, with initialization metadata as
+a clearly marked fallback. If neither is available, show unknown. Do not fill
+an unknown report from a selected alias, guessed release number, or another
+machine's session. Reported model, source, and timestamp help distinguish the
+last observed response from a newly selected model that has not replied yet.
+
+## Local Remote Hub
+
+The standalone hub presents multiple self-hosted remotes in one sidebar. It
+serves the built frontend and forwards HTTP/WebSocket traffic only to configured
+loopback SSH tunnel ports. Use the dedicated hub entry below, rather than the
+ordinary application server entry on the Mac. The hub imports no provider
+runtime, invokes no local Claude, and performs no project operations locally.
+Each conversation stays on its owning remote; project files, native transcripts,
+Claude credentials, model configuration, and execution remain there. No CloudCLI
+Cloud account or third-party relay is involved.
+
+Keep the existing SSH forwards running. For example, if each remote CloudCLI
+server listens on its own `127.0.0.1:3001`, the Mac can forward them separately:
+
+```sh
+ssh -N -L 127.0.0.1:3001:127.0.0.1:3001 remote-a
+ssh -N -L 127.0.0.1:3002:127.0.0.1:3001 remote-b
+```
+
+After building this checkout, save a local hub configuration with absolute paths:
+
+```json
+{
+  "port": 3000,
+  "dist": "/path/to/cloudcli/dist",
+  "stateDirectory": "/path/to/cloudcli-hub/state",
+  "remotes": [
+    { "id": "machine-a", "name": "Machine A", "port": 3001 },
+    { "id": "machine-b", "name": "Machine B", "port": 3002 }
+  ]
+}
+```
+
+Launch from the checkout, then open `http://127.0.0.1:3000`:
+
+```sh
+node dist-server/server/remote-hub.js /path/to/cloudcli-hub/hub.json
+```
+
+Sign in once to each machine within the hub using its existing remote CloudCLI
+account; a login previously saved at port 3001 or 3002 is a different browser
+origin. Tokens, drafts, and model choices are scoped by machine. Reauthentication
+may be needed when a token expires. The conversation header identifies the
+machine and folder. New conversation asks for machine, then an existing remote
+project folder, and remembers the last selection. A disconnected machine is
+marked offline while the other connections continue independently.
+
+Cross-machine groups are hub metadata in `stateDirectory/groups.json`, including
+member IDs, titles, and folder labels. Back up that file to retain grouping.
+Each remote user's existing groups are imported once; subsequent hub organization
+is independent of the remote-only SQLite groups. Saves use revision checks and
+atomic replacement; other open hub windows refresh shared group changes. A
+member is identified by both machine ID and session ID, so equal IDs on two
+machines do not collide. Removing a group retains every remote conversation.
+The group menu can open the entire group in a separate focused window.
+
+The hub observes remote session activity without taking over the conversation's
+stream. Its bell lists live completion, error, and permission-needed events while
+the hub is open, tagged with the owning machine. The list is an in-memory recent
+notification view, not a durable inbox or an OS notification service. Projects,
+recent conversations, and running-state metadata also refresh periodically and
+when the window regains focus.
+
+## Mermaid inspection
+
+Both chat diagrams and Markdown file previews reuse the existing strict Mermaid
+renderer. Click a rendered diagram to open its viewer. Use the zoom buttons or
+wheel, drag to pan, pinch on touchscreens, fit-to-window, and 100% reset. The
+fullscreen control requests browser fullscreen and also supports an expanded
+viewport when the browser cannot grant it. Keyboard controls include `+`/`-`
+for zoom, `0` for 100%, `F` to fit, and arrow keys to pan the focused diagram.
+Close with the close button or `Escape`; focus returns to the original diagram.
+The viewer inspects the existing SVG locally. Invalid or incomplete Mermaid
+continues to show the source block rather than a blank diagram.
+
 ## Checks
 
 Use the locked dependencies with `npm ci`. Relevant regression tests live under
 `server/modules/providers/tests/`, `server/modules/conversation-groups/tests/`,
 `server/modules/database/tests/`, `server/modules/websocket/tests/`,
+`server/modules/claude-session-actions/tests/`, `server/modules/remote-hub/tests/`,
 `src/components/sidebar/utils/groupConversationPager.test.ts`,
 `src/components/chat/utils/sessionStreamBuffer.test.ts`,
 `src/components/chat/utils/conversationChanges.test.ts`,
@@ -84,6 +243,10 @@ npm run typecheck
 npm run lint
 ```
 
+For local backend tests, point `CLAUDE_CONFIG_DIR` at an empty fixture directory
+and keep real Anthropic authentication variables out of the test environment.
+Model-catalog tests inject settings and HTTP responses. Hub integration tests use
+two temporary loopback HTTP/WebSocket fixtures, not live SSH connections.
 The regression tests use simulated SDK events and do not send paid model
 requests. A successful build or mocked test is not an end-to-end test of a live
 Ultracode workflow with a particular model/account.

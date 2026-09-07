@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import Sidebar from '../sidebar/view/Sidebar';
+import SideChatDock from '../remote-hub/SideChatDock';
 import ConversationGroupDialogs from '../sidebar/view/subcomponents/ConversationGroupDialogs';
 import MainContent from '../main-content/view/MainContent';
 import CommandPalette from '../command-palette/CommandPalette';
@@ -202,6 +203,16 @@ function AppContentInner() {
   // the `chat_subscribed` ack carries them on session open and on reconnect,
   // so no separate permission-recovery message is needed here.
 
+  useEffect(() => {
+    if (window.parent === window || !window.__CLOUDCLI_EMBEDDED__) return;
+    if (selectedSession && selectedProject) window.parent.postMessage({ kind: 'cloudcli:selection', sessionId: selectedSession.id, title: selectedSession.summary || selectedSession.title || '新对话', projectId: selectedProject.projectId, projectPath: selectedProject.fullPath, provider: selectedSession.__provider || selectedSession.provider || 'claude' }, location.origin);
+    const settings = (event: MessageEvent) => {
+      if (event.origin === location.origin && event.source === window.parent && event.data?.kind === 'cloudcli:settings') openSettings();
+    };
+    window.addEventListener('message', settings);
+    return () => window.removeEventListener('message', settings);
+  }, [selectedSession, selectedProject, openSettings]);
+
   // Adjust the app container to stay above the virtual keyboard on iOS Safari.
   // On Chrome for Android the layout viewport already shrinks when the keyboard opens,
   // so inset-0 adjusts automatically. On iOS the layout viewport stays full-height and
@@ -224,7 +235,7 @@ function AppContentInner() {
 
   return (
     <div className="fixed inset-0 flex bg-background" style={{ bottom: 'var(--keyboard-height, 0px)' }}>
-      {!isMobile ? (
+      {!window.__CLOUDCLI_EMBEDDED__ && (!isMobile ? (
         <div className="h-full flex-shrink-0 border-r border-border/50">
           <Sidebar {...sidebarSharedProps} />
         </div>
@@ -255,7 +266,7 @@ function AppContentInner() {
             <Sidebar {...sidebarSharedProps} />
           </div>
         </div>
-      )}
+      ))}
 
       <div className="flex min-w-0 flex-1 flex-col">
         <MainContent
@@ -285,6 +296,8 @@ function AppContentInner() {
           onProjectsRefresh={() => void refreshProjectsSilently()}
         />
       </div>
+
+      <SideChatDock />
 
       <CommandPalette
         selectedProject={selectedProject}

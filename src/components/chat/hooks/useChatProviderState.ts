@@ -199,13 +199,11 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     try {
       const results = await Promise.all(
         PROVIDERS.map(async (p) => {
-          const response = await authenticatedFetch(`/api/providers/${p}/models`);
-          const body = (await response.json()) as ProviderModelsApiResponse;
-          if (!body.success || !body.data?.models) {
-            return null;
-          }
-
-          return body.data.models;
+          try {
+            const response = await authenticatedFetch(`/api/providers/${p}/models`);
+            const body = (await response.json()) as ProviderModelsApiResponse;
+            return response.ok && body.success && body.data?.models ? body.data.models : null;
+          } catch { return null; }
         }),
       );
 
@@ -296,6 +294,8 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     def: ProviderModelsDefinition,
   ): string => {
     const stored = localStorage.getItem(storageKey);
+    // A transient remote catalog failure must not silently unpin an exact model.
+    if (storageKey === 'claude-model' && (stored || current)) return stored || current;
     if (stored && def.OPTIONS.some((o) => o.value === stored)) {
       return stored;
     }
@@ -876,6 +876,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     cyclePermissionMode,
     providerModelCatalog,
     providerModelsLoading,
+    refreshProviderModels: loadProviderModels,
     providerModelActions,
     selectProviderModel,
     selectProviderEffort,

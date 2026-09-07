@@ -895,6 +895,26 @@ export function useSessionStore() {
     }
   }, [notify]);
 
+  /** Invalidate an old conversation chain after a server-confirmed rewind. */
+  const resetHistory = useCallback(async (sessionId: string) => {
+    const slot = storeRef.current.get(sessionId);
+    if (!slot) return;
+    await enqueueHistoryMutation(slot, async () => {
+      // Keep the mutation queue itself: an older in-flight page must settle
+      // before this reset, and the authoritative replacement follows it.
+      slot.serverMessages = [];
+      slot.realtimeMessages = [];
+      slot.offset = 0;
+      slot.total = 0;
+      slot.hasMore = false;
+      slot.fetchedAt = 0;
+      slot.tokenUsage = null;
+      slot.status = 'idle';
+      recomputeMergedIfNeeded(slot);
+      notify(sessionId);
+    });
+  }, [notify]);
+
   /**
    * Get merged messages for a session (for rendering).
    */
@@ -923,13 +943,14 @@ export function useSessionStore() {
     updateStreaming,
     finalizeStreaming,
     clearRealtime,
+    resetHistory,
     getMessages,
     getSessionSlot,
   }), [
     getSlot, has, fetchFromServer, fetchMore,
     appendRealtime, appendRealtimeBatch, refreshLatestFromServer,
     setActiveSession, setStatus, isStale, updateStreaming, finalizeStreaming,
-    clearRealtime, getMessages, getSessionSlot,
+    clearRealtime, resetHistory, getMessages, getSessionSlot,
   ]);
 }
 

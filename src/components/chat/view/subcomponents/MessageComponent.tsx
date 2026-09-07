@@ -14,6 +14,7 @@ import type { MessageRevealTarget } from '../../types/messageReveal';
 import type { Project } from '../../../../types/app';
 import { ToolRenderer, ToolErrorDisplay, shouldHideToolResult } from '../../tools';
 import { Reasoning, ReasoningTrigger, ReasoningContent } from '../../../../shared/view/ui';
+import MessageSessionActions from '../../session-actions/MessageSessionActions';
 
 import ChatMessageImages from './ChatMessageImages';
 import ChatMessageFiles from './ChatMessageFiles';
@@ -125,12 +126,14 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                   {shouldShowUserCopyControl && (
                     <MessageCopyControl content={userCopyContent} messageType="user" />
                   )}
+                  <MessageSessionActions message={message} />
                   <span>{formattedTime}</span>
                 </div>
               </div>
             ) : (
               /* Attachment-only turn: no text bubble, but the timestamp still shows */
               <div className="flex items-center justify-end gap-1 text-xs text-muted-foreground">
+                <MessageSessionActions message={message} />
                 <span>{formattedTime}</span>
               </div>
             )}
@@ -403,6 +406,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                 {shouldShowAssistantCopyControl && (
                   <MessageSpeakControl content={assistantCopyContent} />
                 )}
+                <MessageSessionActions message={message} />
                 {!isGrouped && <span>{formattedTime}</span>}
               </div>
             )}

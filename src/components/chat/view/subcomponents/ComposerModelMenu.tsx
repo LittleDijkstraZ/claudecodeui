@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 
 import type { ProviderModelOption } from '../../../../types/app';
+import { modelVersionKey, uniqueModelVersions, selectModelVersion } from '../../utils/modelIdentity';
 import { DEFAULT_EFFORT_VALUE } from '../../constants/providerEffort';
 import { useComposerMenuAnchor } from '../../hooks/useComposerMenuAnchor';
 
@@ -26,6 +27,7 @@ interface ComposerModelMenuProps {
   modelOptions: ProviderModelOption[];
   onSelectModel: (model: string) => void;
   modelsLoading: boolean;
+  onRefreshModels?: () => void;
 }
 
 export default function ComposerModelMenu({
@@ -36,6 +38,7 @@ export default function ComposerModelMenu({
   modelOptions,
   onSelectModel,
   modelsLoading,
+  onRefreshModels,
 }: ComposerModelMenuProps) {
   const { t } = useTranslation('chat');
   const [isOpen, setIsOpen] = useState(false);
@@ -64,7 +67,14 @@ export default function ComposerModelMenu({
     () => modelOptions.find((option) => option.value === model) ?? null,
     [model, modelOptions],
   );
-  const modelLabel = selectedModelOption?.label || model;
+  const modelLabel = selectedModelOption?.value === 'default' && selectedModelOption.selectionKind === 'alias'
+    ? t('modelIdentity.followRemote', { defaultValue: 'Follow remote configuration' })
+    : selectedModelOption?.label || model;
+  const hasModelMetadata = modelOptions.some((option) => option.selectionKind);
+  const versionOptions = hasModelMetadata ? uniqueModelVersions(modelOptions) : modelOptions;
+  const contextOptions = selectedModelOption && hasModelMetadata
+    ? modelOptions.filter((option) => modelVersionKey(option) === modelVersionKey(selectedModelOption))
+    : [];
 
   const hasEffortSection = resolvedEffortOptions.length > 0;
   const hasModelSection = modelOptions.length > 0 || modelsLoading;
@@ -84,6 +94,7 @@ export default function ComposerModelMenu({
         type="button"
         onClick={() => {
           updateAnchor();
+          if (!isOpen) onRefreshModels?.();
           setIsOpen((current) => !current);
         }}
         className="flex h-8 max-w-20 shrink-0 items-center gap-1 rounded-lg border border-border/60 bg-muted/40 px-2 text-xs font-medium text-foreground transition-colors hover:bg-muted sm:max-w-56"
@@ -103,7 +114,7 @@ export default function ComposerModelMenu({
           {hasEffortSection && (
             <>
               <ComposerMenuHeading>
-                {t('composer.reasoning', { defaultValue: 'Reasoning' })}
+                {t('modelIdentity.reasoning', { defaultValue: 'Reasoning effort' })}
               </ComposerMenuHeading>
               {resolvedEffortOptions.map((option) => (
                 <ComposerMenuItem
@@ -123,6 +134,22 @@ export default function ComposerModelMenu({
             </>
           )}
 
+          {contextOptions.length > 0 && (
+            <>
+              {hasEffortSection && <ComposerMenuSeparator />}
+              <ComposerMenuHeading>{t('modelIdentity.context', { defaultValue: 'Context capacity' })}</ComposerMenuHeading>
+              {contextOptions.map((option) => (
+                <ComposerMenuItem
+                  key={option.value}
+                  label={option.contextMode === '1m' ? '1M tokens' : t('modelIdentity.remoteDefault', { defaultValue: 'Remote default' })}
+                  description={option.maxInputTokens ? t('modelIdentity.maximumInput', { defaultValue: 'Catalog maximum input: {{tokens}} tokens', tokens: option.maxInputTokens.toLocaleString() }) : undefined}
+                  isSelected={option.value === model}
+                  onSelect={() => { onSelectModel(option.value); setIsOpen(false); }}
+                />
+              ))}
+              <p className="px-2.5 py-1 text-xs text-muted-foreground">{t('modelIdentity.contextHint', { defaultValue: '1M is context capacity, not a model version.' })}</p>
+            </>
+          )}
           {hasModelSection && (
             <>
               {hasEffortSection && <ComposerMenuSeparator />}
@@ -142,20 +169,27 @@ export default function ComposerModelMenu({
               {isModelSectionOpen && (
                 <>
                   <ComposerMenuHeading>
-                    {t('composer.model', { defaultValue: 'Model' })}
+                    {t('modelIdentity.version', { defaultValue: 'Model version' })}
                   </ComposerMenuHeading>
                   {modelOptions.length === 0 && modelsLoading && (
                     <p className="px-2.5 py-1.5 text-sm text-muted-foreground">
                       {t('composer.loadingModels', { defaultValue: 'Loading models…' })}
                     </p>
                   )}
-                  {modelOptions.map((option) => (
+                  {versionOptions.map((option) => (
                     <ComposerMenuItem
                       key={option.value}
-                      label={option.label || option.value}
-                      isSelected={option.value === model}
+                      label={option.value === 'default' && option.selectionKind === 'alias' ? t('modelIdentity.followRemote', { defaultValue: 'Follow remote configuration' }) : option.label || option.value}
+                      description={hasModelMetadata ? [
+                        option.selectionKind === 'alias' ? t('modelIdentity.alias', { defaultValue: 'Alias · follows remote configuration' })
+                          : option.catalogSource === 'remote-config' ? t('modelIdentity.configured', { defaultValue: 'Remote configuration · availability unconfirmed' })
+                          : option.catalogSource === 'manual' ? t('modelIdentity.manual', { defaultValue: 'Manual ID · availability unconfirmed' })
+                          : t('modelIdentity.remoteCatalog', { defaultValue: 'Reported by this remote' }),
+                        option.resolvedModel ? `${t('modelIdentity.resolvesTo', { defaultValue: 'Resolves to' })}: ${option.resolvedModel}` : '',
+                      ].filter(Boolean).join(' · ') : option.description}
+                      isSelected={hasModelMetadata ? modelVersionKey(option) === model.replace(/\[1m\]$/i, '') : option.value === model}
                       onSelect={() => {
-                        onSelectModel(option.value);
+                        onSelectModel(hasModelMetadata ? selectModelVersion(modelOptions, option, selectedModelOption) : option.value);
                         setIsOpen(false);
                       }}
                     />

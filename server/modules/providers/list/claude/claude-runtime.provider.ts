@@ -40,6 +40,8 @@ import {
   notifyUserIfEnabled
 } from '@/modules/notifications/index.js';
 
+import { rememberClaudeSupportedModels } from './claude-model-catalog.js';
+
 type ActiveSession = {
   instance: Query;
   startTime: number;
@@ -220,6 +222,8 @@ export function mapCliOptionsToSDK(options: AnyRecord = {}): Options {
 
   const sdkOptions: Options = {};
   sdkOptions.includePartialMessages = true;
+  sdkOptions.enableFileCheckpointing = true;
+  sdkOptions.extraArgs = { 'replay-user-messages': null };
 
   // Forward all host env vars (e.g. ANTHROPIC_BASE_URL) to the subprocess.
   // Since SDK 0.2.113, options.env replaces process.env instead of overlaying it.
@@ -267,10 +271,12 @@ export function mapCliOptionsToSDK(options: AnyRecord = {}): Options {
 
   sdkOptions.disallowedTools = settings.disallowedTools || [];
 
-  sdkOptions.model = options.model || CLAUDE_PREDEFINED_MODELS.DEFAULT;
+  const requestedModel = options.model || CLAUDE_PREDEFINED_MODELS.DEFAULT;
+  // Omit the override so the remote CLI can resolve its own environment/settings.
+  if (requestedModel !== 'default') sdkOptions.model = requestedModel;
 
   const resolvedEffort = resolveClaudeEffort(
-    sdkOptions.model!,
+    requestedModel,
     effort,
     options.effortModels || CLAUDE_PREDEFINED_MODELS,
   );
@@ -780,6 +786,11 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
       });
     }
 
+    // Read metadata only from the query the user already requested.
+    if (typeof queryInstance.supportedModels === 'function') {
+      void queryInstance.supportedModels().then(rememberClaudeSupportedModels).catch(() => {});
+    }
+
     // Track the query instance for abort capability
     if (sessionKey()) {
       addSession(sessionKey()!, queryInstance, ws, releasePromptStream);
@@ -1065,3 +1076,8 @@ export function createClaudeRuntime(overrides: Partial<RuntimeDependencies> = {}
 
 /** Used by ClaudeProvider to expose SDK execution through the provider runtime contract. */
 export const claudeRuntime = createClaudeRuntime();
+
+/** Used by session actions to reject rewinds while Claude still owns a live or background query. */
+export function isClaudeSessionActive(sessionId: string): boolean {
+  return activeSessions.get(sessionId)?.status === 'active';
+}

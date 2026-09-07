@@ -39,5 +39,17 @@
     "loading": "正在加载预览...",
     "error": "无法显示此文件。",
     "openInNewTab": "在新标签页中打开"
+  },
+  "mermaid": {
+    "title": "Mermaid 图表",
+    "open": "放大 Mermaid 图表",
+    "close": "关闭图表查看器",
+    "zoomIn": "放大（+）",
+    "zoomOut": "缩小（−）",
+    "zoomLevel": "缩放比例",
+    "fit": "适应窗口（F）",
+    "reset": "恢复 100%（0）",
+    "canvas": "图表画布。拖动或使用方向键平移。",
+    "instructions": "滚轮或双指缩放 · 拖动平移 · F 适应窗口 · 0 恢复 100% · Esc 关闭"
   }
 }

@@ -1,5 +1,7 @@
 import { IS_PLATFORM } from "../shared/utils";
 
+import { isValidRefreshedToken } from './authTokenShape';
+
 export const AUTH_TOKEN_REFRESHED_EVENT = 'auth-token-refreshed';
 export const AUTH_SESSION_EXPIRED_EVENT = 'auth-session-expired';
 
@@ -10,9 +12,7 @@ export const AUTH_SESSION_EXPIRED_EVENT = 'auth-session-expired';
  * @param {unknown} token
  * @returns {token is string}
  */
-export const isValidRefreshedToken = (token) =>
-  typeof token === 'string' &&
-  /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token);
+export { isValidRefreshedToken } from './authTokenShape';
 
 const readTokenClaims = (token) => {
   if (!isValidRefreshedToken(token)) {

@@ -43,6 +43,7 @@ const toCustomProviderModelOption = (
   label: record.model,
   recordId: record.recordId,
   isCustom: true,
+  ...(record.provider === 'claude' ? { selectionKind: 'custom' as const, catalogSource: 'manual' as const } : {}),
 });
 
 const mergeProviderModels = (
@@ -75,9 +76,9 @@ const isUniqueConstraintError = (error: unknown): boolean => (
  * Creates the provider model application service used by Providers routes,
  * Commands, and provider runtimes.
  *
- * Curated adapter definitions stay source-controlled and are merged at read
- * time with custom SQLite rows. This deliberately has no predefined-model
- * persistence, memory cache, disk cache, TTL, or provider-native discovery.
+ * Adapter catalogs are merged at read time with custom SQLite rows. Individual
+ * adapters may report a native remote catalog; the Claude adapter discovers
+ * versions with read-only model metadata requests and existing SDK queries.
  * Tests inject a small custom-model store through the same boundary.
  */
 export const createProviderModelsService = (dependencies: ProviderModelsServiceDependencies = {}) => {
@@ -311,6 +312,14 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
 
     if (normalizedSessionId) {
       const recordedSelection = readRecordedSessionSelection(normalizedSessionId);
+      const observed = provider === 'claude'
+        ? await getCurrentActiveModel(provider, normalizedSessionId)
+        : null;
+      const report = observed?.reportedSource ? {
+        reportedModel: observed.reportedModel ?? null,
+        reportedSource: observed.reportedSource,
+        reportedAt: observed.reportedAt ?? null,
+      } : {};
       if (recordedSelection?.model) {
         return {
           provider,
@@ -318,11 +327,12 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
           model: recordedSelection.model,
           effort: recordedSelection.effort,
           source: 'session',
+          ...report,
         };
       }
 
       const providerCatalog = await getProviderModels(provider);
-      const providerModel = await getCurrentActiveModel(provider, normalizedSessionId);
+      const providerModel = observed ?? await getCurrentActiveModel(provider, normalizedSessionId);
       const resolvedProviderModel = providerModel.model?.trim();
       if (resolvedProviderModel && resolvedProviderModel !== providerCatalog.DEFAULT) {
         return {
@@ -331,6 +341,7 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
           model: resolvedProviderModel,
           effort: recordedSelection?.effort ?? null,
           source: 'provider',
+          ...report,
         };
       }
 
@@ -340,6 +351,7 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
         model: normalizedRequestedModel || providerCatalog.DEFAULT,
         effort: recordedSelection?.effort ?? null,
         source: normalizedRequestedModel ? 'session' : 'default',
+        ...report,
       };
     }
 

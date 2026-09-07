@@ -6,6 +6,16 @@ export type ProviderModelOption = {
   description?: string;
   recordId?: number;
   isCustom?: boolean;
+  /** Distinguishes mutable aliases from exact IDs; capacity is independent. */
+  selectionKind?: 'alias' | 'version' | 'custom';
+  /** Evidence source, never inferred from a friendly model label. */
+  catalogSource?: 'remote-api' | 'remote-sdk' | 'remote-config' | 'built-in' | 'manual';
+  /** Remote-reported alias resolution, not proof of an actual model response. */
+  resolvedModel?: string;
+  /** Requested context mode; absence never implies a guessed token limit. */
+  contextMode?: 'default' | '1m';
+  /** Maximum input tokens reported by the remote Models API, when available. */
+  maxInputTokens?: number;
   effort?: {
     default?: string;
     values: {

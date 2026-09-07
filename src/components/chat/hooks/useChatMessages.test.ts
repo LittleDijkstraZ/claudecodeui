@@ -92,3 +92,21 @@ test('an Agent parent result attaches by tool ID and formats its error without c
   assert.equal(messages[0].toolResult?.isError, true);
   assert.equal(messages[0].subagentState?.isComplete, true);
 });
+
+test('text history keeps saved provider message IDs for validated rewind and side-chat actions', () => {
+  const uuid = 'ce472bb2-e2d5-4410-ac49-69d1e0881ff5';
+  const messages = normalizedToChatMessages([
+    { id: `${uuid}_text_0`, sessionId: 'session-1', timestamp, provider: 'claude', kind: 'text', role: 'user', content: 'Saved user turn' },
+  ]);
+  assert.equal(messages[0].id, `${uuid}_text_0`);
+});
+
+test('one task notification expanded into two visible messages has unique saved-derived identities', () => {
+  const messages = normalizedToChatMessages([
+    { id: 'saved-notification', sessionId: 'session-1', timestamp, provider: 'claude', kind: 'text', role: 'user', content: '<task-notification><status>completed</status><summary>Done</summary><result>Result text</result></task-notification>' },
+  ]);
+  assert.equal(messages.length, 2);
+  assert.notEqual(messages[0].id, messages[1].id);
+  assert.ok(String(messages[0].id).startsWith('saved-notification'));
+  assert.ok(String(messages[1].id).startsWith('saved-notification'));
+});

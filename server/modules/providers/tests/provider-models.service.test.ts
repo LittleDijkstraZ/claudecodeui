@@ -351,3 +351,19 @@ test('resolveResumeModel never consults provider-global state', async () => {
   assert.equal(model, 'gpt-5.5');
   assert.equal(providerLookups, 0);
 });
+
+test('selected alias and actually reported model remain independent for recorded sessions', async () => {
+  const service = createProviderModelsService({
+    catalog: createCatalogStore(),
+    sessions: createSessionStore({ session: 'opus' }),
+    resolveProvider: () => ({ models: {
+      getSupportedModels: async () => createModels('default'),
+      getCurrentActiveModel: async () => ({ model: 'claude-exact-response', reportedModel: 'claude-exact-response', reportedSource: 'response', reportedAt: 'fixture-time' }),
+    } }),
+  });
+  const result = await service.resolveSessionModel('claude', { sessionId: 'session' });
+  assert.equal(result.model, 'opus');
+  assert.equal(result.source, 'session');
+  assert.equal(result.reportedModel, 'claude-exact-response');
+  assert.equal(result.reportedSource, 'response');
+});

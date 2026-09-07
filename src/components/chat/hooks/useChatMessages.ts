@@ -81,6 +81,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
 
   for (const msg of messages) {
     const sharedMetadata = {
+      id: msg.id,
       displayText: msg.displayText,
       commandName: msg.commandName,
       commandMessage: msg.commandMessage,
@@ -108,6 +109,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
               isTaskNotification: true,
               taskStatus: taskNotif.status,
               ...sharedMetadata,
+              id: `${msg.id}_notification`,
             });
             // Render the agent's result as a normal assistant message so its
             // markdown displays correctly instead of leaking raw XML.
@@ -117,6 +119,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
                 content: formatUsageLimitText(taskNotif.result),
                 timestamp: msg.timestamp,
                 ...sharedMetadata,
+                id: `${msg.id}_result`,
               });
             }
           } else {

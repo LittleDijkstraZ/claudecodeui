@@ -178,6 +178,8 @@ export function useChatRealtimeHandlers({
         }
 
         // Sidebar/global events — owned by useProjectsState.
+        case 'session_activity': // Metadata-only observer event; never a transcript message.
+        case 'session_context_reset': // History replacement is owned by ChatInterface.
         case 'session_upserted':
         case 'loading_progress':
           return;

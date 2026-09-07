@@ -227,3 +227,17 @@ test('runtime flushes partial text before surfacing an SDK error and sends one f
   assert.equal(h.events.filter(event => event.kind === 'complete').length, 1);
   assert.equal(h.events.at(-1)?.success, false);
 });
+
+test('default selection inherits remote configuration without overriding an exact selected model', () => {
+  assert.equal(mapCliOptionsToSDK({ model: 'default' }).model, undefined);
+  assert.equal(mapCliOptionsToSDK({}).model, undefined);
+  assert.equal(mapCliOptionsToSDK({ model: 'opus' }).model, 'opus');
+  assert.equal(mapCliOptionsToSDK({ model: 'claude-exact-fixture[1m]' }).model, 'claude-exact-fixture[1m]');
+});
+
+
+test('ordinary user runs enable native file checkpoints and replay their message UUIDs', () => {
+  const options = mapCliOptionsToSDK({ model: 'default' });
+  assert.equal(options.enableFileCheckpointing, true);
+  assert.deepEqual(options.extraArgs, { 'replay-user-messages': null });
+});
