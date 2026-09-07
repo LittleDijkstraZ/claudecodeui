@@ -133,7 +133,7 @@
     "projectsScanned_one": "{{count}} 个项目已扫描",
     "projectsScanned_other": "{{count}} 个项目已扫描",
     "modeGroups": "分组",
-    "groupsPlaceholder": "搜索分组内的会话…"
+    "groupsPlaceholder": "搜索已分组的会话…"
   },
   "deleteConfirmation": {
     "deleteProject": "移除项目",
@@ -160,7 +160,7 @@
     "retry": "重试",
     "loading": "正在加载分组…",
     "emptyTitle": "整理你的会话",
-    "emptyDescription": "创建分组后，可以通过会话旁的分组按钮，添加任意文件夹中的会话。",
+    "emptyDescription": "创建分组后，可以通过会话旁的“…”菜单，添加任意文件夹中的会话。",
     "choose": "选择分组",
     "manage": "管理分组",
     "manageNamed": "管理分组“{{name}}”",
@@ -174,12 +174,25 @@
     "conversationCount_one": "{{count}} 个会话",
     "conversationCount_other": "{{count}} 个会话",
     "archived": "已归档",
-    "moveConversation": "更改分组",
+    "moveConversation": "移到分组",
     "moveNamed": "更改“{{name}}”的分组",
     "conversationsFailed": "无法加载会话。",
     "loadMore": "加载更多会话",
     "browseViews": "会话浏览方式",
     "running": "运行中",
-    "archive": "归档"
+    "archive": "归档",
+    "pin": "置顶分组",
+    "unpin": "取消置顶",
+    "pinned": "已置顶",
+    "pinFailed": "未能保存置顶状态，请重试。",
+    "removeConversation": "移出分组",
+    "moveUp": "上移",
+    "moveDown": "下移",
+    "moveFailed": "未能保存排序，请重试。",
+    "removeFailed": "未能将会话移出分组，请重试。",
+    "conversationOptions": "会话选项",
+    "conversationOptionsNamed": "“{{name}}”的选项",
+    "reorderNamed": "调整“{{name}}”的顺序",
+    "dragToReorder": "拖动可排序，也可以在菜单中选择“上移”或“下移”。"
   }
 }

@@ -3,7 +3,7 @@ import type { Request } from 'express';
 
 import { conversationGroupsService } from '@/modules/conversation-groups/conversation-groups.service.js';
 import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/index.js';
-import type { ConversationGroupPageOptions, LLMProvider } from '@/shared/index.js';
+import type { ConversationGroupMemberMove, ConversationGroupPageOptions, ConversationGroupUpdate, LLMProvider } from '@/shared/index.js';
 
 function invalid(message: string): never {
   throw new AppError(message, { code: 'INVALID_GROUP_INPUT', statusCode: 400 });
@@ -38,6 +38,26 @@ function name(value: unknown): string {
     invalid('Group name must contain 1–80 characters without control characters.');
   }
   return value.trim();
+}
+
+function groupUpdate(request: Request): ConversationGroupUpdate {
+  const input = body(request);
+  const fields = Object.keys(input);
+  if (!fields.length || fields.some(field => field !== 'name' && field !== 'isPinned')) invalid('Provide name and/or isPinned only.');
+  const changes: ConversationGroupUpdate = {};
+  if ('name' in input) changes.name = name(input.name);
+  if ('isPinned' in input) {
+    if (typeof input.isPinned !== 'boolean') invalid('isPinned must be a boolean.');
+    changes.isPinned = input.isPinned;
+  }
+  return changes;
+}
+
+function memberMove(request: Request): ConversationGroupMemberMove {
+  const input = body(request);
+  if (Object.keys(input).some(field => field !== 'sessionId' && field !== 'targetSessionId' && field !== 'position')) invalid('Unexpected reorder field.');
+  if (input.position !== 'before' && input.position !== 'after') invalid('position must be before or after.');
+  return { sessionId: sessionId(input.sessionId), targetSessionId: sessionId(input.targetSessionId), position: input.position };
 }
 
 function page(request: Request): ConversationGroupPageOptions {
@@ -79,8 +99,12 @@ export function createConversationGroupsRouter(service = conversationGroupsServi
     const session = await service.createSession(userId(req), groupId(req.params.id), provider as LLMProvider, input.projectPath.trim());
     res.status(201).json(createApiSuccessResponse(session));
   }));
+  router.post('/:id/sessions/reorder', asyncHandler(async (req, res) => {
+    service.moveMember(userId(req), groupId(req.params.id), memberMove(req));
+    res.json(createApiSuccessResponse({}));
+  }));
   router.patch('/:id', asyncHandler(async (req, res) => {
-    const group = service.rename(userId(req), groupId(req.params.id), name(body(req).name));
+    const group = service.update(userId(req), groupId(req.params.id), groupUpdate(req));
     res.json(createApiSuccessResponse({ group }));
   }));
   router.delete('/:id', asyncHandler(async (req, res) => {

@@ -5,6 +5,7 @@ export type ConversationGroup = {
   id: string;
   name: string;
   sessionCount: number;
+  isPinned: boolean;
 };
 
 export type ConversationGroupsSnapshot = {

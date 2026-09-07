@@ -37,6 +37,21 @@ export async function renameConversationGroup(id: string, name: string): Promise
   return data.group;
 }
 
+export async function pinConversationGroup(id: string, isPinned: boolean): Promise<ConversationGroup> {
+  const data = await request<{ group: ConversationGroup }>(`/${encodeURIComponent(id)}`, 'PATCH', { isPinned });
+  return data.group;
+}
+
+/** Move relative to a known member without replacing unloaded or filtered rows. */
+export async function moveGroupConversation(
+  groupId: string,
+  sessionId: string,
+  targetSessionId: string,
+  position: 'before' | 'after',
+): Promise<void> {
+  await request(`/${encodeURIComponent(groupId)}/sessions/reorder`, 'POST', { sessionId, targetSessionId, position });
+}
+
 export async function deleteConversationGroup(id: string): Promise<void> {
   await request(`/${encodeURIComponent(id)}`, 'DELETE');
 }

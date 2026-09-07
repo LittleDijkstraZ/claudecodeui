@@ -133,7 +133,7 @@
     "projectsScanned_one": "{{count}} project scanned",
     "projectsScanned_other": "{{count}} projects scanned",
     "modeGroups": "Groups",
-    "groupsPlaceholder": "Search this group’s conversations…"
+    "groupsPlaceholder": "Search grouped conversations…"
   },
   "recent": {
     "title": "Recent conversations",
@@ -168,7 +168,7 @@
     "retry": "Try again",
     "loading": "Loading groups…",
     "emptyTitle": "Organize your conversations",
-    "emptyDescription": "Create a group, then add conversations from any folder using their group button.",
+    "emptyDescription": "Create a group, then add conversations from any folder using their options menu.",
     "choose": "Choose a group",
     "manage": "Manage group",
     "manageNamed": "Manage group {{name}}",
@@ -182,12 +182,25 @@
     "conversationCount_one": "{{count}} conversation",
     "conversationCount_other": "{{count}} conversations",
     "archived": "Archived",
-    "moveConversation": "Change group",
+    "moveConversation": "Move to group",
     "moveNamed": "Change group for {{name}}",
     "conversationsFailed": "Could not load conversations.",
     "loadMore": "Load more conversations",
     "browseViews": "Browse conversations by",
     "running": "Running",
-    "archive": "Archive"
+    "archive": "Archive",
+    "pin": "Pin group",
+    "unpin": "Unpin group",
+    "pinned": "Pinned",
+    "pinFailed": "Could not update the pin. Try again.",
+    "removeConversation": "Remove from group",
+    "moveUp": "Move up",
+    "moveDown": "Move down",
+    "moveFailed": "Could not save the order. Try again.",
+    "removeFailed": "Could not remove this conversation from the group. Try again.",
+    "conversationOptions": "Conversation options",
+    "conversationOptionsNamed": "Options for {{name}}",
+    "reorderNamed": "Reorder {{name}}",
+    "dragToReorder": "Drag to reorder. You can also use Move up or Move down in the menu."
   }
 }

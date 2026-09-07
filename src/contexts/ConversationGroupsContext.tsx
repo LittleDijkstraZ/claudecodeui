@@ -7,6 +7,8 @@ import {
   createConversationGroup,
   deleteConversationGroup,
   listConversationGroups,
+  moveGroupConversation,
+  pinConversationGroup,
   renameConversationGroup,
 } from '../utils/conversationGroupsApi';
 
@@ -20,6 +22,8 @@ type ConversationGroupsValue = ConversationGroupsSnapshot & {
   refresh: () => Promise<void>;
   createGroup: (name: string) => Promise<ConversationGroup>;
   renameGroup: (id: string, name: string) => Promise<void>;
+  setGroupPinned: (id: string, isPinned: boolean) => Promise<void>;
+  moveSession: (groupId: string, sessionId: string, targetSessionId: string, position: 'before' | 'after') => Promise<void>;
   deleteGroup: (id: string) => Promise<void>;
   assignSession: (sessionId: string, groupId: string | null) => Promise<void>;
   openAssignment: (sessionId: string) => void;
@@ -89,6 +93,23 @@ export function ConversationGroupsProvider({ children }: { children: ReactNode }
     await refresh();
   }, [refresh]);
 
+  const setGroupPinned = useCallback(async (id: string, isPinned: boolean) => {
+    const group = await pinConversationGroup(id, isPinned);
+    setSnapshot((current) => ({
+      ...current,
+      groups: current.groups.map((item) => item.id === id ? group : item)
+        .sort((a, b) => Number(b.isPinned) - Number(a.isPinned)),
+    }));
+    await refresh();
+  }, [refresh]);
+
+  const moveSession = useCallback(async (groupId: string, sessionId: string, targetSessionId: string, position: 'before' | 'after') => {
+    await moveGroupConversation(groupId, sessionId, targetSessionId, position);
+    // Membership/counts are unchanged; ask mounted group pages to refetch their
+    // loaded range rather than replacing a partial list with client-only order.
+    setRevision((value) => value + 1);
+  }, []);
+
   const deleteGroup = useCallback(async (id: string) => {
     await deleteConversationGroup(id);
     setSnapshot((current) => ({
@@ -114,9 +135,9 @@ export function ConversationGroupsProvider({ children }: { children: ReactNode }
   const closeDialog = useCallback(() => setDialog(null), []);
   const value = useMemo(() => ({
     ...snapshot, isLoading, error, revision, dialog, refresh, createGroup, renameGroup, deleteGroup,
-    assignSession, openAssignment, openNewConversation, closeDialog,
+    setGroupPinned, moveSession, assignSession, openAssignment, openNewConversation, closeDialog,
   }), [snapshot, isLoading, error, revision, dialog, refresh, createGroup, renameGroup, deleteGroup,
-    assignSession, openAssignment, openNewConversation, closeDialog]);
+    setGroupPinned, moveSession, assignSession, openAssignment, openNewConversation, closeDialog]);
 
   return <ConversationGroupsContext.Provider value={value}>{children}</ConversationGroupsContext.Provider>;
 }

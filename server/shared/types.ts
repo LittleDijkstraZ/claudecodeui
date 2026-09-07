@@ -26,6 +26,24 @@ export type AnyRecord = Record<string, any>;
 /** Validated page controls shared by conversation-group routes, service, and repository. */
 export type ConversationGroupPageOptions = { limit: number; offset: number; query: string };
 
+/**
+ * Validated group changes shared by group routes, service, and database storage.
+ * At least one field must be present; omitted fields retain their stored value.
+ * Routes validate a trimmed 1–80 character name and a strictly boolean pin state.
+ */
+export type ConversationGroupUpdate = { name?: string; isPinned?: boolean };
+
+/**
+ * A relative move within one authenticated user's group. Both stable app session
+ * IDs must already belong to that group. Applying the move preserves every other
+ * member's relative order, including members omitted by pagination or search.
+ */
+export type ConversationGroupMemberMove = {
+  sessionId: string;
+  targetSessionId: string;
+  position: 'before' | 'after';
+};
+
 // ---------------------------
 //----------------- WEBSOCKET TRANSPORT TYPES ------------
 /**

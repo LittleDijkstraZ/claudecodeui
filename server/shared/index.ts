@@ -2,6 +2,8 @@
 export type {
   AnyRecord,
   ConversationGroupPageOptions,
+  ConversationGroupUpdate,
+  ConversationGroupMemberMove,
   LLMProvider,
   NormalizedMessage,
   ProviderCurrentActiveModel,
