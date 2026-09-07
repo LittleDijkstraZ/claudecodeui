@@ -218,3 +218,13 @@ export const PROVIDER_PERMISSION_PREFERENCE_KEYS: Record<LLMProvider, UserPrefer
   codex: 'codexPermissions',
   opencode: 'opencodePermissions',
 };
+
+// ---------------------------
+
+//----------------- MERMAID VIEWPORT ------------
+
+/** Lowest diagram zoom, keeping very large charts navigable without reaching zero scale. */
+export const MIN_DIAGRAM_SCALE = 0.02;
+
+/** Highest diagram zoom shared by geometry calculations and viewer controls. */
+export const MAX_DIAGRAM_SCALE = 8;

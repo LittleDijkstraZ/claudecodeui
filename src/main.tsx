@@ -1,8 +1,10 @@
+import '@/remoteTransportBootstrap'
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { scan } from 'react-scan'
 
 import App from '@/App'
+import { RemoteHubApp } from '@/modules/remote-hub'
 import '@/index.css'
 import 'katex/dist/katex.min.css'
 
@@ -17,7 +19,7 @@ import '@/modules/i18n'
 scan({ enabled: import.meta.env.DEV && localStorage.getItem('react-scan') === 'on' })
 
 // Register service worker for PWA + Web Push support
-if ('serviceWorker' in navigator) {
+if (!window.__REMOTE_BASE__ && !window.__REMOTE_HUB__ && 'serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(err => {
     console.warn('Service worker registration failed:', err);
   });
@@ -30,6 +32,6 @@ if (!rootElement) {
 
 ReactDOM.createRoot(rootElement).render(
   <React.StrictMode>
-    <App />
+    {window.__REMOTE_HUB__ ? <RemoteHubApp /> : <App />}
   </React.StrictMode>,
 )

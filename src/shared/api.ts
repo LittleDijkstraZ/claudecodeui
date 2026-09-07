@@ -1,4 +1,6 @@
-import type { LLMProvider, ConversationGroup, ConversationGroupsSnapshot, CreatedGroupConversation, GroupConversationsPage } from '@/shared/types';
+import type { HubRemote, HubGroupState, ClaudeSessionCapabilities, ForkedClaudeSession, RewindMode, RewindPreview, RewindResult,LLMProvider,ConversationGroup,ConversationGroupsSnapshot,CreatedGroupConversation,GroupConversationsPage } from '@/shared/types';
+import { isValidRefreshedToken } from '@/shared/authToken';
+import { remoteStorageKey } from '@/shared/utils';
 import {
   expireAuthSession,
   getStoredAuthToken,
@@ -377,8 +379,8 @@ export const api = {
     ) => get(sessionMessagesUrl(sessionId, pagination), options),
     sessionTokenUsage: (sessionId: string) =>
       get(`/api/providers/sessions/${encodeURIComponent(sessionId)}/token-usage`),
-    sessionActiveModel: (provider: string, sessionId: string) =>
-      get(`/api/providers/${provider}/sessions/${encodeURIComponent(sessionId)}/active-model`),
+    sessionActiveModel: (provider: string, sessionId: string, options: ApiRequestOptions = {}) =>
+      get(`/api/providers/${provider}/sessions/${encodeURIComponent(sessionId)}/active-model`, options),
     setSessionActiveModel: (provider: string, sessionId: string, model: string) =>
       post(`/api/providers/${provider}/sessions/${encodeURIComponent(sessionId)}/active-model`, {
         model,
@@ -685,3 +687,109 @@ export async function moveGroupConversation(
   await groupRequest(`/${encodeURIComponent(groupId)}/sessions/reorder`, 'POST', { sessionId, targetSessionId, position });
 }
 
+
+//----------------- REMOTE HUB API ------------
+
+export function remoteToken(remoteId: string) {
+  return localStorage.getItem(remoteStorageKey(remoteId, 'auth-token'));
+}
+async function remoteRequest(remoteId: string, path: string, options: RequestInit = {}) {
+  if (!/^\/(api(?:\/|$)|health$)/.test(path)) throw new Error('Invalid remote API path');
+  const token = remoteToken(remoteId);
+  const response = await fetch(`/remote/${encodeURIComponent(remoteId)}${path}`, {
+    ...options,
+    signal: options.signal ?? AbortSignal.timeout(options.method && options.method !== 'GET' ? 60_000 : 12_000),
+    headers: {
+      ...(token ? {
+        Authorization: `Bearer ${token}`
+      } : {}),
+      ...(options.body ? {
+        'Content-Type': 'application/json'
+      } : {}),
+      ...options.headers
+    }
+  });
+  const refreshed = response.headers.get('X-Refreshed-Token');
+  if (isValidRefreshedToken(refreshed)) localStorage.setItem(remoteStorageKey(remoteId, 'auth-token'), refreshed);
+  if (response.status === 401 || response.headers.get('X-Auth-Error')) {
+    localStorage.removeItem(remoteStorageKey(remoteId, 'auth-token'));
+    throw new Error('LOGIN_REQUIRED');
+  }
+  const body = await response.json();
+  if (!response.ok || body?.success === false) throw new Error(typeof body?.error === 'string' ? body.error : body?.error?.message || '远端请求失败');
+  return body?.data ?? body;
+}
+export async function loadHubGroups(): Promise<HubGroupState> {
+  const response = await fetch('/hub-api/groups');
+  if (!response.ok) throw new Error('无法读取本机分组');
+  return response.json();
+}
+
+/** Reapply the user's operation to the latest revision when another window saves first. */
+export async function changeHubGroups(change: (state: HubGroupState) => HubGroupState): Promise<HubGroupState> {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const current = await loadHubGroups();
+    const updated = change(structuredClone(current));
+    const response = await fetch('/hub-api/groups', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        ...updated,
+        revision: current.revision
+      })
+    });
+    if (response.status === 409) continue;
+    if (!response.ok) throw new Error('分组保存失败，请重试');
+    return response.json();
+  }
+  throw new Error('另一个窗口正在修改分组，请重试');
+}
+
+/** Fixed hub and remote endpoints; requests always stay behind the configured SSH tunnel. */
+export const hubApi = {
+  config: async (): Promise<{ remotes: HubRemote[] }> => { const response = await fetch('/hub-api/config'); if (!response.ok) throw new Error('无法读取连接配置'); return response.json(); },
+  health: (remoteId: string) => remoteRequest(remoteId, '/health', { signal: AbortSignal.timeout(3500) }),
+  projects: (remoteId: string) => remoteRequest(remoteId, '/api/projects'),
+  recent: (remoteId: string, offset = 0) => remoteRequest(remoteId, `/api/providers/sessions/recent?limit=100&offset=${offset}`),
+  running: (remoteId: string) => remoteRequest(remoteId, '/api/providers/sessions/running'),
+  user: (remoteId: string) => remoteRequest(remoteId, '/api/auth/user'),
+  groups: (remoteId: string) => remoteRequest(remoteId, '/api/conversation-groups'),
+  groupConversations: (remoteId: string, groupId: string, offset: number) => remoteRequest(remoteId, `/api/conversation-groups/${encodeURIComponent(groupId)}/sessions?limit=100&offset=${offset}`),
+  projectSessions: (remoteId: string, projectId: string, offset: number) => remoteRequest(remoteId, `/api/projects/${encodeURIComponent(projectId)}/sessions?limit=100&offset=${offset}`),
+  createSession: (remoteId: string, payload: { provider: string; projectPath: string }) => remoteRequest(remoteId, '/api/providers/sessions', { method: 'POST', body: JSON.stringify(payload) }),
+  socketUrl: (remoteId: string, token: string) => `${window.location.origin.replace(/^http/, 'ws')}/remote/${encodeURIComponent(remoteId)}/ws?token=${encodeURIComponent(token)}`,
+};
+
+//----------------- CLAUDE SESSION ACTIONS API ------------
+
+async function requestClaudeSessionAction<T>(sessionId: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  const response = await authenticatedFetch(`/api/claude-sessions/${encodeURIComponent(sessionId)}${path}`, {
+    method: body === undefined ? 'GET' : 'POST',
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    signal,
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || payload?.success !== true || !payload.data) {
+    const message = payload?.error?.message ?? payload?.error ?? payload?.message;
+    throw new Error(typeof message === 'string' ? message : `Request failed (${response.status})`);
+  }
+  return payload.data as T;
+}
+
+export function getClaudeSessionCapabilities(sessionId: string, signal?: AbortSignal): Promise<ClaudeSessionCapabilities> {
+  return requestClaudeSessionAction(sessionId, '/capabilities', undefined, signal);
+}
+
+export function forkClaudeSession(sessionId: string, messageId?: string): Promise<ForkedClaudeSession> {
+  return requestClaudeSessionAction(sessionId, '/fork', { ...(messageId ? { messageId } : {}) });
+}
+
+export function previewClaudeRewind(sessionId: string, messageId: string, mode: RewindMode, signal?: AbortSignal): Promise<RewindPreview> {
+  return requestClaudeSessionAction(sessionId, '/rewind/preview', { messageId, mode }, signal);
+}
+
+export function rewindClaudeSession(sessionId: string, messageId: string, mode: RewindMode, previewToken: string): Promise<RewindResult> {
+  return requestClaudeSessionAction(sessionId, '/rewind', { messageId, mode, previewToken });
+}

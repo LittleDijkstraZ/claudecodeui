@@ -1,6 +1,7 @@
 // Public shared contracts consumed by Providers, Conversation Groups, and Database.
 export type {
   AnyRecord,
+  ClaudeSessionRewindMode,
   ConversationGroupPageOptions,
   ConversationGroupUpdate,
   ConversationGroupMemberMove,

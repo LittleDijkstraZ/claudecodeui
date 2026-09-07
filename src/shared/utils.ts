@@ -223,3 +223,8 @@ export const getPageTitle = (
   const displayName = selectedProject?.displayName?.trim();
   return displayName ? `${displayName} - ${DEFAULT_PAGE_TITLE}` : DEFAULT_PAGE_TITLE;
 };
+
+//----------------- REMOTE STORAGE ------------
+
+/** Namespaces all embedded-machine browser data, including auth and drafts. */
+export const remoteStorageKey = (remoteId: string, key: string) => `cloudcli:remote:${remoteId}:${key}`;

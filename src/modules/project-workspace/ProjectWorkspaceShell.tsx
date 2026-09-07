@@ -1,3 +1,5 @@
+import { SideChatDock } from '@/modules/remote-hub';
+import ProjectHubBridge from '@/modules/project-workspace/ProjectHubBridge';
 import { memo } from 'react';
 import ProjectGroupDialogs from '@/modules/project-workspace/ProjectGroupDialogs';
 
@@ -21,7 +23,8 @@ function ProjectWorkspaceShell({
       style={{ bottom: 'var(--keyboard-height, 0px)' }}
     >
       <ProjectEffects navigate={navigate} />
-      <ProjectSidebarRegion isMobile={isMobile} />
+      {!window.__CLOUDCLI_EMBEDDED__ && <ProjectSidebarRegion isMobile={isMobile} />}
+      <ProjectHubBridge navigate={navigate} />
 
       <div className="flex min-w-0 flex-1 flex-col">
         <ProjectMainRegion
@@ -32,6 +35,7 @@ function ProjectWorkspaceShell({
         />
       </div>
 
+      <SideChatDock />
       <ProjectCommandPalette />
       <QuickSettingsPanel />
       <ProjectGroupDialogs isMobile={isMobile} navigate={navigate} />

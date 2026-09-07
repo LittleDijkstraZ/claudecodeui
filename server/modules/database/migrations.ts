@@ -3,6 +3,7 @@ import type { Database } from 'better-sqlite3';
 import {
   APP_CONFIG_TABLE_SCHEMA_SQL,
   CONVERSATION_GROUPS_SCHEMA_SQL,
+  CLAUDE_SESSION_BRANCHES_SCHEMA_SQL,
   LAST_SCANNED_AT_SQL,
   NOTIFICATION_CHANNEL_ENDPOINTS_TABLE_SCHEMA_SQL,
   PROJECTS_TABLE_SCHEMA_SQL,
@@ -569,6 +570,7 @@ export const runMigrations = (db: Database) => {
     // otherwise an old sessions-table rebuild could invalidate their FKs.
     db.exec(CONVERSATION_GROUPS_SCHEMA_SQL);
     addConversationGroupOrdering(db);
+    db.exec(CLAUDE_SESSION_BRANCHES_SCHEMA_SQL);
 
     db.exec('CREATE INDEX IF NOT EXISTS idx_session_ids_lookup ON sessions(session_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_provider_session_id ON sessions(provider_session_id)');

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -60,6 +60,8 @@ async function withIsolatedDatabase(runTest: () => Promise<void>): Promise<void>
   const tempDirectory = await mkdtemp(path.join(os.tmpdir(), 'chat-draft-send-'));
   closeConnection();
   process.env.DATABASE_PATH = path.join(tempDirectory, 'auth.db');
+  // A fresh fixture must not trigger migration from an existing install database.
+  await writeFile(process.env.DATABASE_PATH!, '');
   await initializeDatabase();
 
   try {

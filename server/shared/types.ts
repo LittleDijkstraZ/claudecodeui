@@ -102,6 +102,16 @@ export type ProviderModelOption = {
   recordId?: number;
   /** True for user-created rows; false for immutable CloudCLI defaults. */
   isCustom?: boolean;
+  /** Distinguishes mutable aliases from exact IDs; capacity is independent. */
+  selectionKind?: 'alias' | 'version' | 'custom';
+  /** Evidence source, never inferred from a friendly model label. */
+  catalogSource?: 'remote-api' | 'remote-sdk' | 'remote-config' | 'built-in' | 'manual';
+  /** Remote-reported alias resolution, not proof of an actual model response. */
+  resolvedModel?: string;
+  /** Requested context mode; absence never implies a guessed token limit. */
+  contextMode?: 'default' | '1m';
+  /** Maximum input tokens reported by the remote Models API, when available. */
+  maxInputTokens?: number;
   effort?: {
     default?: string;
     values: {
@@ -153,12 +163,19 @@ export type CustomProviderModelInput = {
  * Provider-neutral result for the model that is actively driving a session or
  * provider runtime at the time of lookup.
  *
- * `model` must always be populated. Provider adapters should use the
- * provider-specific lookup method requested by the caller, and only fall back
- * to the provider catalog `DEFAULT` value when the active model cannot be read.
+ * `model` remains populated for selection compatibility. It can be a default
+ * placeholder and must never be presented as an actual response identity.
+ * Claude separately reports evidence in `reportedModel` and `reportedSource`;
+ * unknown metadata is null rather than inferred from an alias or selection.
  */
 export type ProviderCurrentActiveModel = {
   model: string;
+  /** Last main-thread response model, or null when no trustworthy report exists. */
+  reportedModel?: string | null;
+  /** Init is runtime resolution only; response is the returned API model field. */
+  reportedSource?: 'response' | 'initialization' | 'unknown';
+  /** Transcript timestamp of the report, when recorded by the remote CLI. */
+  reportedAt?: string | null;
 };
 
 /**
@@ -191,6 +208,12 @@ export type ProviderSessionModel = {
   /** NULL means this session has not recorded an effort choice yet. */
   effort: string | null;
   source: ProviderSessionModelSource;
+  /** Actual remote report, deliberately independent of the selected model. */
+  reportedModel?: string | null;
+  /** A response is stronger evidence than runtime initialization. */
+  reportedSource?: 'response' | 'initialization' | 'unknown';
+  /** Timestamp of the latest model report, when present in the transcript. */
+  reportedAt?: string | null;
 };
 
 /**
@@ -1372,3 +1395,9 @@ export type CliApplication = {
 export type SandboxCommandService = {
   execute(argumentsList: string[]): Promise<number>;
 };
+
+//----------------- CLAUDE CONVERSATION RESTORE ------------
+/** Modes accepted by the authenticated Claude rewind routes and service. Conversation restore
+ * retains the selected user message and replaces subsequent SDK context; files restores only
+ * native checkpoints; both performs the two operations and reports any partial file failure. */
+export type ClaudeSessionRewindMode = 'conversation' | 'files' | 'both';

@@ -39,5 +39,17 @@
     "loading": "Loading preview...",
     "error": "Unable to display this file.",
     "openInNewTab": "Open in new tab"
+  },
+  "mermaid": {
+    "title": "Mermaid diagram",
+    "open": "Enlarge Mermaid diagram",
+    "close": "Close diagram viewer",
+    "zoomIn": "Zoom in (+)",
+    "zoomOut": "Zoom out (−)",
+    "zoomLevel": "Zoom level",
+    "fit": "Fit diagram (F)",
+    "reset": "Reset to 100% (0)",
+    "canvas": "Diagram canvas. Drag to pan; use arrow keys to move.",
+    "instructions": "Scroll or pinch to zoom · Drag to pan · F to fit · 0 for 100% · Esc to close"
   }
 }

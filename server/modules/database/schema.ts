@@ -276,6 +276,19 @@ CREATE INDEX IF NOT EXISTS idx_conversation_group_members ON conversation_group_
 CREATE INDEX IF NOT EXISTS idx_conversation_group_members_session ON conversation_group_memberships(session_id);
 `;
 
+/** Used by migrations to retain side-chat ancestry and rewind recovery history. */
+export const CLAUDE_SESSION_BRANCHES_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS claude_session_branches (
+    session_id TEXT PRIMARY KEY NOT NULL,
+    parent_session_id TEXT,
+    source_message_id TEXT,
+    kind TEXT NOT NULL CHECK (kind IN ('side_chat', 'rewind_backup')),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    FOREIGN KEY (parent_session_id) REFERENCES sessions(session_id) ON DELETE SET NULL ON UPDATE CASCADE
+);
+`;
+
 export const INIT_SCHEMA_SQL = `
 -- Initialize authentication database
 PRAGMA foreign_keys = ON;

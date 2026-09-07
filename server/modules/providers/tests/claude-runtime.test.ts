@@ -20,7 +20,7 @@ test('SDK options enable partial messages and map ultracode to a session setting
   const options = mapCliOptionsToSDK({ model: 'fixture', effort: 'ultracode', effortModels: models });
   assert.equal(options.includePartialMessages, true);
   assert.equal(options.effort, 'xhigh');
-  assert.deepEqual(options.settings, { ultracode: true });
+  assert.deepEqual(options.settings, { ultracode: true, enableWorkflows: true });
   assert.deepEqual(options.settingSources, ['project', 'user', 'local']);
 });
 
@@ -226,4 +226,18 @@ test('runtime flushes partial text before surfacing an SDK error and sends one f
   assert.deepEqual(kinds.slice(-3), ['stream_end', 'error', 'complete']);
   assert.equal(h.events.filter(event => event.kind === 'complete').length, 1);
   assert.equal(h.events.at(-1)?.success, false);
+});
+
+test('default selection inherits remote configuration without overriding an exact selected model', () => {
+  assert.equal(mapCliOptionsToSDK({ model: 'default' }).model, undefined);
+  assert.equal(mapCliOptionsToSDK({}).model, undefined);
+  assert.equal(mapCliOptionsToSDK({ model: 'opus' }).model, 'opus');
+  assert.equal(mapCliOptionsToSDK({ model: 'claude-exact-fixture[1m]' }).model, 'claude-exact-fixture[1m]');
+});
+
+
+test('ordinary user runs enable native file checkpoints and replay their message UUIDs', () => {
+  const options = mapCliOptionsToSDK({ model: 'default' });
+  assert.equal(options.enableFileCheckpointing, true);
+  assert.deepEqual(options.extraArgs, { 'replay-user-messages': null });
 });

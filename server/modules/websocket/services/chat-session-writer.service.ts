@@ -140,6 +140,11 @@ export class ChatSessionWriter {
     this.connections.add(newConnection);
   }
 
+  /** The run registry excludes full-stream viewers from metadata-only activity broadcasts. */
+  hasConnection(connection: RealtimeClientConnection): boolean {
+    return this.connections.has(connection);
+  }
+
   setSessionId(sessionId: string): void {
     this.captureProviderSessionId(sessionId);
   }

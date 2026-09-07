@@ -1,10 +1,8 @@
-import { getIntrinsicMessageKey } from '@/modules/chat/utils/messageKeys';
-import type { MessageRevealTarget } from '@/shared/types';
 import { memo, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { GitBranchIcon, PencilIcon } from 'lucide-react';
 
-import type { ChatMessage, ClaudePermissionSuggestion, PermissionGrantResult, LLMProvider,DiffLine,Project } from '@/shared/types';
+import type { MessageRevealTarget, ChatMessage, ClaudePermissionSuggestion, PermissionGrantResult, LLMProvider,DiffLine,Project } from '@/shared/types';
 import { formatUsageLimitText, stripProposedPlanEnvelope } from '@/modules/chat/utils/chatFormatting';
 import { ToolRenderer, ToolErrorDisplay, SubagentPanel, shouldHideToolResult } from '@/modules/chat/tools';
 import { LLMProviderLogo } from '@/shared/ui';
@@ -17,6 +15,8 @@ import MessageCopyControl from '@/modules/chat/transcript/MessageCopyControl';
 import MessageSpeakControl from '@/modules/chat/transcript/MessageSpeakControl';
 import { useIsExportingTranscript } from '@/modules/chat/context/TranscriptRenderContext';
 import { MemoryCitations } from '@/modules/chat/transcript/MemoryCitations';
+import { getIntrinsicMessageKey } from '@/modules/chat/utils/messageKeys';
+import MessageSessionActions from '@/modules/chat/session-actions/MessageSessionActions';
 
 type MessageComponentProps = {
   revealTarget?: MessageRevealTarget;
@@ -98,8 +98,8 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
   return (
     <div
       ref={messageRef}
-      data-message-key={messageKey ?? undefined}
-      data-tool-id={message.toolId ?? message.toolCallId}
+      data-message-key={isExporting ? undefined : messageKey ?? undefined}
+      data-tool-id={isExporting ? undefined : message.toolId ?? message.toolCallId}
       data-message-timestamp={message.timestamp || undefined}
       tabIndex={-1}
       className={`chat-message ${message.type} ${isGrouped ? 'grouped' : ''} ${message.type === 'user' ? 'flex justify-end px-3 sm:px-0' : 'px-3 sm:px-0'}`}
@@ -153,12 +153,14 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                   {shouldShowUserCopyControl && (
                     <MessageCopyControl content={userCopyContent} messageType="user" />
                   )}
+                  {!isExporting && <MessageSessionActions message={message} />}
                   <span>{formattedTime}</span>
                 </div>
               </div>
             ) : (
               /* Attachment-only turn: no text bubble, but the timestamp still shows */
               <div className="flex items-center justify-end gap-1 text-xs text-muted-foreground">
+                {!isExporting && <MessageSessionActions message={message} />}
                 <span>{formattedTime}</span>
               </div>
             )}
@@ -374,6 +376,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                 {shouldShowAssistantCopyControl && (
                   <MessageSpeakControl content={assistantCopyContent} />
                 )}
+                {!isExporting && <MessageSessionActions message={message} />}
                 {!isGrouped && <span>{formattedTime}</span>}
               </div>
             )}

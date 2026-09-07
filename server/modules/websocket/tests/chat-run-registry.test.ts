@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -28,6 +28,8 @@ async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promis
 
   closeConnection();
   process.env.DATABASE_PATH = databasePath;
+  // A fresh fixture must not trigger migration from an existing install database.
+  await writeFile(process.env.DATABASE_PATH!, '');
   await initializeDatabase();
 
   try {
@@ -309,5 +311,84 @@ test('startRun rejects a second concurrent run for the same session', async () =
       userId: null,
     });
     assert.ok(third);
+  });
+});
+
+test('same-user activity observers receive metadata without replacing the active writer or reading its stream', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('activity-main', 'claude', '/workspace/demo');
+    const active = new FakeConnection();
+    const observer = new FakeConnection();
+    const otherUser = new FakeConnection();
+    const unknownUser = new FakeConnection();
+    for (const connection of [active, observer, otherUser, unknownUser]) connectedClients.add(connection as never);
+    chatRunRegistry.registerActivityObserver(active, 7);
+    chatRunRegistry.registerActivityObserver(observer, '7');
+    chatRunRegistry.registerActivityObserver(otherUser, 8);
+    const run = chatRunRegistry.startRun({ appSessionId: 'activity-main', provider: 'claude', providerSessionId: null, connection: active, userId: 7 });
+    assert.ok(run);
+    assert.equal(observer.frames[0]?.status, 'running');
+    assert.equal(observer.frames[0]?.seq, 0);
+    run.writer.send({ kind: 'text', provider: 'claude', sessionId: 'native', content: 'Private prompt and response' });
+    run.writer.send({ kind: 'permission_request', provider: 'claude', sessionId: 'native', toolName: 'Bash', input: { command: 'private command' }, requestId: 'approval-secret' });
+    assert.equal(run.writer.hasConnection(active), true);
+    assert.equal(run.writer.hasConnection(observer), false);
+    assert.equal(active.frames.length, 2);
+    assert.equal(observer.frames.length, 2);
+    // An explicitly subscribed second view receives the same stream while the
+    // hub's metadata observer remains outside the run's audience.
+    const secondView = new FakeConnection();
+    connectedClients.add(secondView as never);
+    chatRunRegistry.registerActivityObserver(secondView, 7);
+    assert.equal(chatRunRegistry.attachConnection('activity-main', secondView), true);
+    run.writer.sendComplete({ exitCode: 0 });
+    run.writer.sendComplete({ exitCode: 1 });
+    assert.deepEqual(observer.frames.map(frame => frame.status), ['running', 'permission', 'complete']);
+    assert.deepEqual(observer.frames.map(frame => frame.seq), [0, 2, 3]);
+    assert.equal(new Set(observer.frames.map(frame => frame.runId)).size, 1);
+    assert.equal(new Set(observer.frames.map(frame => frame.eventId)).size, 3);
+    for (const frame of observer.frames) {
+      assert.deepEqual(Object.keys(frame).sort(), ['eventId', 'kind', 'provider', 'runId', 'seq', 'sessionId', 'status']);
+      assert.equal(frame.kind, 'session_activity'); assert.equal(frame.sessionId, 'activity-main');
+    }
+    assert.equal(JSON.stringify(observer.frames).includes('private'), false);
+    assert.deepEqual(otherUser.frames, []); assert.deepEqual(unknownUser.frames, []);
+    assert.equal(active.frames.filter(frame => frame.kind === 'complete').length, 1);
+    assert.equal(secondView.frames.length, 1);
+    assert.equal(secondView.frames[0]?.kind, 'complete');
+  });
+});
+
+test('an error plus terminal completion yields one failure notification and a new run gets a fresh identity', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('activity-error', 'claude', '/workspace/demo');
+    const active = new FakeConnection(); const observer = new FakeConnection();
+    connectedClients.add(observer as never); chatRunRegistry.registerActivityObserver(observer, 1);
+    const input = { appSessionId: 'activity-error', provider: 'claude' as const, providerSessionId: null, connection: active, userId: 1 };
+    const first = chatRunRegistry.startRun(input); assert.ok(first);
+    first.writer.send({ kind: 'error', provider: 'claude', content: 'Private diagnostic' });
+    first.writer.sendComplete({ exitCode: 1 });
+    first.writer.sendComplete({ exitCode: 1 });
+    assert.deepEqual(observer.frames.map(frame => frame.status), ['running', 'error']);
+    const oldRunId = observer.frames[0]?.runId;
+    const second = chatRunRegistry.startRun(input); assert.ok(second);
+    assert.notEqual(observer.frames.at(-1)?.runId, oldRunId);
+    // An old runtime winding down cannot publish activity for the replacement.
+    first.writer.send({ kind: 'error', provider: 'claude', content: 'Late old failure' });
+    assert.equal(observer.frames.length, 3);
+    second.writer.sendComplete({ exitCode: 2 });
+    assert.deepEqual(observer.frames.map(frame => frame.status), ['running', 'error', 'running', 'error']);
+    assert.equal(JSON.stringify(observer.frames).includes('diagnostic'), false);
+  });
+});
+
+test('unidentified runs cannot broadcast activity to authenticated observers', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('activity-unknown', 'claude', '/workspace/demo');
+    const observer = new FakeConnection(); connectedClients.add(observer as never);
+    chatRunRegistry.registerActivityObserver(observer, 1);
+    const run = chatRunRegistry.startRun({ appSessionId: 'activity-unknown', provider: 'claude', providerSessionId: null, connection: new FakeConnection(), userId: null });
+    assert.ok(run); run.writer.sendComplete({ exitCode: 0 });
+    assert.deepEqual(observer.frames, []);
   });
 });

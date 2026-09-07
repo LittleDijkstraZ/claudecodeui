@@ -1,4 +1,6 @@
-import { readFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { createInterface } from 'node:readline';
+
 
 import { sessionsDb } from '@/modules/database/index.js';
 import type {
@@ -7,7 +9,8 @@ import type {
   ProviderModelOption,
   ProviderModelsDefinition,
 } from '@/shared/index.js';
-import { buildDefaultProviderCurrentActiveModel } from '@/shared/index.js';
+
+import { createClaudeModelCatalog } from './claude-model-catalog.js';
 
 /**
  * Ultracode is not one of the SDK's reasoning-effort levels. Selecting it runs the turn at
@@ -28,7 +31,7 @@ export const CLAUDE_PREDEFINED_MODELS: ProviderModelsDefinition = {
     {
       value: 'default',
       label: 'Default (recommended)',
-      description: 'Use the recommended model for your Claude account and deployment.',
+      description: 'Let the remote Claude CLI resolve its environment, settings, and session defaults.',
       effort: {
         default: 'high',
         values: [
@@ -169,141 +172,50 @@ export const findClaudeModelOption = (model: string | undefined | null): Provide
 
   return CLAUDE_PREDEFINED_MODELS.OPTIONS.find((option) => option.value === normalizedModel) ?? null;
 };
-type ClaudeInitEvent = {
-  sessionId?: string;
-  session_id?: string;
-  type?: string;
-  subtype?: string;
-  model?: string;
-  message?: {
-    content?: unknown;
-    model?: string;
-  };
-};
-
-const ANSI_PATTERN = new RegExp(
-  '[\\u001B\\u009B][[\\]()#;?]*(?:'
-  + '(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]'
-  + '|(?:[\\dA-PR-TZcf-ntqry=><~]))',
-  'g',
-);
-
-const extractClaudeEventModel = (event: ClaudeInitEvent, sessionId: string): string | null => {
-  const eventSessionId = event.sessionId ?? event.session_id;
-  if (eventSessionId && eventSessionId !== sessionId) {
-    return null;
-  }
-
-  const contentModel = extractClaudeModelFromMessageContent(event.message?.content);
-  if (contentModel) {
-    return contentModel;
-  }
-
-  const directModel = event.model?.trim();
-  if (directModel) {
-    return directModel;
-  }
-
-  const messageModel = event.message?.model?.trim();
-  return messageModel || null;
-};
-
-const stripAnsi = (value: string): string => value.replace(ANSI_PATTERN, '');
-
-const extractTaggedContent = (content: string, tagName: string): string | null => {
-  const escapedTagName = tagName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = new RegExp(`<${escapedTagName}>([\\s\\S]*?)<\\/${escapedTagName}>`).exec(content);
-  return match ? match[1] : null;
-};
-
-const extractClaudeModelFromTextContent = (content: string): string | null => {
-  const localCommandStdout = extractTaggedContent(content, 'local-command-stdout');
-  if (localCommandStdout !== null) {
-    const cleanedStdout = stripAnsi(localCommandStdout).replace(/\s+/g, ' ').trim();
-    const changedModel = /(?:set|changed|switched)\s+model\s+to\s+(.+?)\.?$/i.exec(cleanedStdout);
-    if (changedModel?.[1]?.trim()) {
-      return changedModel[1].trim();
+/** Provider model lookup and tests read only actual main-thread model reports. */
+export async function readClaudeReportedModel(sessionId: string, jsonlPath: string): Promise<ProviderCurrentActiveModel | null> {
+  let response: ProviderCurrentActiveModel | null = null;
+  let initialization: ProviderCurrentActiveModel | null = null;
+  const stream = createReadStream(jsonlPath, { encoding: 'utf8' });
+  const lines = createInterface({ input: stream, crlfDelay: Infinity });
+  try {
+    for await (const line of lines) {
+      try {
+        const event = JSON.parse(line);
+        const eventSessionId = event.sessionId ?? event.session_id;
+        if ((eventSessionId && eventSessionId !== sessionId) || event.isSidechain || event.parent_tool_use_id) continue;
+        const reportedAt = typeof event.timestamp === 'string' ? event.timestamp : null;
+        if (event.type === 'assistant' && typeof event.message?.model === 'string') {
+          const model = event.message.model.trim();
+          if (model && model !== '<synthetic>' && model !== 'synthetic') response = { model, reportedModel: model, reportedSource: 'response', reportedAt };
+        } else if (event.type === 'system' && event.subtype === 'init' && typeof event.model === 'string' && event.model.trim()) {
+          const model = event.model.trim();
+          initialization = { model, reportedModel: model, reportedSource: 'initialization', reportedAt };
+        }
+      } catch { /* Ignore an incomplete trailing record while the CLI writes. */ }
     }
-  }
+  } finally { lines.close(); stream.destroy(); }
+  return response ?? initialization;
+}
 
-  const modelTag = extractTaggedContent(content, 'model')?.trim();
-  return modelTag || null;
-};
-
-const extractClaudeModelFromMessageContent = (content: unknown): string | null => {
-  if (typeof content === 'string') {
-    return extractClaudeModelFromTextContent(content);
-  }
-
-  if (!Array.isArray(content)) {
-    return null;
-  }
-
-  for (const part of content) {
-    if (!part || typeof part !== 'object' || !('text' in part) || typeof part.text !== 'string') {
-      continue;
-    }
-
-    const model = extractClaudeModelFromTextContent(part.text);
-    if (model) {
-      return model;
-    }
-  }
-
-  return null;
-};
-
-const readClaudeSessionModelFromJsonl = async (
-  sessionId: string,
-  jsonlPath: string,
-): Promise<ProviderCurrentActiveModel | null> => {
-  const content = await readFile(jsonlPath, 'utf8');
-  const lines = content
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    try {
-      const event = JSON.parse(lines[index]) as ClaudeInitEvent;
-      const model = extractClaudeEventModel(event, sessionId);
-      if (model) {
-        return { model };
-      }
-    } catch {
-      // Skip malformed JSONL lines that can happen during concurrent writes.
-    }
-  }
-
-  return null;
-};
+const loadCatalog = createClaudeModelCatalog();
 
 /** Supplies model choices and current-session metadata to the Claude provider. */
 export class ClaudeProviderModels implements IProviderModels {
   async getSupportedModels(): Promise<ProviderModelsDefinition> {
-    // claude creates a new jsonl file as a separate session for this request.
-    // As a result, it lists the workspace where this is invoked when it shouldn't.
-    //
-    // Disabled for now:
-    // const queryInstance = query({
-    //   prompt: 'Get supported models',
-    //   options: buildClaudeQueryOptions(),
-    // });
-    // const supportedModels = await queryInstance.supportedModels();
-    // queryInstance.close();
-    // return buildClaudeModelsDefinition(supportedModels);
-    return CLAUDE_PREDEFINED_MODELS;
+    return loadCatalog(CLAUDE_PREDEFINED_MODELS);
   }
 
   async getCurrentActiveModel(sessionId?: string): Promise<ProviderCurrentActiveModel> {
     if (!sessionId?.trim()) {
-      return buildDefaultProviderCurrentActiveModel(await this.getSupportedModels());
+      return { model: 'default', reportedModel: null, reportedSource: 'unknown', reportedAt: null };
     }
 
     try {
-      const jsonlPath = sessionsDb.getSessionById(sessionId)?.jsonl_path;
+      const session = sessionsDb.getSessionById(sessionId);
+      const jsonlPath = session?.jsonl_path;
       const activeModel = jsonlPath
-        ? await readClaudeSessionModelFromJsonl(sessionId, jsonlPath)
+        ? await readClaudeReportedModel(session?.provider_session_id || sessionId, jsonlPath)
         : null;
       if (activeModel?.model) {
         return activeModel;
@@ -312,6 +224,6 @@ export class ClaudeProviderModels implements IProviderModels {
       // Fall through to the provider default when the session-backed lookup fails.
     }
 
-    return buildDefaultProviderCurrentActiveModel(await this.getSupportedModels());
+    return { model: 'default', reportedModel: null, reportedSource: 'unknown', reportedAt: null };
   }
 }

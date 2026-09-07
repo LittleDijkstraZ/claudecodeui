@@ -14,6 +14,17 @@ export type ProviderModelOption = {
   description?: string;
   recordId?: number;
   isCustom?: boolean;
+  /** Distinguishes mutable aliases from exact IDs; capacity is independent. */
+  selectionKind?: 'alias' | 'version' | 'custom';
+  /** Evidence source, never inferred from a friendly model label. */
+  catalogSource?: 'remote-api' | 'remote-sdk' | 'remote-config' | 'built-in' | 'manual';
+  /** Remote-reported alias resolution, not proof of an actual model response. */
+  resolvedModel?: string;
+  /** Requested context mode; absence never implies a guessed token limit. */
+  contextMode?: 'default' | '1m';
+  /** Maximum input tokens reported by the remote Models API, when available. */
+  maxInputTokens?: number;
+
   effort?: {
     default?: string;
     values: {
@@ -1625,3 +1636,128 @@ export type ConversationChangeTurn = {
 export type GroupDragSource = { groupId: string; sessionId: string };
 export type GroupDropTarget = GroupDragSource & { position: 'before' | 'after' };
 export type GroupDragPoint = { x: number; y: number };
+
+//----------------- REMOTE HUB ------------
+
+/** An SSH tunnel registered in the local hub. */
+export type HubRemote = {
+  id: string;
+  name: string;
+  port: number;
+};
+/** A project returned by its owning remote. */
+export type HubProject = {
+  projectId: string;
+  displayName: string;
+  fullPath: string;
+  sessions?: Array<{
+    id: string;
+    summary?: string;
+    __provider?: string;
+  }>;
+  sessionMeta?: {
+    total?: number;
+    hasMore?: boolean;
+  };
+};
+/** A conversation identity scoped to a machine. */
+export type HubConversation = {
+  remoteId: string;
+  sessionId: string;
+  title: string;
+  projectId: string;
+  projectPath: string;
+  provider: string;
+  lastActivity?: string | null;
+  isArchived?: boolean;
+};
+/** A local group whose members can belong to different machines. */
+export type HubGroup = {
+  id: string;
+  name: string;
+  isPinned: boolean;
+  members: HubConversation[];
+};
+/** Versioned group metadata for conflict-safe multiwindow updates. */
+export type HubGroupState = {
+  revision: number;
+  groups: HubGroup[];
+  imported: string[];
+};
+/** Independent connection and session snapshot for one machine. */
+export type HubRemoteState = {
+  status: 'loading' | 'online' | 'offline' | 'login';
+  projects: HubProject[];
+  conversations: HubConversation[];
+  total: number;
+  running: string[];
+  error?: string;
+};
+
+//----------------- CLAUDE SESSION ACTIONS ------------
+
+/** The context and/or checkpoint scope requested by the user. */
+export type RewindMode = 'conversation' | 'files' | 'both';
+/** Remote-verified actions and native message boundaries for a Claude session. */
+export type ClaudeSessionCapabilities = {
+  sideChat: boolean;
+  sideChatWhileRunning?: boolean;
+  conversationRewind: boolean;
+  fileRewind: 'preview-required';
+  isBusy: boolean;
+  messageIds: string[];
+  userMessageIds: string[];
+  relationship: { parentSessionId: string; sourceMessageId: string | null; kind: 'side_chat' | 'rewind_backup' } | null;
+  fileScope: string;
+  conversationBoundary: 'includes-selected-message';
+};
+
+/** A remote fork with independent context and a shared project folder. */
+export type ForkedClaudeSession = {
+  sessionId: string;
+  parentSessionId: string;
+  provider: 'claude';
+  projectId: string;
+  projectPath: string;
+  sessionName: string;
+  sharesProjectFiles: boolean;
+  inheritedFileCheckpoints: boolean;
+};
+
+/** An expiring preview required before restoring context or checkpointed files. */
+export type RewindPreview = {
+  previewToken: string;
+  expiresAt: number;
+  messageId: string;
+  mode: RewindMode;
+  canRewind: boolean;
+  filesChanged: string[];
+  insertions: number;
+  deletions: number;
+  error: string | null;
+  fileScope: string;
+  conversationBoundary: 'includes-selected-message';
+};
+
+/** The authoritative context revision after a remote rewind. */
+export type RewindResult = {
+  sessionId: string;
+  provider: 'claude';
+  projectId: string;
+  projectPath: string;
+  sessionName: string;
+  mode: RewindMode;
+  contextChanged: boolean;
+  contextRevision: string;
+  backupSessionId: string | null;
+};
+
+
+//----------------- MERMAID VIEWPORT ------------
+
+/** Measured diagram or viewport dimensions. */
+export type DiagramSize = { width: number; height: number };
+/** A pointer or viewport offset. */
+export type DiagramPoint = { x: number; y: number };
+/** Diagram translation and scale in the zoom viewer. */
+export type DiagramTransform = DiagramPoint & { scale: number };

@@ -613,6 +613,7 @@ export function handleChatConnection(
   connectedClients.add(ws);
 
   const userId = readRequestUserId(request);
+  chatRunRegistry.registerActivityObserver(ws, userId);
 
   ws.on('message', async (rawMessage) => {
     try {

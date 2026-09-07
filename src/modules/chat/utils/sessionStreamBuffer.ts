@@ -14,11 +14,11 @@ type SessionStream = {
   timer: number | null;
 }
 
-interface StreamEvent {
+type StreamEvent = {
   kind?: unknown;
   content?: unknown;
   provider?: unknown;
-}
+};
 
 const browserTimers: StreamTimers = {
   schedule: (callback, delayMs) => window.setTimeout(callback, delayMs),

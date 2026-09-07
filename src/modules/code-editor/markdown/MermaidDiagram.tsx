@@ -1,8 +1,11 @@
-import { useEffect, useId, useState } from 'react';
-// Type-only: erased at build time, so it does not pull mermaid into the main chunk.
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { Expand } from 'lucide-react';
+// Type-only: keep Mermaid out of the main application chunk.
 import type mermaid from 'mermaid';
 
 import { useTheme } from '@/shared/context/ThemeContext';
+import MermaidViewer from '@/modules/code-editor/markdown/MermaidViewer';
 
 // Mermaid is ~1.5MB minified, so it is loaded on demand the first time a
 // diagram is rendered and shared by every instance afterwards.
@@ -29,7 +32,13 @@ type MermaidDiagramProps = {
  */
 export default function MermaidDiagram({ code }: MermaidDiagramProps) {
   const { isDarkMode } = useTheme();
+  const { t } = useTranslation('codeEditor');
+  const previewRef = useRef<HTMLButtonElement>(null);
+  // Preserve inline layout while its single SVG instance is shown in the modal.
+  const [expandedHeight, setExpandedHeight] = useState<number | null>(null);
+  const closeViewer = useCallback(() => setExpandedHeight(null), []);
   const reactId = useId();
+  // Retain the SVG returned by the existing strict Mermaid rendering pipeline.
   const [svg, setSvg] = useState<string | null>(null);
 
   useEffect(() => {
@@ -74,9 +83,22 @@ export default function MermaidDiagram({ code }: MermaidDiagramProps) {
   }
 
   return (
-    <div
-      className="my-3 flex justify-center overflow-x-auto rounded-xl border border-border bg-white p-4 dark:bg-zinc-900 [&_svg]:h-auto [&_svg]:max-w-full"
-      dangerouslySetInnerHTML={{ __html: svg }}
-    />
+    <>
+      <button
+        ref={previewRef}
+        type="button"
+        aria-label={t('mermaid.open')}
+        title={t('mermaid.open')}
+        className="group relative my-3 flex w-full cursor-zoom-in justify-center overflow-x-auto rounded-xl border border-border bg-white p-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary dark:bg-zinc-900 [&_svg]:h-auto [&_svg]:max-w-full"
+        style={expandedHeight === null ? undefined : { height: expandedHeight }}
+        onClick={() => setExpandedHeight(previewRef.current?.getBoundingClientRect().height ?? 160)}
+        data-testid="mermaid-preview"
+      >
+        {/* Keep one copy of Mermaid's SVG IDs in the document while inspecting it. */}
+        {expandedHeight === null && <span className="block w-full [&_svg]:mx-auto" dangerouslySetInnerHTML={{ __html: svg }} />}
+        <span className="pointer-events-none absolute right-2 top-2 rounded-md border border-border bg-background/90 p-1.5 text-muted-foreground opacity-70 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" aria-hidden="true"><Expand className="h-4 w-4" /></span>
+      </button>
+      {expandedHeight !== null && <MermaidViewer svg={svg} onClose={closeViewer} />}
+    </>
   );
 }

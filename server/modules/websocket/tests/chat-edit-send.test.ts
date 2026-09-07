@@ -87,6 +87,8 @@ async function withGateway(
 
   closeConnection();
   process.env.DATABASE_PATH = path.join(tempDirectory, 'auth.db');
+  // A fresh fixture must not trigger migration from an existing install database.
+  await writeFile(process.env.DATABASE_PATH!, '');
   await initializeDatabase();
 
   const runs: RunCall[] = [];
