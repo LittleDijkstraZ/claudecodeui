@@ -91,7 +91,8 @@ export function useHubPanes() {
     const nav = value as WorkspaceNavigationState;
     if ((nav.sessionId !== null && typeof nav.sessionId !== 'string') || typeof nav.activeTab !== 'string' || !Array.isArray(nav.tabs) || nav.tabs.length > 40) return;
     if (!nav.tabs.every(tab => tab && typeof tab.id === 'string' && typeof tab.label === 'string' && tab.label.length <= 100)) return;
-    if (!nav.tabs.some(tab => tab.id === nav.activeTab)) return;
+    // Chat is the permanent main area, so it need not occupy a tool tab.
+    if (nav.activeTab !== 'chat' && !nav.tabs.some(tab => tab.id === nav.activeTab)) return;
     const requested = pending.current.get(remoteId);
     if (pending.current.has(remoteId) && requested !== nav.sessionId) return;
     if (nav.sessionId === null) {

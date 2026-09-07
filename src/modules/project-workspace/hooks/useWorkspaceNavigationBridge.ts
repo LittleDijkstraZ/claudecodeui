@@ -17,7 +17,8 @@ export function useWorkspaceNavigationBridge(
       if (event.origin !== location.origin || event.source !== window.parent) return;
       if (event.data?.sessionId !== sessionId) return;
       if (event.data.kind === 'cloudcli:workspace-nav-ready') onReady?.(sessionId);
-      if (event.data.kind === 'cloudcli:workspace-tab' && availableTabs.some(tab => tab.id === event.data.tab)) selectTab(event.data.tab);
+      // Older hubs use chat to collapse a tool; the main chat no longer needs a visible tab.
+      if (event.data.kind === 'cloudcli:workspace-tab' && (event.data.tab === 'chat' || availableTabs.some(tab => tab.id === event.data.tab))) selectTab(event.data.tab);
     };
     window.addEventListener('message', receive);
     window.parent.postMessage({ kind: 'cloudcli:workspace-nav', sessionId, activeTab, tabs: availableTabs }, location.origin);

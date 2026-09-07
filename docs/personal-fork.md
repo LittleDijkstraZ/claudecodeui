@@ -511,19 +511,24 @@ Reference: [Claude SDK command discovery and compaction](https://code.claude.com
 
 ## Adjustable workspace sides
 
-The unified hub has no global workspace header. Its left sidebar can collapse
-and be resized by pointer or keyboard, with its preferred width preserved across
-narrow windows and reloads. Conversation and group hit targets include their full
-row height; drag handles and menus retain separate actions.
+Chat remains the main workspace and has no tool tab. Shell, Files, Source Control,
+Agents and enabled tools remain visible at the top right, outside the drawer,
+with labelled large hit targets and horizontal scrolling in narrow windows. A
+single compact row holds session/machine identity and those tools; the browser's
+own window title bar is unchanged. Preferences has a separate settings button.
 
-The right-edge control opens the retained workspace drawer. A compact identity
-header and a single row of large tool targets keep most height available for
-Shell, Files, Source Control and Agents. Preferences includes the existing quick
-settings and a machine-labelled entry to complete settings. Closing, resizing or
-maximizing the panel does not replace its remote frame or running terminal. The
-hub keeps legacy tools reachable while a remote has not yet adopted the new
-drawer protocol. Shared modal coverage hides outer handles and preserves unread
-state while token statistics, change review or settings covers the conversation.
+The left sidebar can collapse and be resized by pointer or keyboard, with its
+preferred width preserved across narrow windows and reloads. Conversation and
+group hit targets include their full row height; drag handles and menus retain
+separate actions.
+
+The right-edge control opens the retained workspace panel. The panel contains
+its selected tool, a compact tool heading and size controls. Closing, resizing
+or maximizing it does not replace its remote frame or running terminal. The hub
+keeps an external compatibility toolbar while a remote still serves the old
+layout, without duplicating the new remote toolbar. Shared modal coverage hides
+outer handles and preserves unread state while token statistics, change review
+or settings covers the conversation.
 
 ## Continued history branches
 

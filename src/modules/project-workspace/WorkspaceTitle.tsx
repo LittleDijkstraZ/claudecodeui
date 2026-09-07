@@ -37,7 +37,7 @@ function getTabTitle(activeTab: AppTab, shouldShowTasksTab: boolean, t: (key: st
   return t('misc.projectFallback');
 }
 
-/** Rendered by the workspace drawer to identify the session, remote machine and project behind its tools. */
+/** Rendered by the external workspace toolbar to identify the persistent chat, remote machine and project. */
 export default function WorkspaceTitle({
   activeTab,
   machineLabel,

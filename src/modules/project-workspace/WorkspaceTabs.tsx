@@ -1,4 +1,4 @@
-import { MessageSquare, Terminal, Folder, GitBranch, ClipboardCheck, MonitorPlay, Bot, MessagesSquare, SlidersHorizontal, type LucideIcon } from 'lucide-react';
+import { Terminal, Folder, GitBranch, ClipboardCheck, MonitorPlay, Bot, MessagesSquare, type LucideIcon } from 'lucide-react';
 import type { KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -34,8 +34,6 @@ type PluginTab = {
 type TabDefinition = BuiltInTab | PluginTab;
 
 const BASE_TABS: BuiltInTab[] = [
-  { kind: 'builtin', id: 'preferences', labelKey: 'workspacePanel.preferences', icon: SlidersHorizontal },
-  { kind: 'builtin', id: 'chat',  labelKey: 'tabs.chat',  icon: MessageSquare },
   { kind: 'builtin', id: 'shell', labelKey: 'tabs.shell', icon: Terminal },
   { kind: 'builtin', id: 'files', labelKey: 'tabs.files', icon: Folder },
   { kind: 'builtin', id: 'git', labelKey: 'workspacePanel.sourceControl', icon: GitBranch },
@@ -56,7 +54,7 @@ const TASKS_TAB: BuiltInTab = {
   icon: ClipboardCheck,
 };
 
-/** Rendered inside the workspace drawer to keep built-in and enabled plugin tools reachable with large labeled controls. */
+/** Rendered by WorkspaceMain outside the collapsible panel so tools remain reachable beside the persistent chat. */
 export default function WorkspaceTabs({
   activeTab,
   sessionId = null,
@@ -87,6 +85,7 @@ export default function WorkspaceTabs({
     }));
 
   const tabs: TabDefinition[] = [...builtInTabs, ...pluginTabs];
+  const hasActiveTool = tabs.some(tab => tab.id === activeTab);
 
   const navigationTabs = tabs.map(tab => ({ id: tab.id, label: tab.kind === 'builtin' ? t(tab.labelKey) : tab.label }));
   useWorkspaceNavigationBridge({ sessionId, activeTab, tabs: navigationTabs }, setActiveTab, onHubNavigationReady);
@@ -110,17 +109,17 @@ export default function WorkspaceTabs({
     tabButtons[nextIndex]?.click();
   };
 
-  return <div role="tablist" aria-label={t('tabs.views', { defaultValue: 'Workspace views' })} className="scrollbar-hide flex items-center gap-1 overflow-x-auto overscroll-x-contain px-2 py-1" data-testid="workspace-tool-navigation">
-    {tabs.map(tab => {
+  return <div role="tablist" aria-label={t('tabs.views', { defaultValue: 'Workspace views' })} className="scrollbar-hide flex max-w-full items-center gap-1 overflow-x-auto overscroll-x-contain px-2 py-1" data-testid="workspace-tool-navigation">
+    {tabs.map((tab, index) => {
       const isActive = tab.id === activeTab;
       const label = tab.kind === 'builtin' ? t(tab.labelKey) : tab.label;
       return <button
         key={tab.id} type="button" role="tab" title={label} aria-label={label} aria-selected={isActive}
-        tabIndex={isActive ? 0 : -1} onClick={() => setActiveTab(tab.id)} onKeyDown={handleTabKeyDown}
+        tabIndex={isActive || (!hasActiveTool && index === 0) ? 0 : -1} onClick={() => setActiveTab(tab.id)} onKeyDown={handleTabKeyDown}
         className={`flex h-11 min-h-11 min-w-11 shrink-0 items-center justify-center gap-2 rounded-lg px-3 py-2 text-left text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary ${isActive ? 'bg-accent font-medium text-accent-foreground' : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'}`}
       >
         {tab.kind === 'builtin' ? <tab.icon className="h-[18px] w-[18px] shrink-0" /> : <PluginIcon pluginName={tab.pluginName} iconFile={tab.iconFile} className="flex h-[18px] w-[18px] shrink-0 items-center justify-center [&>svg]:h-full [&>svg]:w-full" />}
-        <span className={isActive ? 'max-w-40 truncate' : 'sr-only'}>{label}</span>
+        <span className="max-w-40 truncate">{label}</span>
       </button>;
     })}
   </div>;

@@ -6,7 +6,7 @@ import type { WorkspaceNavigationState } from '@/shared/types';
 
 const originalParent = window.parent;
 const parentWindow = { postMessage: vi.fn() } as unknown as Window;
-const navigation: WorkspaceNavigationState = { sessionId: 'session-one', activeTab: 'chat', tabs: [{ id: 'chat', label: 'Chat' }, { id: 'shell', label: 'Shell' }] };
+const navigation: WorkspaceNavigationState = { sessionId: 'session-one', activeTab: 'chat', tabs: [{ id: 'shell', label: 'Shell' }] };
 const receive = (data: unknown, origin = location.origin, source: Window = parentWindow) => act(() => {
   window.dispatchEvent(new MessageEvent('message', { data, origin, source }));
 });
@@ -48,6 +48,18 @@ describe('embedded workspace navigation', () => {
     expect(select).not.toHaveBeenCalled();
     receive({ kind: 'cloudcli:workspace-nav-ready', sessionId: 'session-two' });
     expect(ready).toHaveBeenCalledWith('session-two');
+  });
+  it('accepts a trusted collapse-to-chat command without advertising a Chat tab', () => {
+    const select = vi.fn();
+    renderHook(() => useWorkspaceNavigationBridge(navigation, select));
+    const command = { kind: 'cloudcli:workspace-tab', sessionId: navigation.sessionId, tab: 'chat' };
+    receive(command, 'https://unrelated.example');
+    receive(command, location.origin, window);
+    receive({ ...command, sessionId: 'another-session' });
+    expect(select).not.toHaveBeenCalled();
+    receive(command);
+    expect(select).toHaveBeenCalledExactlyOnceWith('chat');
+    expect(parentWindow.postMessage).toHaveBeenCalledWith(expect.objectContaining({ activeTab: 'chat', tabs: [{ id: 'shell', label: 'Shell' }] }), location.origin);
   });
   it('keeps independent navigation in side chats and standalone windows', () => {
     window.__CLOUDCLI_SIDE_CHAT__ = true;

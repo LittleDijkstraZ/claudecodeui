@@ -3,6 +3,7 @@ import { Bell, GitFork, Pencil, ChevronDown, ChevronRight, ExternalLink, Folder,
 
 import { HubDialog } from '@/modules/remote-hub/modals/HubDialog';
 import { HubConversationDialog } from '@/modules/remote-hub/modals/HubConversationDialog';
+import { HubWorkspaceToolbar } from '@/modules/remote-hub/HubWorkspaceToolbar';
 import { useHubPanes } from '@/modules/remote-hub/hooks/useHubPanes';
 import { useHubSidebar } from '@/modules/remote-hub/hooks/useHubSidebar';
 import { changeHubGroups, loadHubGroups, hubApi } from '@/shared/api';
@@ -50,7 +51,7 @@ function Hub() {
   }, []);
   const sidebar = useHubSidebar();
   const { sidebarOpen, setSidebarOpen } = sidebar;
-  // Keep tools reachable while a visited remote still serves the previous drawer protocol.
+  // Keep machine preferences reachable while a visited remote serves the previous drawer protocol.
   const [fallbackToolsRemote, setFallbackToolsRemote] = useState<string | null>(null);
   // Controls the retained cross-machine notification inbox.
   const [showNotifications, setShowNotifications] = useState(false);
@@ -481,6 +482,7 @@ function Hub() {
       {!sidebarOpen && !selectedPanel?.overlayOpen && !selectedPanel?.settingsOpen && <Button variant="outline" size="icon" aria-label="展开左侧栏" title="展开左侧栏" className="absolute left-2 top-2 z-40 h-9 w-9 bg-background/95 shadow-sm" onClick={() => setSidebarOpen(true)}><PanelLeftOpen className="h-4 w-4" />{notifications.some(n => !n.seen) && <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-primary" />}</Button>}
       {selectedRemote && !selectedPanel?.overlayOpen && !selectedPanel?.settingsOpen && <Button variant="outline" size="icon" aria-label={rightPanelOpen ? '收起右侧工作区' : '打开右侧工作区'} title={`${rightPanelOpen ? '收起' : '打开'}右侧工作区 · ${selectedRemote.name}`} aria-expanded={rightPanelOpen} className="absolute right-0 top-1/2 z-40 h-11 w-9 -translate-y-1/2 rounded-r-none bg-background/95 shadow-sm" onClick={toggleRightPanel}>{rightPanelOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}</Button>}
       {selectedRemote && states[selectedRemote.id]?.status === 'offline' && <div role="status" className="bg-amber-50 px-4 py-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-200">{selectedRemote.name} 连接中断，其他机器仍可使用。<button className="ml-2 underline" onClick={() => void refresh(selectedRemote.id)}>重新连接</button></div>}
+      {selectedRemote && !selectedPanel && <HubWorkspaceToolbar navigation={navigation[selectedRemote.id]} machine={selectedRemote.name} title={selection?.title ?? '工作区'} sidebarClosed={!sidebarOpen} onSelect={tab => selectTab(selectedRemote.id, tab)} onSettings={() => openSettings(selectedRemote.id)} />}
       {panes.map(pane => <iframe
         name="cloudcli-remote" key={pane.remoteId}
         ref={frame => registerPane(pane.remoteId, frame)}
@@ -492,7 +494,6 @@ function Hub() {
       />)}
       {selectedRemote && fallbackToolsRemote === selectedRemote.id && !selectedPanel && <aside aria-label="右侧工作区" className="absolute inset-y-0 right-0 z-30 flex w-[300px] max-w-full flex-col gap-3 border-l border-border bg-background p-4 shadow-lg">
         <div className="flex min-h-10 items-center gap-2"><div className="min-w-0 flex-1"><div className="truncate text-sm font-medium">{selection?.title ?? '工作区'}</div><div className="truncate text-xs text-muted-foreground">{selectedRemote.name}</div></div><Button variant="ghost" size="icon" aria-label="关闭工作区工具" onClick={() => setFallbackToolsRemote(null)}><PanelRightClose className="h-4 w-4" /></Button></div>
-        <nav aria-label="工作区视图" className="grid grid-cols-2 gap-2">{navigation[selectedRemote.id]?.tabs.map(tab => <Button key={tab.id} variant="outline" className="min-h-11 w-full px-2 text-xs" aria-pressed={navigation[selectedRemote.id].activeTab === tab.id} onClick={() => { selectTab(selectedRemote.id, tab.id); setFallbackToolsRemote(null); }}>{tab.label}</Button>)}</nav>
         <Button variant="outline" className="min-h-11 justify-start" aria-label={`${selectedRemote.name} 的设置`} onClick={() => { openSettings(selectedRemote.id); setFallbackToolsRemote(null); }}><Settings className="h-4 w-4" />机器设置</Button>
       </aside>}
       {selectedRemote ? null : <div className="flex flex-1 items-center justify-center p-8 text-center"><div className="max-w-sm"><Server className="mx-auto mb-4 h-8 w-8 text-muted-foreground" /><h1 className="text-lg font-semibold">选择一段对话，继续工作</h1><p className="mt-3 text-sm leading-relaxed text-muted-foreground">先在侧栏连接各台机器。登录使用对应远端的 CloudCLI 账号，项目操作和 Claude 执行都发生在那里。</p><Button className="mt-5" onClick={() => setModal({

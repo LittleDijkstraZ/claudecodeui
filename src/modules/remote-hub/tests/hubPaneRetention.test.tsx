@@ -4,6 +4,17 @@ import { describe, expect, test, vi } from 'vitest';
 import { useHubPanes } from '@/modules/remote-hub/hooks/useHubPanes';
 
 describe('machine pane lifetime', () => {
+  test('accepts permanent main chat without advertising it as a tool tab', () => {
+    const { result } = renderHook(useHubPanes);
+    const postMessage = vi.fn();
+    act(() => result.current.register('alpha', { contentWindow: { postMessage } } as unknown as HTMLIFrameElement));
+    act(() => result.current.acceptNavigation('alpha', { sessionId: 'session-a', activeTab: 'chat', tabs: [{ id: 'shell', label: 'Shell' }] }));
+    expect(result.current.navigation.alpha.activeTab).toBe('chat');
+    act(() => result.current.selectTab('alpha', 'shell'));
+    expect(postMessage).toHaveBeenLastCalledWith({ kind: 'cloudcli:workspace-tab', tab: 'shell', sessionId: 'session-a' }, location.origin);
+    act(() => result.current.acceptNavigation('alpha', { sessionId: 'session-a', activeTab: 'unknown', tabs: [{ id: 'shell', label: 'Shell' }] }));
+    expect(result.current.navigation.alpha.activeTab).toBe('chat');
+  });
   test('empty navigation rejects the deleted session until the remote acknowledges its cleared workspace', () => {
     const { result } = renderHook(useHubPanes);
     act(() => { result.current.navigate('alpha', 'old'); result.current.acceptSelection('alpha', 'old'); result.current.navigate('beta', 'other'); result.current.acceptSelection('beta', 'other'); });
