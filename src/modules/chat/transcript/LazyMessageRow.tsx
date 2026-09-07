@@ -35,6 +35,8 @@ type LazyMessageRowProps = {
    */
   initiallyNearViewport: boolean;
   children: ReactNode;
+  /** Keep the target mounted while a recorded-change navigation is active. */
+  forceMount?: boolean;
 };
 
 export default function LazyMessageRow({
@@ -42,6 +44,7 @@ export default function LazyMessageRow({
   timestamp,
   initiallyNearViewport,
   children,
+  forceMount = false,
 }: LazyMessageRowProps) {
   const [isNearViewport, setIsNearViewport] = useState(initiallyNearViewport);
   const [measuredHeight, setMeasuredHeight] = useState<number | null>(null);
@@ -65,7 +68,7 @@ export default function LazyMessageRow({
     return lazyRows.observe(element, handleNearViewportChange);
   }, [lazyRows, handleNearViewportChange]);
 
-  const isMounted = lazyRows === null || isNearViewport;
+  const isMounted = forceMount || lazyRows === null || isNearViewport;
 
   return (
     <div

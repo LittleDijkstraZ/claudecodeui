@@ -1587,3 +1587,36 @@ export type CreatedGroupConversation = {
   projectId: string;
   sessionName: string;
 };
+
+//----------------- TRANSCRIPT REVEAL ------------
+/** Exact tool-record destination; requestId makes repeated jumps reopen collapsed content. */
+export type MessageRevealTarget = {
+  messageKey: string;
+  toolId?: string;
+  requestId: number;
+};
+
+// ---------------------------
+//----------------- RECORDED CONVERSATION CHANGES ------------
+
+/** Completed edit recorded by a chat tool, used by the change summary and its exact transcript jump. */
+export type ConversationFileChange = {
+  id: string;
+  filePath: string;
+  operation: 'edit' | 'write' | 'patch' | 'delete';
+  oldContent?: string;
+  newContent?: string;
+  patch?: string;
+  sourceMessageKey: string;
+  sourceToolId?: string;
+  timestamp: ChatMessage['timestamp'];
+  contextLabel?: string;
+};
+
+/** Real user turn and its recorded changes; empty turns remain visible instead of inheriting earlier edits. */
+export type ConversationChangeTurn = {
+  id: string;
+  label: string;
+  timestamp: ChatMessage['timestamp'];
+  changes: ConversationFileChange[];
+};

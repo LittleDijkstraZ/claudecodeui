@@ -1,7 +1,8 @@
 # Personal fork maintenance
 
 Base: upstream `v1.37.2`. Branch: `personal/cloudcli`.
-Modified on 2026-09-07 for incremental Claude output, Ultracode, and conversation groups.
+Modified on 2026-09-07 for incremental Claude output, Ultracode, conversation
+groups, and per-turn conversation change review.
 
 ## Behavior to preserve
 
@@ -27,13 +28,53 @@ alive until the workflow finishes and Claude delivers the follow-up result.
 Permission denial, launch failure, cancellation, and multiple workflows need
 their own coverage. Existing background Bash and monitor behavior is preserved.
 
+## Conversation change review
+
+The compact bar above the composer summarizes the latest user turn's recorded
+file edits. Empty turns remain visible as empty; earlier edits are not presented
+as changes from the current turn. The review dialog can select another turn or
+all loaded conversation history. When older messages are missing, it offers the
+existing history loader without closing the dialog.
+
+Changes are grouped by file while retaining each successful recorded edit in
+sequence. Repeated edits are not collapsed into an invented full-file or net
+diff. Each entry links back to its original tool context in the conversation;
+the dialog closes before that context is expanded and scrolled into view.
+
+The summary only covers successful recorded file-tool operations. Pending,
+failed, and denied operations are excluded. Arbitrary shell commands are not
+interpreted to infer filesystem changes, and the panel is not a Git working-tree
+snapshot. Recorded replacements may be fragments rather than complete files.
+A write with unknown earlier content is shown as written content, without
+assuming the file was previously empty.
+
+Small before/after records reuse the existing diff viewer. Large inputs avoid
+the quadratic diff calculator and show paged recorded content instead. File and
+edit sections expand on demand; further content has explicit navigation controls.
+Keep the panel keyed by session so selection and pending context jumps do not
+leak into another conversation.
+
+Extraction and display use messages already loaded in the browser. Loading
+earlier messages uses the self-hosted server's existing history endpoint. This
+summary adds no telemetry or third-party service connections and does not read
+working files or run Git commands.
+
+Browser checks also cover targets outside the initial rendered range, folded
+main and subagent tools, repeated reveals, session switching, realtime result
+arrival, an in-flight history request completing after a newer jump, and mobile
+Chinese layout. The progress tab remains in normal layout flow so it cannot
+overlap the changes bar.
+
 ## Checks
 
 Use the locked dependencies with `npm ci`. Relevant regression tests live under
 `server/modules/providers/tests/`, `server/modules/conversation-groups/tests/`,
 `server/modules/database/tests/`, `server/modules/websocket/tests/`,
-`src/components/sidebar/utils/groupConversationPager.test.ts`, and
-`src/components/chat/utils/sessionStreamBuffer.test.ts`.
+`src/components/sidebar/utils/groupConversationPager.test.ts`,
+`src/components/chat/utils/sessionStreamBuffer.test.ts`,
+`src/components/chat/utils/conversationChanges.test.ts`,
+`src/components/chat/hooks/useChatMessages.test.ts`, and
+`src/components/chat/view/subcomponents/ConversationChangeContent.test.tsx`.
 
 ```sh
 npm test
@@ -47,11 +88,10 @@ The regression tests use simulated SDK events and do not send paid model
 requests. A successful build or mocked test is not an end-to-end test of a live
 Ultracode workflow with a particular model/account.
 
-The fork passes the production build and frontend/backend type checks.
-All 90 focused regression tests pass: 69 backend and 21 frontend cases.
-Repository-wide lint exits successfully with 198 existing warnings and no
-errors. The frontend build also reports pre-existing CSS and large-chunk
-warnings. These unrelated warnings are retained to keep the patch focused.
+Run these checks after changing the source. Compare repository-wide lint output
+against the upstream baseline; the frontend build can also report existing CSS
+and large-chunk warnings. Neither warning counts nor previous successful runs
+replace validation of the current revision.
 
 ## Conversation groups
 

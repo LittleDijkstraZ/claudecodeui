@@ -1,3 +1,4 @@
+import type { MessageRevealTarget } from '@/shared/types';
 import React, { memo, useMemo, useCallback } from 'react';
 
 import type { DiffLine, Project,ToolStatus } from '@/shared/types';
@@ -18,6 +19,7 @@ import { DiffStatsBadge } from '@/modules/chat/tools/DiffStatsBadge';
 import { parseToolPayload, summarizeDiff } from '@/modules/chat/utils/messageTransforms';
 
 type ToolRendererProps = {
+  revealTarget?: MessageRevealTarget;
   toolName: string;
   toolInput: any;
   toolResult?: any;
@@ -87,6 +89,7 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
   showRawParameters = false,
   rawToolInput,
   toolStatus: reportedStatus,
+  revealTarget,
 }) => {
   const config = getToolConfig(toolName);
   const displayConfig: any = mode === 'input' ? config.input : config.result;
@@ -326,6 +329,7 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
         toolId={toolId}
         title={title}
         defaultOpen={defaultOpen}
+        revealRequestId={revealTarget?.requestId}
         onTitleClick={handleTitleClick}
         badge={badgeElement}
         showRawParameters={mode === 'input' && showRawParameters}

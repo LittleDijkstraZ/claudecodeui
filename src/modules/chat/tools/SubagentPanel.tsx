@@ -1,13 +1,14 @@
-import { memo, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import { Bot, Brain, ChevronRight, CircleAlert, CircleCheck, MessageSquareText } from 'lucide-react';
 
-import type { DiffLine, Project, SubagentActivity, SubagentInfo, ToolResult } from '@/shared/types';
+import type { DiffLine, MessageRevealTarget, Project, SubagentActivity, SubagentInfo, ToolResult } from '@/shared/types';
 import { cn } from '@/shared/utils';
 import { ToolRenderer } from '@/modules/chat/tools/ToolRenderer';
 import { useIsExportingTranscript } from '@/modules/chat/context/TranscriptRenderContext';
 import { MarkdownContent } from '@/modules/chat/tools/ContentRenderers/MarkdownContent';
 
 type SubagentPanelProps = {
+  revealTarget?: MessageRevealTarget;
   /** Raw tool input of the call that spawned the agent, used for the prompt. */
   toolInput: unknown;
   toolResult?: ToolResult | null;
@@ -99,6 +100,7 @@ SubagentNote.displayName = 'SubagentNote';
  */
 export const SubagentPanel = memo(({
   toolInput,
+  revealTarget,
   toolResult,
   subagent,
   activity,
@@ -120,6 +122,12 @@ export const SubagentPanel = memo(({
   const resultText = useMemo(() => readResultText(toolResult?.content), [toolResult?.content]);
 
   const entries = activity ?? [];
+  useEffect(() => {
+    if (revealTarget?.requestId === undefined) return;
+    setIsOpen(true);
+    const index = (activity ?? []).findIndex(entry => entry.toolId === revealTarget.toolId);
+    if (index >= 0) setRenderLimit(limit => Math.max(limit, index + 1));
+  }, [revealTarget?.requestId, revealTarget?.toolId, activity]);
   const status = subagent?.status ?? (toolResult ? 'completed' : 'running');
   const toolCount = entries.filter((entry) => entry.kind === 'tool').length;
   // Claude names its agent presets (Explore, Plan); Codex has none, so the
@@ -194,8 +202,9 @@ export const SubagentPanel = memo(({
                   // Rendered through the same router the main thread uses, so a
                   // subagent's shell command or diff looks exactly like one the
                   // top-level agent ran.
+                  <div key={entry.toolId ?? `activity-${index}`} data-tool-id={entry.toolId} tabIndex={-1}>
                   <ToolRenderer
-                    key={entry.toolId ?? `activity-${index}`}
+                    revealTarget={entry.toolId === revealTarget?.toolId ? revealTarget : undefined}
                     toolName={entry.toolName || 'UnknownTool'}
                     toolInput={entry.toolInput}
                     toolResult={entry.toolResult}
@@ -205,6 +214,7 @@ export const SubagentPanel = memo(({
                     createDiff={createDiff}
                     selectedProject={selectedProject}
                   />
+                  </div>
                 ) : (
                   <SubagentNote key={`activity-${index}`} activity={entry} />
                 )

@@ -7,6 +7,9 @@ The maintained customization branch is **`personal/cloudcli`**, based on upstrea
 
 ## Changes in this fork
 
+- **Conversation changes** summarize recorded file edits by turn. Review one
+  turn or all loaded history, load earlier messages, and jump from each edit back
+  to its conversation context. Repeated edits remain separate within each file.
 - **Conversation groups** organize chats across working folders. Move an existing
   conversation into a group, or create a conversation in a group and choose its
   working folder. Groups are saved per user in the self-hosted server's database.
@@ -32,6 +35,13 @@ preserved in [NOTICE](NOTICE) and [LICENSE](LICENSE).
 空白对话。需要新文件夹时，先在项目视图添加。发送第一条消息才会调用助手。
 分组支持改名、搜索和分页，归档对话会显示标记；删除组不会删除对话。
 分组保存在当前 CloudCLI 服务器的数据库中，刷新或换浏览器后仍可使用。
+
+输入框上方的 **查看改动 / Review changes** 可以汇总每一轮成功记录的文件编辑。
+面板支持切换轮次、查看整个会话的已加载部分，以及加载更早的会话历史。
+同一文件的多次编辑按顺序分别展示，点击“跳到会话”可以回到该次编辑的上下文。
+没有原内容记录的写入只显示写入内容；大内容可以展开并分页查看。
+汇总来自会话中的文件工具记录，不会推断任意终端命令造成的变化，也不是 Git
+净差异。计算在浏览器中完成，加载历史仍使用当前服务器的接口，不新增遥测或外部服务连接。
 
 在聊天框旁打开模型菜单，选择支持该模式的 Claude 模型（例如 `Opus`、
 `Sonnet` 或 `Fable`），然后选择 **Ultracode**。它会自动组织多个子任务，

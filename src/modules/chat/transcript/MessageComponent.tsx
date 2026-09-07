@@ -1,3 +1,5 @@
+import { getIntrinsicMessageKey } from '@/modules/chat/utils/messageKeys';
+import type { MessageRevealTarget } from '@/shared/types';
 import { memo, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { GitBranchIcon, PencilIcon } from 'lucide-react';
@@ -17,6 +19,7 @@ import { useIsExportingTranscript } from '@/modules/chat/context/TranscriptRende
 import { MemoryCitations } from '@/modules/chat/transcript/MemoryCitations';
 
 type MessageComponentProps = {
+  revealTarget?: MessageRevealTarget;
   message: ChatMessage;
   prevMessage: ChatMessage | null;
   createDiff: (oldStr: string, newStr: string) => DiffLine[];
@@ -46,7 +49,7 @@ const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write', 'ApplyPatch']);
  * Rendered by chat's ChatMessagesPane and ToolGroupContainer to draw one
  * transcript entry — user turn, assistant turn, or a tool call and its result.
  */
-const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, showRawParameters, showThinking, selectedProject, provider, onEditMessage, onForkFromMessage }: MessageComponentProps) => {
+const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, showRawParameters, showThinking, selectedProject, provider, onEditMessage, onForkFromMessage, revealTarget }: MessageComponentProps) => {
   const { t } = useTranslation('chat');
   const isGrouped = prevMessage && prevMessage.type === message.type &&
     ((prevMessage.type === 'assistant') ||
@@ -54,6 +57,8 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
       (prevMessage.type === 'tool') ||
       (prevMessage.type === 'error'));
   const messageRef = useRef<HTMLDivElement | null>(null);
+  const messageKey = getIntrinsicMessageKey(message);
+  const matchingRevealTarget = revealTarget?.messageKey === messageKey ? revealTarget : undefined;
   const userCopyContent = String(message.content || '');
   const formattedMessageContent = useMemo(
     () => {
@@ -93,7 +98,10 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
   return (
     <div
       ref={messageRef}
+      data-message-key={messageKey ?? undefined}
+      data-tool-id={message.toolId ?? message.toolCallId}
       data-message-timestamp={message.timestamp || undefined}
+      tabIndex={-1}
       className={`chat-message ${message.type} ${isGrouped ? 'grouped' : ''} ${message.type === 'user' ? 'flex justify-end px-3 sm:px-0' : 'px-3 sm:px-0'}`}
     >
       {message.type === 'user' ? (
@@ -209,6 +217,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
               /* A spawned agent owns its whole card — header, timeline and
                  result — so it never goes through the tool input/result pair. */
               <SubagentPanel
+                revealTarget={matchingRevealTarget}
                 toolInput={message.toolInput}
                 toolResult={message.toolResult}
                 subagent={message.subagent}
@@ -240,6 +249,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                     showRawParameters={showRawParameters}
                     rawToolInput={typeof message.toolInput === 'string' ? message.toolInput : undefined}
                     toolStatus={message.toolStatus}
+                    revealTarget={matchingRevealTarget}
                   />
                 )}
 
@@ -375,4 +385,3 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
 });
 
 export default MessageComponent;
-

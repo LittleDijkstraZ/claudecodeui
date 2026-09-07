@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@/shared/ui';
 import { cn } from '@/shared/utils';
@@ -8,6 +8,7 @@ type CollapsibleSectionProps = {
   title: string;
   toolName?: string;
   open?: boolean;
+  revealRequestId?: number;
   action?: React.ReactNode;
   badge?: React.ReactNode;
   onTitleClick?: () => void;
@@ -25,6 +26,7 @@ export const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({
   title,
   toolName,
   open = false,
+  revealRequestId,
   action,
   badge,
   onTitleClick,
@@ -34,9 +36,12 @@ export const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({
   // A document has no chevron to click, so a section that stays collapsed in
   // an export is simply content the reader can never reach.
   const isExporting = useIsExportingTranscript();
+  // A reveal request opens this section and preserves the user's later choice.
+  const [isOpen, setIsOpen] = useState(open);
+  useEffect(() => { if (revealRequestId !== undefined) setIsOpen(true); }, [revealRequestId]);
 
   return (
-    <Collapsible defaultOpen={open || isExporting} className={cn('group/section', className)}>
+    <Collapsible open={isOpen || isExporting} onOpenChange={setIsOpen} className={cn('group/section', className)}>
       {/* When there's a clickable title (Edit/Write), only the chevron toggles collapse */}
       {onTitleClick ? (
         <div className="flex cursor-default select-none items-center gap-1.5 py-0.5 text-xs group-data-[state=open]/section:sticky group-data-[state=open]/section:top-0 group-data-[state=open]/section:z-10 group-data-[state=open]/section:-mx-1 group-data-[state=open]/section:bg-background group-data-[state=open]/section:px-1">

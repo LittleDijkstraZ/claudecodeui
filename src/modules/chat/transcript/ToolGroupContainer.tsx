@@ -1,4 +1,6 @@
-import { memo, useMemo, useState } from 'react';
+import { getIntrinsicMessageKey } from '@/modules/chat/utils/messageKeys';
+import type { MessageRevealTarget } from '@/shared/types';
+import { memo, useEffect, useMemo, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
 
 import type { ChatMessage, ClaudePermissionSuggestion, PermissionGrantResult, LLMProvider,DiffLine,DiffStats,Project,ToolGroupItem } from '@/shared/types';
@@ -9,6 +11,7 @@ import { DiffStatsBadge } from '@/modules/chat/tools/DiffStatsBadge';
 import { parseToolPayload, summarizeDiff } from '@/modules/chat/utils/messageTransforms';
 
 type ToolGroupContainerProps = {
+  revealTarget?: MessageRevealTarget;
   group: ToolGroupItem;
   prevMessage: ChatMessage | null;
   createDiff: (oldStr: string, newStr: string) => DiffLine[];
@@ -85,6 +88,7 @@ function ToolGroupContainer({
   showThinking,
   selectedProject,
   provider,
+  revealTarget,
 }: ToolGroupContainerProps) {
   const isExporting = useIsExportingTranscript();
   // Collapsed on screen, always open in an export: the whole point of the
@@ -92,6 +96,8 @@ function ToolGroupContainer({
   // has no way to ask.
   const [isExpanded, setIsExpanded] = useState(false);
   const showChildren = isExpanded || isExporting;
+  const revealRequestId = revealTarget && group.messages.some(message => getIntrinsicMessageKey(message) === revealTarget.messageKey) ? revealTarget.requestId : undefined;
+  useEffect(() => { if (revealRequestId !== undefined) setIsExpanded(true); }, [revealRequestId]);
   const config = getToolConfig(group.toolName).input;
   const label = config.label || group.toolName;
   const borderClass = config.colorScheme?.border || 'border-border';
@@ -144,6 +150,7 @@ function ToolGroupContainer({
               showThinking={showThinking}
               selectedProject={selectedProject}
               provider={provider}
+              revealTarget={getIntrinsicMessageKey(message) === revealTarget?.messageKey ? revealTarget : undefined}
             />
           ))}
         </div>

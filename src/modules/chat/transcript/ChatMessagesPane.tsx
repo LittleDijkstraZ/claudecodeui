@@ -1,3 +1,4 @@
+import type { MessageRevealTarget } from '@/shared/types';
 import { useTranslation } from 'react-i18next';
 import { memo, useCallback, useMemo } from 'react';
 import type { Dispatch, RefObject, SetStateAction } from 'react';
@@ -26,6 +27,7 @@ import ChatExportMenu from '@/modules/chat/transcript/ChatExportMenu';
 const INITIAL_MOUNTED_TAIL_ROWS = 30;
 
 type ChatMessagesPaneProps = {
+  revealTarget?: MessageRevealTarget;
   scrollContainerRef: RefObject<HTMLDivElement>;
   onWheel: () => void;
   onTouchMove: () => void;
@@ -82,6 +84,7 @@ type ChatMessagesPaneProps = {
  * load-all-history overlay.
  */
 function ChatMessagesPane({
+  revealTarget,
   scrollContainerRef,
   onWheel,
   onTouchMove,
@@ -282,8 +285,10 @@ function ChatMessagesPane({
                     lazyRows={lazyRows}
                     timestamp={item.timestamp}
                     initiallyNearViewport={initiallyNearViewport}
+                  forceMount={Boolean(revealTarget && (isToolGroupItem(item) ? item.messages.some(message => getIntrinsicMessageKey(message) === revealTarget.messageKey) : getIntrinsicMessageKey(item) === revealTarget.messageKey))}
                   >
                     <ToolGroupContainer
+                      revealTarget={revealTarget}
                       group={item}
                       prevMessage={groupPrevMessage}
                       createDiff={createDiff}
@@ -309,8 +314,10 @@ function ChatMessagesPane({
                   lazyRows={lazyRows}
                   timestamp={item.timestamp}
                   initiallyNearViewport={initiallyNearViewport}
+                  forceMount={Boolean(revealTarget && (isToolGroupItem(item) ? item.messages.some(message => getIntrinsicMessageKey(message) === revealTarget.messageKey) : getIntrinsicMessageKey(item) === revealTarget.messageKey))}
                 >
                   <MessageComponent
+                    revealTarget={revealTarget}
                     message={item}
                     prevMessage={messagePrevMessage}
                     createDiff={createDiff}

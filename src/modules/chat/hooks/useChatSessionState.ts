@@ -11,6 +11,7 @@ import { normalizedToChatMessages } from '@/modules/chat/hooks/useChatMessages';
 import { findSearchTargetIndex, resolveSearchWindowSize } from '@/modules/chat/utils/searchTargetLocator';
 import { readSelectedProvider } from '@/shared/selectedProvider';
 import type { SearchTarget } from '@/modules/chat/utils/searchTargetLocator';
+import { getIntrinsicMessageKey } from '@/modules/chat/utils/messageKeys';
 
 const INITIAL_VISIBLE_MESSAGES = 100;
 
@@ -209,7 +210,7 @@ export function useChatSessionState({
   // The sidebar-search hit this transcript still owes the user a scroll to.
   // State rather than a ref because resolving it widens the render window,
   // and it is cleared once the row is on screen or the retries run out.
-  const [searchTarget, setSearchTarget] = useState<SearchTarget | null>(null);
+  const [searchTarget, setSearchTarget] = useState<(SearchTarget & { sessionId: string | null; generation: number }) | null>(null);
   const searchScrollActiveRef = useRef(false);
   /**
    * The pending step of the search-jump retry chain, so a session change can
@@ -223,6 +224,10 @@ export function useChatSessionState({
    * time, a scroll-up inside that window is silently undone.
    */
   const isUserScrolledUpRef = useRef(false);
+  // Async history work may finish after a newer context jump; only its own
+  // navigation generation is allowed to restore the viewport.
+  const navigationGenerationRef = useRef(0);
+  const messageRevealActiveRef = useRef(false);
   const isLoadingMoreRef = useRef(false);
   const allMessagesLoadedRef = useRef(false);
   const topLoadLockRef = useRef(false);
@@ -245,12 +250,19 @@ export function useChatSessionState({
 
   const createDiff = useMemo<DiffCalculator>(() => createCachedDiffCalculator(), []);
 
+  useEffect(() => () => {
+    navigationGenerationRef.current++;
+    searchScrollActiveRef.current = false;
+    messageRevealActiveRef.current = false;
+  }, []);
+
   useEffect(() => {
     const trigger = newSessionTrigger ?? 0;
     if (trigger === previousNewSessionTriggerRef.current) {
       return;
     }
     previousNewSessionTriggerRef.current = trigger;
+    navigationGenerationRef.current++;
 
     /**
      * Consumer-side reset for explicit New Session intent.
@@ -284,6 +296,7 @@ export function useChatSessionState({
     setSearchTarget(null);
     wasNearTopRef.current = false;
     searchScrollActiveRef.current = false;
+    messageRevealActiveRef.current = false;
     topLoadLockRef.current = false;
     pendingScrollRestoreRef.current = null;
     pendingInitialScrollRef.current = true;
@@ -408,6 +421,26 @@ export function useChatSessionState({
     return all;
   }, [storeMessages, pendingUserMessage]);
 
+  const revealMessage = useCallback((messageKey: string) => {
+    const index = chatMessages.findIndex((message) => getIntrinsicMessageKey(message) === messageKey);
+    if (index < 0) return false;
+    // A summary can point outside the last 100 rendered rows. Reveal only the
+    // already-loaded range; fetching history here would fight scroll restoration.
+    pendingInitialScrollRef.current = false;
+    pendingScrollRestoreRef.current = null;
+    navigationGenerationRef.current++;
+    searchScrollActiveRef.current = false;
+    messageRevealActiveRef.current = true;
+    setSearchTarget(null);
+    setIsUserScrolledUp(true);
+    setVisibleMessageCount((count) => Math.max(count, chatMessages.length - index));
+    return true;
+  }, [chatMessages]);
+
+  const finishMessageReveal = useCallback(() => {
+    messageRevealActiveRef.current = false;
+  }, []);
+
   /* ---------------------------------------------------------------- */
   /*  addMessage                                                       */
   /* ---------------------------------------------------------------- */
@@ -464,6 +497,8 @@ export function useChatSessionState({
 
       isLoadingMoreRef.current = true;
       setIsLoadingMoreMessages(true);
+      const requestSessionId = selectedSession.id;
+      const navigationGeneration = navigationGenerationRef.current;
       const scrollRestoreState = captureScrollRestoreState(container);
 
       try {
@@ -474,6 +509,7 @@ export function useChatSessionState({
             && activeSessionIdRef.current === selectedSession.id
           ),
         });
+        if (activeSessionIdRef.current !== requestSessionId) return false;
         const { slot, prependedCount } = result;
         setHasMoreMessages(slot.hasMore);
         setTotalMessages(slot.total);
@@ -495,8 +531,11 @@ export function useChatSessionState({
           return false;
         }
 
-        pendingScrollRestoreRef.current = scrollRestoreState;
-        setVisibleMessageCount((prev) => prev + SESSION_MESSAGES_PAGE_SIZE);
+        const canRestore = navigationGenerationRef.current === navigationGeneration;
+        if (canRestore) {
+          pendingScrollRestoreRef.current = scrollRestoreState;
+          setVisibleMessageCount((prev) => prev + SESSION_MESSAGES_PAGE_SIZE);
+        }
         if (!slot.hasMore) {
           allMessagesLoadedRef.current = true;
           setAllMessagesLoaded(true);
@@ -506,10 +545,12 @@ export function useChatSessionState({
           }
           setShowLoadAllOverlay(false);
         }
-        return true;
+        return canRestore;
       } finally {
-        isLoadingMoreRef.current = false;
-        setIsLoadingMoreMessages(false);
+        if (activeSessionIdRef.current === requestSessionId) {
+          isLoadingMoreRef.current = false;
+          setIsLoadingMoreMessages(false);
+        }
       }
     },
     [hasMoreMessages, isActive, isLoadingMoreMessages, selectedProject, selectedSession, sessionStore],
@@ -519,6 +560,13 @@ export function useChatSessionState({
     if (!isActive) return;
     const container = scrollContainerRef.current;
     if (!container) return;
+
+    // Programmatic context jumps must not start an older-page fetch that would
+    // install a competing scroll-restore anchor while the tool group expands.
+    if (searchScrollActiveRef.current || messageRevealActiveRef.current) {
+      scrollPositionRef.current = { height: container.scrollHeight, top: container.scrollTop };
+      return;
+    }
 
     const nearBottom = isNearBottom();
     setIsUserScrolledUp(!nearBottom);
@@ -587,6 +635,7 @@ export function useChatSessionState({
 
   // Reset scroll/pagination state on session change
   useEffect(() => {
+    navigationGenerationRef.current++;
     // A search jump belongs to the transcript it was requested against. Left
     // armed across a session change it did two visible things to the session
     // the user actually opened: the initial scroll bailed (it declines while a
@@ -609,6 +658,8 @@ export function useChatSessionState({
     topLoadLockRef.current = false;
     pendingScrollRestoreRef.current = null;
     wasNearTopRef.current = false;
+    isLoadingMoreRef.current = false;
+    messageRevealActiveRef.current = false;
     setIsUserScrolledUp(false);
   }, [selectedProject?.projectId, selectedSession?.id]);
 
@@ -626,7 +677,7 @@ export function useChatSessionState({
     if (!isActive) return;
     if (!pendingInitialScrollRef.current || !scrollContainerRef.current || isLoadingSessionMessages) return;
     if (chatMessages.length === 0) { pendingInitialScrollRef.current = false; return; }
-    if (searchScrollActiveRef.current) { pendingInitialScrollRef.current = false; return; }
+    if (searchScrollActiveRef.current || messageRevealActiveRef.current) { pendingInitialScrollRef.current = false; return; }
 
     const container = scrollContainerRef.current;
     let frame = 0;
@@ -798,13 +849,15 @@ export function useChatSessionState({
         // Skip store refresh during active streaming
         if (!isProcessing) {
           const shouldStickToBottom = isActiveRef.current && isNearBottom();
+          const navigationGeneration = navigationGenerationRef.current;
           await requestLatestMessages(selectedSession.id);
 
           if (shouldStickToBottom) {
             setTimeout(() => {
-              if (!isUserScrolledUpRef.current) {
-                scrollToBottom();
-              }
+              if (navigationGenerationRef.current === navigationGeneration
+                && activeSessionIdRef.current === selectedSession.id
+                && isActiveRef.current
+                && !isUserScrolledUpRef.current) scrollToBottom();
             }, 200);
           }
         }
@@ -829,10 +882,15 @@ export function useChatSessionState({
     const targetSnippet = session?.__searchTargetSnippet;
     const targetTimestamp = session?.__searchTargetTimestamp;
     if (typeof targetSnippet === 'string' && targetSnippet) {
+      const generation = ++navigationGenerationRef.current;
       searchScrollActiveRef.current = true;
+      pendingInitialScrollRef.current = false;
+      pendingScrollRestoreRef.current = null;
       setSearchTarget({
         snippet: targetSnippet,
         timestamp: typeof targetTimestamp === 'string' ? targetTimestamp : undefined,
+        sessionId: selectedSession?.id ?? null,
+        generation,
       });
     }
   }, [selectedSession]);
@@ -842,7 +900,19 @@ export function useChatSessionState({
     if (!isActive || !searchTarget || chatMessages.length === 0 || isLoadingSessionMessages) return;
 
     const target = searchTarget;
+    const isCurrentNavigation = () => navigationGenerationRef.current === target.generation
+      && activeSessionIdRef.current === target.sessionId;
+    if (!isCurrentNavigation()) return;
     setSearchTarget(null);
+
+    const canScroll = () => {
+      if (!isCurrentNavigation()) return false;
+      if (!isActiveRef.current) {
+        setSearchTarget(target);
+        return false;
+      }
+      return true;
+    };
 
     const scrollToTarget = async () => {
       if (!allMessagesLoadedRef.current && selectedSession && selectedProject) {
@@ -856,6 +926,7 @@ export function useChatSessionState({
                 && activeSessionIdRef.current === selectedSession.id
               ),
             });
+            if (!canScroll()) return;
             if (slot) {
               // Fetch the whole transcript so an old hit can be found, but do
               // not render all of it — the window below is widened to exactly
@@ -873,6 +944,7 @@ export function useChatSessionState({
             // Fall through and scroll in current messages
           }
       }
+      if (!canScroll()) return;
       // Resolve the target against the loaded transcript rather than the DOM.
       // The store is the freshest source here: the `fetchFromServer` above has
       // landed but `chatMessages` is from the render that scheduled this effect.
@@ -899,6 +971,7 @@ export function useChatSessionState({
       const targetTimestamp = messagesForSearch[targetIndex].timestamp;
 
       const scrollToRenderedTarget = (retriesLeft: number) => {
+        if (!canScroll()) return;
         const container = scrollContainerRef.current;
         if (!container) return;
 
@@ -981,14 +1054,15 @@ export function useChatSessionState({
     if (!isActive) return;
     if (!scrollContainerRef.current || chatMessages.length === 0) return;
     if (isLoadingMoreRef.current || isLoadingMoreMessages || pendingScrollRestoreRef.current) return;
-    if (searchScrollActiveRef.current) return;
+    if (searchScrollActiveRef.current || messageRevealActiveRef.current) return;
 
     if (!isUserScrolledUp) {
-      setTimeout(() => {
-        if (!isUserScrolledUpRef.current) {
+      const timer = setTimeout(() => {
+        if (!isUserScrolledUpRef.current && !searchScrollActiveRef.current && !messageRevealActiveRef.current) {
           scrollToBottom();
         }
       }, 50);
+      return () => clearTimeout(timer);
     }
   }, [chatMessages.length, isActive, isLoadingMoreMessages, isUserScrolledUp, scrollToBottom]);
 
@@ -1007,6 +1081,7 @@ export function useChatSessionState({
     if (!selectedSession || !selectedProject) return;
     if (isLoadingAllMessages) return;
     const requestSessionId = selectedSession.id;
+    const navigationGeneration = navigationGenerationRef.current;
     allMessagesLoadedRef.current = true;
     isLoadingMoreRef.current = true;
     setIsLoadingAllMessages(true);
@@ -1029,17 +1104,18 @@ export function useChatSessionState({
         ),
       });
 
-      if (currentSessionId !== requestSessionId) return;
+      if (activeSessionIdRef.current !== requestSessionId) return;
 
       if (slot) {
-        if (scrollRestoreState) {
+        const canRestore = navigationGenerationRef.current === navigationGeneration;
+        if (scrollRestoreState && canRestore) {
           pendingScrollRestoreRef.current = scrollRestoreState;
         }
 
         setHasMoreMessages(false);
         setTotalMessages(slot.total);
         messagesOffsetRef.current = slot.offset;
-        setVisibleMessageCount(Infinity);
+        if (canRestore) setVisibleMessageCount(Infinity);
         setAllMessagesLoaded(true);
 
         setLoadAllJustFinished(true);
@@ -1055,11 +1131,14 @@ export function useChatSessionState({
       }
     } catch (error) {
       console.error('Error loading all messages:', error);
+      if (activeSessionIdRef.current !== requestSessionId) return;
       allMessagesLoadedRef.current = false;
       setShowLoadAllOverlay(false);
     } finally {
-      isLoadingMoreRef.current = false;
-      setIsLoadingAllMessages(false);
+      if (activeSessionIdRef.current === requestSessionId) {
+        isLoadingMoreRef.current = false;
+        setIsLoadingAllMessages(false);
+      }
     }
   }, [isActive, selectedSession, selectedProject, isLoadingAllMessages, currentSessionId, sessionStore]);
 
@@ -1108,6 +1187,8 @@ export function useChatSessionState({
     setTokenBudget,
     visibleMessageCount,
     visibleMessages,
+    revealMessage,
+    finishMessageReveal,
     loadEarlierMessages,
     loadAllMessages,
     loadFullTranscript,
