@@ -9,6 +9,7 @@ import { SESSION_MESSAGES_PAGE_SIZE } from '../../../stores/sessionMessagePagina
 import type { ChatMessage } from '../types/types';
 import { createMessageHistoryRefreshCoordinator } from '../utils/messageHistoryRefreshCoordinator';
 import { createCachedDiffCalculator, type DiffCalculator } from '../utils/messageTransforms';
+import { getIntrinsicMessageKey } from '../utils/messageKeys';
 
 import { normalizedToChatMessages } from './useChatMessages';
 
@@ -143,8 +144,18 @@ export function useChatSessionState({
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const wasNearTopRef = useRef(false);
-  const [searchTarget, setSearchTarget] = useState<{ timestamp?: string; uuid?: string; snippet?: string } | null>(null);
+  const [searchTarget, setSearchTarget] = useState<{
+    timestamp?: string;
+    uuid?: string;
+    snippet?: string;
+    sessionId: string | null;
+    generation: number;
+  } | null>(null);
+  // Async history/search work may finish after a newer context jump. Only the
+  // navigation that started that work can move the viewport or expand its range.
+  const navigationGenerationRef = useRef(0);
   const searchScrollActiveRef = useRef(false);
+  const messageRevealActiveRef = useRef(false);
   const isLoadingSessionRef = useRef(false);
   const isLoadingMoreRef = useRef(false);
   const allMessagesLoadedRef = useRef(false);
@@ -168,12 +179,19 @@ export function useChatSessionState({
 
   const createDiff = useMemo<DiffCalculator>(() => createCachedDiffCalculator(), []);
 
+  useEffect(() => () => {
+    navigationGenerationRef.current++;
+    searchScrollActiveRef.current = false;
+    messageRevealActiveRef.current = false;
+  }, []);
+
   useEffect(() => {
     const trigger = newSessionTrigger ?? 0;
     if (trigger === previousNewSessionTriggerRef.current) {
       return;
     }
     previousNewSessionTriggerRef.current = trigger;
+    navigationGenerationRef.current++;
 
     /**
      * Consumer-side reset for explicit New Session intent.
@@ -208,6 +226,7 @@ export function useChatSessionState({
     setSearchTarget(null);
     wasNearTopRef.current = false;
     searchScrollActiveRef.current = false;
+    messageRevealActiveRef.current = false;
     topLoadLockRef.current = false;
     pendingScrollRestoreRef.current = null;
     pendingInitialScrollRef.current = true;
@@ -340,6 +359,26 @@ export function useChatSessionState({
     return all;
   }, [storeMessages, viewHiddenCount, pendingUserMessage]);
 
+  const revealMessage = useCallback((messageKey: string) => {
+    const index = chatMessages.findIndex((message) => getIntrinsicMessageKey(message) === messageKey);
+    if (index < 0) return false;
+    // A summary can point outside the last 100 rendered rows. Reveal only the
+    // already-loaded range; fetching history here would fight scroll restoration.
+    pendingInitialScrollRef.current = false;
+    pendingScrollRestoreRef.current = null;
+    navigationGenerationRef.current++;
+    searchScrollActiveRef.current = false;
+    messageRevealActiveRef.current = true;
+    setSearchTarget(null);
+    setIsUserScrolledUp(true);
+    setVisibleMessageCount((count) => Math.max(count, chatMessages.length - index));
+    return true;
+  }, [chatMessages]);
+
+  const finishMessageReveal = useCallback(() => {
+    messageRevealActiveRef.current = false;
+  }, []);
+
   /* ---------------------------------------------------------------- */
   /*  addMessage / clearMessages / rewindMessages                     */
   /* ---------------------------------------------------------------- */
@@ -394,6 +433,8 @@ export function useChatSessionState({
       if (!hasMoreMessages || !selectedSession || !selectedProject) return false;
 
       isLoadingMoreRef.current = true;
+      const requestSessionId = selectedSession.id;
+      const navigationGeneration = navigationGenerationRef.current;
       const scrollRestoreState = captureScrollRestoreState(container);
 
       try {
@@ -404,6 +445,7 @@ export function useChatSessionState({
             && activeSessionIdRef.current === selectedSession.id
           ),
         });
+        if (activeSessionIdRef.current !== requestSessionId) return false;
         const { slot, prependedCount } = result;
         setHasMoreMessages(slot.hasMore);
         setTotalMessages(slot.total);
@@ -425,8 +467,11 @@ export function useChatSessionState({
           return false;
         }
 
-        pendingScrollRestoreRef.current = scrollRestoreState;
-        setVisibleMessageCount((prev) => prev + SESSION_MESSAGES_PAGE_SIZE);
+        const canRestore = navigationGenerationRef.current === navigationGeneration;
+        if (canRestore) {
+          pendingScrollRestoreRef.current = scrollRestoreState;
+          setVisibleMessageCount((prev) => prev + SESSION_MESSAGES_PAGE_SIZE);
+        }
         if (!slot.hasMore) {
           allMessagesLoadedRef.current = true;
           setAllMessagesLoaded(true);
@@ -436,9 +481,11 @@ export function useChatSessionState({
           }
           setShowLoadAllOverlay(false);
         }
-        return true;
+        return canRestore;
       } finally {
-        isLoadingMoreRef.current = false;
+        if (activeSessionIdRef.current === requestSessionId) {
+          isLoadingMoreRef.current = false;
+        }
       }
     },
     [hasMoreMessages, isActive, isLoadingMoreMessages, selectedProject, selectedSession, sessionStore],
@@ -448,6 +495,13 @@ export function useChatSessionState({
     if (!isActive) return;
     const container = scrollContainerRef.current;
     if (!container) return;
+
+    // Programmatic context jumps must not start an older-page fetch that would
+    // install a competing scroll-restore anchor while the tool group expands.
+    if (searchScrollActiveRef.current || messageRevealActiveRef.current) {
+      scrollPositionRef.current = { height: container.scrollHeight, top: container.scrollTop };
+      return;
+    }
 
     const nearBottom = isNearBottom();
     setIsUserScrolledUp(!nearBottom);
@@ -516,13 +570,16 @@ export function useChatSessionState({
 
   // Reset scroll/pagination state on session change
   useEffect(() => {
-    if (!searchScrollActiveRef.current) {
-      pendingInitialScrollRef.current = true;
-      setVisibleMessageCount(INITIAL_VISIBLE_MESSAGES);
-    }
+    navigationGenerationRef.current++;
+    searchScrollActiveRef.current = false;
+    setSearchTarget(null);
+    pendingInitialScrollRef.current = true;
+    setVisibleMessageCount(INITIAL_VISIBLE_MESSAGES);
     topLoadLockRef.current = false;
     pendingScrollRestoreRef.current = null;
     wasNearTopRef.current = false;
+    isLoadingMoreRef.current = false;
+    messageRevealActiveRef.current = false;
     setIsUserScrolledUp(false);
   }, [selectedProject?.projectId, selectedSession?.id]);
 
@@ -540,7 +597,7 @@ export function useChatSessionState({
     if (!isActive) return;
     if (!pendingInitialScrollRef.current || !scrollContainerRef.current || isLoadingSessionMessages) return;
     if (chatMessages.length === 0) { pendingInitialScrollRef.current = false; return; }
-    if (searchScrollActiveRef.current) { pendingInitialScrollRef.current = false; return; }
+    if (searchScrollActiveRef.current || messageRevealActiveRef.current) { pendingInitialScrollRef.current = false; return; }
 
     const container = scrollContainerRef.current;
     let frame = 0;
@@ -705,10 +762,15 @@ export function useChatSessionState({
         // Skip store refresh during active streaming
         if (!isProcessing) {
           const shouldStickToBottom = isActiveRef.current && isNearBottom();
+          const navigationGeneration = navigationGenerationRef.current;
           await requestLatestMessages(selectedSession.id);
 
           if (shouldStickToBottom) {
-            setTimeout(() => scrollToBottom(), 200);
+            setTimeout(() => {
+              if (navigationGenerationRef.current === navigationGeneration
+                && activeSessionIdRef.current === selectedSession.id
+                && isActiveRef.current) scrollToBottom();
+            }, 200);
           }
         }
       } catch (error) {
@@ -733,10 +795,15 @@ export function useChatSessionState({
     const targetSnippet = session?.__searchTargetSnippet;
     const targetTimestamp = session?.__searchTargetTimestamp;
     if (typeof targetSnippet === 'string' && targetSnippet) {
+      const generation = ++navigationGenerationRef.current;
       searchScrollActiveRef.current = true;
+      pendingInitialScrollRef.current = false;
+      pendingScrollRestoreRef.current = null;
       setSearchTarget({
         snippet: targetSnippet,
         timestamp: typeof targetTimestamp === 'string' ? targetTimestamp : undefined,
+        sessionId: selectedSession?.id ?? null,
+        generation,
       });
     }
   }, [selectedSession]);
@@ -746,7 +813,19 @@ export function useChatSessionState({
     if (!isActive || !searchTarget || chatMessages.length === 0 || isLoadingSessionMessages) return;
 
     const target = searchTarget;
+    const isCurrentNavigation = () => navigationGenerationRef.current === target.generation
+      && activeSessionIdRef.current === target.sessionId;
+    if (!isCurrentNavigation()) return;
     setSearchTarget(null);
+
+    const canScroll = () => {
+      if (!isCurrentNavigation()) return false;
+      if (!isActiveRef.current) {
+        setSearchTarget(target);
+        return false;
+      }
+      return true;
+    };
 
     const scrollToTarget = async () => {
       if (!allMessagesLoadedRef.current && selectedSession && selectedProject) {
@@ -760,6 +839,7 @@ export function useChatSessionState({
                 && activeSessionIdRef.current === selectedSession.id
               ),
             });
+            if (!canScroll()) return;
             if (slot) {
               setHasMoreMessages(false);
               setTotalMessages(slot.total);
@@ -768,17 +848,16 @@ export function useChatSessionState({
               setAllMessagesLoaded(true);
               allMessagesLoadedRef.current = true;
               await new Promise(resolve => setTimeout(resolve, 300));
-            } else if (!isActiveRef.current) {
-              setSearchTarget(target);
-              return;
             }
           } catch {
             // Fall through and scroll in current messages
           }
       }
+      if (!canScroll()) return;
       setVisibleMessageCount(Infinity);
 
       const findAndScroll = (retriesLeft: number) => {
+        if (!canScroll()) return;
         const container = scrollContainerRef.current;
         if (!container) return;
 
@@ -867,10 +946,11 @@ export function useChatSessionState({
     if (!isActive) return;
     if (!scrollContainerRef.current || chatMessages.length === 0) return;
     if (isLoadingMoreRef.current || isLoadingMoreMessages || pendingScrollRestoreRef.current) return;
-    if (searchScrollActiveRef.current) return;
+    if (searchScrollActiveRef.current || messageRevealActiveRef.current) return;
 
     if (!isUserScrolledUp) {
-      setTimeout(() => scrollToBottom(), 50);
+      const timer = setTimeout(() => scrollToBottom(), 50);
+      return () => clearTimeout(timer);
     }
   }, [chatMessages.length, isActive, isLoadingMoreMessages, isUserScrolledUp, scrollToBottom]);
 
@@ -889,6 +969,7 @@ export function useChatSessionState({
     if (!selectedSession || !selectedProject) return;
     if (isLoadingAllMessages) return;
     const requestSessionId = selectedSession.id;
+    const navigationGeneration = navigationGenerationRef.current;
     allMessagesLoadedRef.current = true;
     isLoadingMoreRef.current = true;
     setIsLoadingAllMessages(true);
@@ -911,17 +992,18 @@ export function useChatSessionState({
         ),
       });
 
-      if (currentSessionId !== requestSessionId) return;
+      if (activeSessionIdRef.current !== requestSessionId) return;
 
       if (slot) {
-        if (scrollRestoreState) {
+        const canRestore = navigationGenerationRef.current === navigationGeneration;
+        if (scrollRestoreState && canRestore) {
           pendingScrollRestoreRef.current = scrollRestoreState;
         }
 
         setHasMoreMessages(false);
         setTotalMessages(slot.total);
         messagesOffsetRef.current = slot.offset;
-        setVisibleMessageCount(Infinity);
+        if (canRestore) setVisibleMessageCount(Infinity);
         setAllMessagesLoaded(true);
 
         setLoadAllJustFinished(true);
@@ -937,11 +1019,14 @@ export function useChatSessionState({
       }
     } catch (error) {
       console.error('Error loading all messages:', error);
+      if (activeSessionIdRef.current !== requestSessionId) return;
       allMessagesLoadedRef.current = false;
       setShowLoadAllOverlay(false);
     } finally {
-      isLoadingMoreRef.current = false;
-      setIsLoadingAllMessages(false);
+      if (activeSessionIdRef.current === requestSessionId) {
+        isLoadingMoreRef.current = false;
+        setIsLoadingAllMessages(false);
+      }
     }
   }, [isActive, selectedSession, selectedProject, isLoadingAllMessages, currentSessionId, sessionStore]);
 
@@ -969,6 +1054,8 @@ export function useChatSessionState({
     setTokenBudget,
     visibleMessageCount,
     visibleMessages,
+    revealMessage,
+    finishMessageReveal,
     loadEarlierMessages,
     loadAllMessages,
     allMessagesLoaded,

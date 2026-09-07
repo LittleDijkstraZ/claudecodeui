@@ -2,6 +2,7 @@ import React, { memo, useMemo, useCallback } from 'react';
 
 import type { Project } from '../../../types/app';
 import type { SubagentChildTool } from '../types/types';
+import type { MessageRevealTarget } from '../types/messageReveal';
 
 import { getToolConfig } from './configs/toolConfigs';
 import { OneLineDisplay, BashCommandDisplay, CollapsibleDisplay, ToolDiffViewer, MarkdownContent, FileListContent, TodoListContent, TaskListContent, TextContent, QuestionAnswerContent, SubagentContainer } from './components';
@@ -27,6 +28,7 @@ interface ToolRendererProps {
   showRawParameters?: boolean;
   rawToolInput?: string;
   isSubagentContainer?: boolean;
+  revealTarget?: MessageRevealTarget;
   subagentState?: {
     childTools: SubagentChildTool[];
     currentToolIndex: number;
@@ -82,7 +84,8 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
   showRawParameters = false,
   rawToolInput,
   isSubagentContainer,
-  subagentState
+  subagentState,
+  revealTarget,
 }) => {
   const config = getToolConfig(toolName);
   const displayConfig: any = mode === 'input' ? config.input : config.result;
@@ -117,6 +120,7 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
         toolInput={toolInput}
         toolResult={toolResult}
         subagentState={subagentState}
+        revealTarget={revealTarget}
       />
     );
   }
@@ -313,6 +317,7 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
         toolId={toolId}
         title={title}
         defaultOpen={defaultOpen}
+        revealRequestId={revealTarget?.requestId}
         onTitleClick={handleTitleClick}
         badge={badgeElement}
         showRawParameters={mode === 'input' && showRawParameters}

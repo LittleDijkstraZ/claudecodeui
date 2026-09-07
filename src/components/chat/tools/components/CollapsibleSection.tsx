@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '../../../../shared/view/ui';
 import { cn } from '../../../../lib/utils';
 
@@ -6,6 +7,7 @@ interface CollapsibleSectionProps {
   title: string;
   toolName?: string;
   open?: boolean;
+  revealRequestId?: number;
   action?: React.ReactNode;
   badge?: React.ReactNode;
   onTitleClick?: () => void;
@@ -20,14 +22,23 @@ export const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({
   title,
   toolName,
   open = false,
+  revealRequestId,
   action,
   badge,
   onTitleClick,
   children,
   className = '',
 }) => {
+  const [isOpen, setIsOpen] = useState(open);
+
+  // Reveal requests are one-shot opening intents. Clearing the request leaves
+  // the section open, and a new request reopens it after manual collapse.
+  useEffect(() => {
+    if (revealRequestId !== undefined) setIsOpen(true);
+  }, [revealRequestId]);
+
   return (
-    <Collapsible defaultOpen={open} className={cn('group/section', className)}>
+    <Collapsible open={isOpen} onOpenChange={setIsOpen} className={cn('group/section', className)}>
       {/* When there's a clickable title (Edit/Write), only the chevron toggles collapse */}
       {onTitleClick ? (
         <div className="flex cursor-default select-none items-center gap-1.5 py-0.5 text-xs group-data-[state=open]/section:sticky group-data-[state=open]/section:top-0 group-data-[state=open]/section:z-10 group-data-[state=open]/section:-mx-1 group-data-[state=open]/section:bg-background group-data-[state=open]/section:px-1">

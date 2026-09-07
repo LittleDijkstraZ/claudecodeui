@@ -1,11 +1,15 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+
 import type { SubagentChildTool } from '../../types/types';
-import { CollapsibleSection } from './CollapsibleSection';
+import type { MessageRevealTarget } from '../../types/messageReveal';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '../../../../shared/view/ui';
+
+import { CollapsibleSection } from './CollapsibleSection';
 
 interface SubagentContainerProps {
   toolInput: unknown;
   toolResult?: { content?: unknown; isError?: boolean } | null;
+  revealTarget?: MessageRevealTarget;
   subagentState: {
     childTools: SubagentChildTool[];
     currentToolIndex: number;
@@ -44,7 +48,14 @@ export const SubagentContainer: React.FC<SubagentContainerProps> = ({
   toolInput,
   toolResult,
   subagentState,
+  revealTarget,
 }) => {
+  const [isHistoryExpanded, setIsHistoryExpanded] = useState(false);
+  const revealRequestId = revealTarget?.requestId;
+  const revealChildToolId = revealTarget?.toolId;
+  useEffect(() => {
+    if (revealRequestId !== undefined && revealChildToolId) setIsHistoryExpanded(true);
+  }, [revealRequestId, revealChildToolId]);
   const parsedInput = typeof toolInput === 'string' ? (() => {
     try { return JSON.parse(toolInput); } catch { return {}; }
   })() : (toolInput || {});
@@ -63,6 +74,7 @@ export const SubagentContainer: React.FC<SubagentContainerProps> = ({
         title={title}
         toolName="Task"
         open={false}
+        revealRequestId={revealRequestId}
       >
         {/* Prompt/request to the subagent */}
         {prompt && (
@@ -100,7 +112,7 @@ export const SubagentContainer: React.FC<SubagentContainerProps> = ({
 
         {/* Tool history (collapsed) */}
         {childTools.length > 0 && (
-          <Collapsible className="mt-2">
+          <Collapsible open={isHistoryExpanded} onOpenChange={setIsHistoryExpanded} className="mt-2">
             <CollapsibleTrigger className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground">
               <svg
                 className="h-2.5 w-2.5 flex-shrink-0 transition-transform duration-150 data-[state=open]:rotate-90"
@@ -115,7 +127,12 @@ export const SubagentContainer: React.FC<SubagentContainerProps> = ({
             <CollapsibleContent>
               <div className="mt-1 space-y-0.5 border-l border-border pl-3">
                 {childTools.map((child, index) => (
-                  <div key={child.toolId} className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                  <div
+                    key={child.toolId}
+                    data-tool-id={child.toolId}
+                    tabIndex={-1}
+                    className="flex items-center gap-1.5 text-[11px] text-muted-foreground"
+                  >
                     <span className="w-4 flex-shrink-0 text-right text-muted-foreground/60">{index + 1}.</span>
                     <span className="font-medium text-foreground">{child.toolName}</span>
                     {getCompactToolDisplay(child.toolName, child.toolInput) && (

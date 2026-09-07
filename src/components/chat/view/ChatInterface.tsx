@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ArrowDownIcon } from 'lucide-react';
 
@@ -11,10 +11,15 @@ import { useChatSessionState } from '../hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '../hooks/useChatRealtimeHandlers';
 import { useChatComposerState } from '../hooks/useChatComposerState';
 import { useSessionStore } from '../../../stores/useSessionStore';
+import type { ConversationFileChange } from '../types/conversationChanges';
+import type { MessageRevealTarget } from '../types/messageReveal';
+import { deriveConversationChanges } from '../utils/conversationChanges';
+import { revealConversationChange } from '../utils/revealConversationChange';
 
 import ChatMessagesPane from './subcomponents/ChatMessagesPane';
 import ChatComposer from './subcomponents/ChatComposer';
 import CommandResultModal from './subcomponents/CommandResultModal';
+import ConversationChangesBar from './subcomponents/ConversationChangesBar';
 
 function ChatInterface({
   isActive,
@@ -100,6 +105,8 @@ function ChatInterface({
     setTokenBudget,
     visibleMessageCount,
     visibleMessages,
+    revealMessage,
+    finishMessageReveal,
     loadEarlierMessages,
     loadAllMessages,
     allMessagesLoaded,
@@ -126,6 +133,45 @@ function ChatInterface({
     lastSeqRef,
     sessionStore,
   });
+
+  const viewedSessionId = selectedSession?.id ?? currentSessionId ?? null;
+  const changeTurns = useMemo(() => deriveConversationChanges(chatMessages), [chatMessages]);
+  const [changeReveal, setChangeReveal] = useState<(MessageRevealTarget & { sessionId: string | null }) | null>(null);
+  const [changeJumpError, setChangeJumpError] = useState<string | null>(null);
+  const revealSequence = useRef(0);
+  const settledReveal = useRef<number | null>(null);
+  const activeReveal = changeReveal?.sessionId === viewedSessionId ? changeReveal : undefined;
+
+  useEffect(() => {
+    setChangeReveal(null);
+    setChangeJumpError(null);
+  }, [viewedSessionId, newSessionTrigger]);
+
+  const jumpToChange = useCallback((change: ConversationFileChange) => {
+    setChangeJumpError(null);
+    if (!revealMessage(change.sourceMessageKey)) {
+      setChangeJumpError(viewedSessionId);
+      return;
+    }
+    setChangeReveal({
+      sessionId: viewedSessionId,
+      messageKey: change.sourceMessageKey,
+      toolId: change.sourceToolId,
+      requestId: ++revealSequence.current,
+    });
+  }, [revealMessage, viewedSessionId]);
+
+  useEffect(() => {
+    if (!isActive || !activeReveal || settledReveal.current === activeReveal.requestId || !scrollContainerRef.current) {
+      finishMessageReveal();
+      return;
+    }
+    return revealConversationChange(scrollContainerRef.current, activeReveal, (found) => {
+      settledReveal.current = activeReveal.requestId;
+      finishMessageReveal();
+      if (!found) setChangeJumpError(viewedSessionId);
+    });
+  }, [activeReveal, finishMessageReveal, isActive, scrollContainerRef, viewedSessionId]);
 
   // Brand-new conversation: the composer allocated a stable session id via
   // the session gateway before the first send. Record it locally and put it
@@ -322,6 +368,7 @@ function ChatInterface({
     <PermissionContext.Provider value={permissionContextValue}>
       <div className="flex h-full min-h-0 flex-col">
         <ChatMessagesPane
+          revealTarget={activeReveal}
           scrollContainerRef={scrollContainerRef}
           onWheel={handleScroll}
           onTouchMove={handleScroll}
@@ -383,6 +430,21 @@ function ChatInterface({
                 <ArrowDownIcon className="h-4 w-4" aria-hidden />
               </button>
             </div>
+          )}
+
+          <ConversationChangesBar
+            key={viewedSessionId ?? `draft-${newSessionTrigger ?? 0}`}
+            turns={changeTurns}
+            isProcessing={isProcessing}
+            hasEarlierMessages={hasMoreMessages}
+            isLoadingEarlierMessages={isLoadingAllMessages}
+            onLoadAllMessages={() => { void loadAllMessages(); }}
+            onJumpToChange={jumpToChange}
+          />
+          {changeJumpError !== null && changeJumpError === viewedSessionId && (
+            <p role="alert" className="mx-auto max-w-[54.25rem] px-4 pb-2 text-xs text-destructive">
+              {t('changes.contextUnavailable')}
+            </p>
           )}
 
           <ChatComposer

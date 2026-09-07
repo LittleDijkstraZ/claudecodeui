@@ -9,6 +9,8 @@ import type {
   Provider,
 } from '../../types/types';
 import { formatUsageLimitText, stripProposedPlanEnvelope } from '../../utils/chatFormatting';
+import { getIntrinsicMessageKey } from '../../utils/messageKeys';
+import type { MessageRevealTarget } from '../../types/messageReveal';
 import type { Project } from '../../../../types/app';
 import { ToolRenderer, ToolErrorDisplay, shouldHideToolResult } from '../../tools';
 import { Reasoning, ReasoningTrigger, ReasoningContent } from '../../../../shared/view/ui';
@@ -36,6 +38,7 @@ type MessageComponentProps = {
   showThinking?: boolean;
   selectedProject?: Project | null;
   provider: Provider | string;
+  revealTarget?: MessageRevealTarget;
 };
 
 type InteractiveOption = {
@@ -46,7 +49,7 @@ type InteractiveOption = {
 
 const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write', 'ApplyPatch']);
 
-const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, showRawParameters, showThinking, selectedProject, provider }: MessageComponentProps) => {
+const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, showRawParameters, showThinking, selectedProject, provider, revealTarget }: MessageComponentProps) => {
   const { t } = useTranslation('chat');
   const isGrouped = prevMessage && prevMessage.type === message.type &&
     ((prevMessage.type === 'assistant') ||
@@ -54,6 +57,8 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
       (prevMessage.type === 'tool') ||
       (prevMessage.type === 'error'));
   const messageRef = useRef<HTMLDivElement | null>(null);
+  const messageKey = getIntrinsicMessageKey(message);
+  const matchingRevealTarget = revealTarget?.messageKey === messageKey ? revealTarget : undefined;
   const userCopyContent = String(message.content || '');
   const formattedMessageContent = useMemo(
     () => {
@@ -87,7 +92,10 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
   return (
     <div
       ref={messageRef}
+      data-message-key={messageKey ?? undefined}
+      data-tool-id={message.toolId ?? message.toolCallId}
       data-message-timestamp={message.timestamp || undefined}
+      tabIndex={-1}
       className={`chat-message ${message.type} ${isGrouped ? 'grouped' : ''} ${message.type === 'user' ? 'flex justify-end px-3 sm:px-0' : 'px-3 sm:px-0'}`}
     >
       {message.type === 'user' ? (
@@ -201,6 +209,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                     rawToolInput={typeof message.toolInput === 'string' ? message.toolInput : undefined}
                     isSubagentContainer={message.isSubagentContainer}
                     subagentState={message.subagentState}
+                    revealTarget={matchingRevealTarget}
                   />
                 )}
 
@@ -405,4 +414,3 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
 });
 
 export default MessageComponent;
-

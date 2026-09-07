@@ -1,7 +1,9 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
 
 import type { ChatMessage, ClaudePermissionSuggestion, PermissionGrantResult, Provider } from '../../types/types';
+import type { MessageRevealTarget } from '../../types/messageReveal';
+import { getIntrinsicMessageKey } from '../../utils/messageKeys';
 import type { Project } from '../../../../types/app';
 import type { ToolGroupItem } from '../../utils/toolGrouping';
 import { getToolConfig } from '../../tools';
@@ -26,6 +28,7 @@ interface ToolGroupContainerProps {
   showThinking?: boolean;
   selectedProject?: Project | null;
   provider: Provider | string;
+  revealTarget?: MessageRevealTarget;
 }
 
 function parseToolInput(toolInput: unknown): unknown {
@@ -69,8 +72,16 @@ export default function ToolGroupContainer({
   showThinking,
   selectedProject,
   provider,
+  revealTarget,
 }: ToolGroupContainerProps) {
   const [isExpanded, setIsExpanded] = useState(false);
+  const revealRequestId = revealTarget && group.messages.some(
+    (message) => getIntrinsicMessageKey(message) === revealTarget.messageKey,
+  ) ? revealTarget.requestId : undefined;
+
+  useEffect(() => {
+    if (revealRequestId !== undefined) setIsExpanded(true);
+  }, [revealRequestId]);
   const config = getToolConfig(group.toolName).input;
   const label = config.label || group.toolName;
   const borderClass = config.colorScheme?.border || 'border-border';
@@ -135,6 +146,7 @@ export default function ToolGroupContainer({
               showThinking={showThinking}
               selectedProject={selectedProject}
               provider={provider}
+              revealTarget={getIntrinsicMessageKey(message) === revealTarget?.messageKey ? revealTarget : undefined}
             />
           ))}
         </div>

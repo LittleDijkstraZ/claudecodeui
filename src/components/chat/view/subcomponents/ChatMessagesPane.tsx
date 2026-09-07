@@ -3,6 +3,7 @@ import { memo, useCallback, useMemo } from 'react';
 import type { Dispatch, RefObject, SetStateAction } from 'react';
 
 import type { ChatMessage } from '../../types/types';
+import type { MessageRevealTarget } from '../../types/messageReveal';
 import type {
   Project,
   ProjectSession,
@@ -20,6 +21,7 @@ import LoadAllMessagesOverlay from './LoadAllMessagesOverlay';
 import ChatExportMenu from './ChatExportMenu';
 
 interface ChatMessagesPaneProps {
+  revealTarget?: MessageRevealTarget;
   scrollContainerRef: RefObject<HTMLDivElement>;
   onWheel: () => void;
   onTouchMove: () => void;
@@ -71,6 +73,7 @@ interface ChatMessagesPaneProps {
 }
 
 function ChatMessagesPane({
+  revealTarget,
   scrollContainerRef,
   onWheel,
   onTouchMove,
@@ -267,6 +270,7 @@ function ChatMessagesPane({
                   <ToolGroupContainer
                     key={`tool-group-${getMessageKey(item.messages[0])}`}
                     group={item}
+                    revealTarget={revealTarget}
                     prevMessage={groupPrevMessage}
                     createDiff={createDiff}
                     getMessageKey={getMessageKey}
@@ -288,6 +292,7 @@ function ChatMessagesPane({
                 <MessageComponent
                   key={getMessageKey(item)}
                   message={item}
+                  revealTarget={revealTarget}
                   prevMessage={messagePrevMessage}
                   createDiff={createDiff}
                   onFileOpen={onFileOpen}
