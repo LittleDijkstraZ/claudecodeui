@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect } from 'react';
+import { memo, useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useDeviceSettings } from '@/shared/hooks/useDeviceSettings';
@@ -8,6 +8,7 @@ import { useSidebarController } from '@/modules/sidebar/hooks/useSidebarControll
 import { useTaskMaster, useTasksSettings } from '@/modules/task-master';
 import { usePaletteOps } from '@/modules/command-palette';
 import { useBusySessionIdSet } from '@/shared/context/SessionProtectionContext';
+import { useConversationGroups } from '@/modules/sidebar/context/ConversationGroupsContext';
 import type { LLMProvider, LoadingProgress, MCPServerStatus, Project, ProjectSession, SidebarProjectListProps } from '@/shared/types';
 import SidebarCollapsed from '@/modules/sidebar/SidebarCollapsed';
 import SidebarContent from '@/modules/sidebar/SidebarContent';
@@ -77,6 +78,9 @@ function Sidebar({
   // Only membership is rendered here, so subscribing to the full activity map
   // would re-render the whole tree on every provider status frame.
   const activeSessions = useBusySessionIdSet();
+  const { refresh: refreshGroups } = useConversationGroups();
+  // Retain the chosen group while navigating projects or refreshing session data.
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
 
   const {
     isSidebarCollapsed,
@@ -274,12 +278,14 @@ function Sidebar({
             isLoadingMoreRecentConversations={isLoadingMoreRecentConversations}
             recentConversationsError={recentConversationsError}
             searchFilter={searchFilter}
+            selectedGroupId={selectedGroupId}
+            onSelectGroup={setSelectedGroupId}
             onSearchFilterChange={setSearchFilter}
             onClearSearchFilter={() => setSearchFilter('')}
             searchMode={searchMode}
             onSearchModeChange={(mode) => {
               setSearchMode(mode);
-              if (mode === 'projects') clearConversationResults();
+              if (mode !== 'conversations') clearConversationResults();
             }}
             conversationResults={conversationResults}
             isSearching={isSearching}
@@ -325,6 +331,7 @@ function Sidebar({
             }}
             onRefresh={() => {
               void refreshProjects();
+              void refreshGroups();
             }}
             isRefreshing={isRefreshing}
             onCreateProject={() => setShowNewProject(true)}

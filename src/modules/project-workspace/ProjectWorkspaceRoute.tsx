@@ -1,4 +1,5 @@
 import { memo } from 'react';
+import { ConversationGroupsProvider } from '@/modules/sidebar';
 import { useNavigate, useParams } from 'react-router-dom';
 
 import { PaletteOpsProvider } from '@/modules/command-palette';
@@ -19,7 +20,7 @@ export default function ProjectWorkspaceRoute() {
   return (
     <SessionProtectionProvider>
       <PaletteOpsProvider>
-        <MemoizedProjectWorkspaceRouteContent />
+        <ConversationGroupsProvider><MemoizedProjectWorkspaceRouteContent /></ConversationGroupsProvider>
       </PaletteOpsProvider>
     </SessionProtectionProvider>
   );

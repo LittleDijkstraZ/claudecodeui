@@ -132,7 +132,9 @@
     "matches_one": "{{count}} match",
     "matches_other": "{{count}} matches",
     "projectsScanned_one": "{{count}} project scanned",
-    "projectsScanned_other": "{{count}} projects scanned"
+    "projectsScanned_other": "{{count}} projects scanned",
+    "modeGroups": "Groups",
+    "groupsPlaceholder": "Search this group’s conversations…"
   },
   "recent": {
     "title": "Recent conversations",
@@ -157,5 +159,41 @@
     "deleteAllData": "Delete all data permanently",
     "allConversationsDeleted": "The project will be removed from the sidebar. Your files, memories, and session data will be preserved.",
     "cannotUndo": "You can re-add the project later."
+  },
+  "groups": {
+    "title": "Conversation groups",
+    "create": "New group",
+    "rename": "Rename group",
+    "delete": "Delete group",
+    "deleteDescription": "Delete “{{name}}”? Its conversations will remain available in Projects and Conversations.",
+    "name": "Group name",
+    "namePlaceholder": "For example, Research",
+    "saving": "Saving…",
+    "saveFailed": "Could not save this change. Please try again.",
+    "loadFailed": "Could not load groups.",
+    "retry": "Try again",
+    "loading": "Loading groups…",
+    "emptyTitle": "Organize your conversations",
+    "emptyDescription": "Create a group, then add conversations from any folder using their group button.",
+    "choose": "Choose a group",
+    "manage": "Manage group",
+    "manageNamed": "Manage group {{name}}",
+    "acrossFolders": "Conversations from any working folder",
+    "newConversation": "New conversation",
+    "loadingConversations": "Loading conversations…",
+    "noMatches": "No matching conversations",
+    "noConversations": "No conversations in this group",
+    "trySearch": "Try another title or folder name.",
+    "addHint": "Start a conversation here, or add an existing one from Projects or Conversations.",
+    "conversationCount_one": "{{count}} conversation",
+    "conversationCount_other": "{{count}} conversations",
+    "archived": "Archived",
+    "moveConversation": "Change group",
+    "moveNamed": "Change group for {{name}}",
+    "conversationsFailed": "Could not load conversations.",
+    "loadMore": "Load more conversations",
+    "browseViews": "Browse conversations by",
+    "running": "Running",
+    "archive": "Archive"
   }
 }

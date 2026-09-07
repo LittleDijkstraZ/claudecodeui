@@ -240,6 +240,10 @@ async function dispatchRun(
   const clientOptions = (data.options ?? {}) as AnyRecord;
   const command = typeof data.content === 'string' ? data.content : '';
 
+  // Group-created drafts have no initial message at allocation time. Name only
+  // accepted sends so a rejected competing send cannot rename the conversation.
+  sessionsService.initializeAppSessionName(sessionId, command);
+
   // Record what this turn runs with so reopening the session later restores the
   // same model and reasoning effort, and so the resume path has a
   // session-scoped model answer to use.

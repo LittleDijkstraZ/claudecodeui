@@ -1,4 +1,5 @@
 import { memo } from 'react';
+import ProjectGroupDialogs from '@/modules/project-workspace/ProjectGroupDialogs';
 
 import { QuickSettingsPanel } from '@/modules/quick-settings-panel';
 import ProjectEffects from '@/modules/project-workspace/controllers/ProjectEffects';
@@ -33,6 +34,7 @@ function ProjectWorkspaceShell({
 
       <ProjectCommandPalette />
       <QuickSettingsPanel />
+      <ProjectGroupDialogs isMobile={isMobile} navigate={navigate} />
     </div>
   );
 }

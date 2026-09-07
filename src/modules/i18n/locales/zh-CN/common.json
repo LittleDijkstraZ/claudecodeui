@@ -266,5 +266,27 @@
       "updateAvailable": "有可用更新",
       "closeSidebar": "关闭侧边栏"
     }
+  },
+  "conversationGroups": {
+    "moveToGroup": "移到分组",
+    "optionsFor": "对话选项：{{title}}",
+    "assignmentDescription": "把不同文件夹里的对话归到同一个组。对话的工作文件夹保持不变。",
+    "group": "分组",
+    "ungrouped": "不属于任何组",
+    "createGroup": "新建分组",
+    "groupName": "分组名称",
+    "groupNamePlaceholder": "例如：研究",
+    "retry": "重试",
+    "save": "保存",
+    "cancel": "取消",
+    "saveFailed": "分组保存失败，请重试。",
+    "newConversation": "新建对话",
+    "newConversationDescription": "这个对话会自动归入“{{group}}”。请选择工作文件夹。",
+    "workingFolder": "工作文件夹",
+    "chooseFolder": "选择文件夹",
+    "noFolders": "请先在“项目”视图添加文件夹，再回来新建对话。",
+    "provider": "助手",
+    "createConversation": "创建对话",
+    "createFailed": "对话创建失败，请重试。"
   }
 }

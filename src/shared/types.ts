@@ -1274,7 +1274,7 @@ export type SidebarProjectListProps = {
 export type ProjectSortOrder = 'name' | 'date';
 
 /** Which list the sidebar is currently showing: projects, conversation search results, running sessions or archived items. */
-export type SidebarSearchMode = 'projects' | 'conversations' | 'running' | 'archived';
+export type SidebarSearchMode = 'projects' | 'conversations' | 'groups' | 'running' | 'archived';
 
 /** A Project narrowed to the archived state so archived entries can be listed and restored without being mistaken for active projects. */
 export type ArchivedProjectListItem = Project & { isArchived: true };
@@ -1548,3 +1548,42 @@ type TaskStatus =
 
 /** A TaskMaster task's priority; high, medium and low are the known values and the string fallback tolerates anything else TaskMaster emits. */
 type TaskPriority = 'high' | 'medium' | 'low' | string;
+
+//----------------- CONVERSATION GROUPS ------------
+
+/** Personal organization metadata; a group never changes a session's working folder. */
+export type ConversationGroup = {
+  id: string;
+  name: string;
+  sessionCount: number;
+};
+
+export type ConversationGroupsSnapshot = {
+  groups: ConversationGroup[];
+  memberships: Record<string, string>;
+};
+
+export type GroupConversation = {
+  sessionId: string;
+  provider: LLMProvider;
+  projectId: string | null;
+  projectPath: string | null;
+  projectDisplayName: string;
+  sessionTitle: string;
+  lastActivity: string | null;
+  isArchived: boolean;
+};
+
+export type GroupConversationsPage = {
+  conversations: GroupConversation[];
+  total: number;
+  hasMore: boolean;
+};
+
+export type CreatedGroupConversation = {
+  sessionId: string;
+  provider: LLMProvider;
+  projectPath: string;
+  projectId: string;
+  sessionName: string;
+};

@@ -349,5 +349,27 @@
     "closeLoginModal": "Close login modal",
     "pluginLoadFailed": "Plugin failed to load: {{error}}"
   },
-  "cancel": "Cancel"
+  "cancel": "Cancel",
+  "conversationGroups": {
+    "moveToGroup": "Move to group",
+    "optionsFor": "Conversation options for {{title}}",
+    "assignmentDescription": "Group conversations from different folders. Their working folders stay the same.",
+    "group": "Group",
+    "ungrouped": "No group",
+    "createGroup": "Create group",
+    "groupName": "Group name",
+    "groupNamePlaceholder": "e.g. Research",
+    "retry": "Try again",
+    "save": "Save",
+    "cancel": "Cancel",
+    "saveFailed": "Could not save the group. Please try again.",
+    "newConversation": "New conversation",
+    "newConversationDescription": "This conversation will belong to “{{group}}”. Choose its working folder.",
+    "workingFolder": "Working folder",
+    "chooseFolder": "Choose a folder",
+    "noFolders": "Add a folder in Projects first, then return here to start a conversation.",
+    "provider": "Assistant",
+    "createConversation": "Create conversation",
+    "createFailed": "Could not create the conversation. Please try again."
+  }
 }

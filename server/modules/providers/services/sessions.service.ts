@@ -210,12 +210,14 @@ export const sessionsService = {
    * for the lifetime of the conversation. The provider-native id is mapped to
    * this row later, when the provider runtime announces it mid-run. Its title
    * comes directly from the first visible CloudCLI message and is limited to
-   * four whole words before any provider-owned storage exists.
+   * four whole words before any provider-owned storage exists. Conversation
+   * groups can omit initialMessage to create an empty draft: its stored name
+   * stays NULL until the first accepted send or an explicit rename.
    */
   createAppSession(
     provider: LLMProvider,
     projectPath: string,
-    initialMessage: string,
+    initialMessage?: string,
   ): CreateAppSessionResult {
     const normalizedProjectPath = projectPath.trim();
     if (!normalizedProjectPath) {
@@ -226,8 +228,13 @@ export const sessionsService = {
     }
 
     const sessionId = randomUUID();
-    const sessionName = buildCloudCliSessionName(initialMessage);
-    sessionsDb.createAppSession(sessionId, provider, normalizedProjectPath, sessionName);
+    const sessionName = buildCloudCliSessionName(initialMessage ?? '');
+    sessionsDb.createAppSession(
+      sessionId,
+      provider,
+      normalizedProjectPath,
+      initialMessage === undefined ? undefined : sessionName,
+    );
 
     return {
       sessionId,
@@ -308,6 +315,15 @@ export const sessionsService = {
       projectPath: source.project_path ?? '',
       sessionName,
     };
+  },
+
+  /**
+   * Used by the websocket gateway after a send is accepted, before provider
+   * execution, to name an empty draft from its first message. The repository
+   * only fills unnamed, unmapped rows, preserving explicit names and history.
+   */
+  initializeAppSessionName(sessionId: string, initialMessage: string): void {
+    sessionsDb.initializeAppSessionName(sessionId, buildCloudCliSessionName(initialMessage));
   },
 
   /**

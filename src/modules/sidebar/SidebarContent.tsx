@@ -1,4 +1,4 @@
-import { type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { Activity, Archive, Folder, MessageSquare, RotateCcw, Search, Trash2 } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
@@ -9,6 +9,7 @@ import SidebarFooter from '@/modules/sidebar/SidebarFooter';
 import SidebarHeader from '@/modules/sidebar/SidebarHeader';
 import SidebarProjectList from '@/modules/sidebar/SidebarProjectList';
 import SidebarRecentConversations from '@/modules/sidebar/SidebarRecentConversations';
+import SidebarConversationGroups from '@/modules/sidebar/SidebarConversationGroups';
 
 function HighlightedSnippet({ snippet, highlights }: { snippet: string; highlights: { start: number; end: number }[] }) {
   const parts: ReactNode[] = [];
@@ -98,6 +99,8 @@ type SidebarContentProps = {
   isLoadingMoreRecentConversations: boolean;
   recentConversationsError: boolean;
   searchFilter: string;
+  selectedGroupId: string | null;
+  onSelectGroup: (groupId: string | null) => void;
   onSearchFilterChange: (value: string) => void;
   onClearSearchFilter: () => void;
   searchMode: SidebarSearchMode;
@@ -147,6 +150,8 @@ export default function SidebarContent({
   isLoadingMoreRecentConversations,
   recentConversationsError,
   searchFilter,
+  selectedGroupId,
+  onSelectGroup,
   onSearchFilterChange,
   onClearSearchFilter,
   searchMode,
@@ -210,7 +215,17 @@ export default function SidebarContent({
       />
 
       <ScrollArea className="flex-1 overflow-y-auto overscroll-contain md:px-1.5 md:py-2">
-        {showConversationSearch ? (
+        {searchMode === 'groups' ? (
+          <SidebarConversationGroups
+            selectedGroupId={selectedGroupId}
+            onSelectGroup={onSelectGroup}
+            query={searchFilter}
+            selectedSessionId={projectListProps.selectedSession?.id ?? null}
+            currentTime={projectListProps.currentTime}
+            onConversationSelect={onConversationResultClick}
+            t={t}
+          />
+        ) : showConversationSearch ? (
           isSearching && !conversationResults ? (
             <div className="px-4 py-12 text-center md:py-8">
               <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-muted md:mb-3">

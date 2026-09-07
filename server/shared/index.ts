@@ -1,6 +1,8 @@
-// Public shared contracts consumed by the Claude provider runtime and model catalog.
+// Public shared contracts consumed by Providers, Conversation Groups, and Database.
 export type {
   AnyRecord,
+  ConversationGroupPageOptions,
+  LLMProvider,
   NormalizedMessage,
   ProviderCurrentActiveModel,
   ProviderModelOption,
@@ -20,4 +22,9 @@ export {
   buildDefaultProviderCurrentActiveModel,
   createCompleteMessage,
   createNormalizedMessage,
+  AppError,
+  asyncHandler,
+  createApiSuccessResponse,
+  normalizeProjectPath,
+  validateWorkspacePath,
 } from './utils.js';
