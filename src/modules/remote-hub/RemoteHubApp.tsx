@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Bell, GitFork, Pencil, ChevronDown, ChevronRight, ExternalLink, Folder, Layers, MoreHorizontal, Pin, Plus, RefreshCw, Server, Settings, Trash2, X } from 'lucide-react';
+import { Bell, GitFork, Pencil, ChevronDown, ChevronRight, ExternalLink, Folder, Layers, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pin, Plus, RefreshCw, Server, Settings, Trash2, X } from 'lucide-react';
 
 import { HubDialog } from '@/modules/remote-hub/modals/HubDialog';
 import { HubConversationDialog } from '@/modules/remote-hub/modals/HubConversationDialog';
 import { useHubPanes } from '@/modules/remote-hub/hooks/useHubPanes';
+import { useHubSidebar } from '@/modules/remote-hub/hooks/useHubSidebar';
 import { changeHubGroups, loadHubGroups, hubApi } from '@/shared/api';
 import type { HubRemote, HubConversation, HubGroup, HubGroupState, HubDialogState, HubConversationAction } from '@/shared/types';
 import { ThemeProvider } from '@/shared/context/ThemeContext';
@@ -35,7 +36,7 @@ function Hub() {
   const [selection, setSelection] = useState<HubConversation | null>(null);
   // Allows login to a machine before any conversation is selected.
   const [loginRemote, setLoginRemote] = useState<string | null>(null);
-  const { chatVisibility, acceptChatVisibility, navigation, selections, acceptNavigation, selectTab, panes, navigate: navigatePane, register: registerPane, remoteForSource, markReady, acceptSelection, openSettings, acceptSettingsOpened } = useHubPanes();
+  const { chatVisibility, acceptChatVisibility, navigation, selections, acceptNavigation, selectTab, panes, navigate: navigatePane, register: registerPane, remoteForSource, markReady, acceptSelection, openSettings, acceptSettingsOpened, panelStates, setPanelOpen, acceptPanelState } = useHubPanes();
   // Retains the current group or conversation dialog operation.
   const [modal, setModal] = useState<HubDialogState | null>(null);
   // Keeps remote conversation operations separate from local group dialogs.
@@ -47,8 +48,10 @@ function Hub() {
     document.addEventListener('visibilitychange', changed);
     return () => document.removeEventListener('visibilitychange', changed);
   }, []);
-  // Allows the sidebar to be collapsed on a narrow workspace.
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const sidebar = useHubSidebar();
+  const { sidebarOpen, setSidebarOpen } = sidebar;
+  // Keep tools reachable while a visited remote still serves the previous drawer protocol.
+  const [fallbackToolsRemote, setFallbackToolsRemote] = useState<string | null>(null);
   // Controls the retained cross-machine notification inbox.
   const [showNotifications, setShowNotifications] = useState(false);
   // Retains completion and attention notices independently of the selected machine.
@@ -85,15 +88,28 @@ function Hub() {
   const projectLoads = useRef(new Set<string>());
   useEffect(() => {
     if (!selection || !pageVisible || selections[selection.remoteId] !== selection.sessionId) return;
+    if (sidebar.narrow && (sidebarOpen || fallbackToolsRemote === selection.remoteId)) return;
     const visible = chatVisibility[selection.remoteId];
     if (visible && (visible.sessionId !== selection.sessionId || !visible.visible)) return;
     if (states[selection.remoteId]?.attention.includes(selection.sessionId)) markRead(selection.remoteId, selection.sessionId);
-  }, [selection, selections, chatVisibility, pageVisible, states, markRead]);
+  }, [selection, selections, chatVisibility, pageVisible, states, markRead, sidebar.narrow, sidebarOpen, fallbackToolsRemote]);
   const allConversations = useMemo(() => Object.values(states).flatMap(s => s.conversations), [states]);
   const byKey = useMemo(() => new Map(allConversations.map(c => [memberKey(c), c])), [allConversations]);
   const resolvedMember = (member: HubConversation) => byKey.get(memberKey(member)) ?? member;
   const filtered = (member: HubConversation) => `${member.title} ${member.projectPath} ${remotes.find(r => r.id === member.remoteId)?.name}`.toLowerCase().includes(query.toLowerCase());
   const selectedRemote = remotes.find(r => r.id === (selection?.remoteId ?? loginRemote));
+  const selectedPanel = selectedRemote ? panelStates[selectedRemote.id] : undefined;
+  const rightPanelOpen = selectedPanel ? selectedPanel.pendingOpen ?? selectedPanel.open : fallbackToolsRemote === selectedRemote?.id;
+  useEffect(() => {
+    if (!fallbackToolsRemote || !panelStates[fallbackToolsRemote]) return;
+    setPanelOpen(fallbackToolsRemote, true);
+    setFallbackToolsRemote(null);
+  }, [fallbackToolsRemote, panelStates, setPanelOpen]);
+  const toggleRightPanel = () => {
+    if (!selectedRemote) return;
+    if (selectedPanel) setPanelOpen(selectedRemote.id, !rightPanelOpen);
+    else setFallbackToolsRemote(rightPanelOpen ? null : selectedRemote.id);
+  };
   useEffect(() => {
     void hubApi.config().then(data => setRemotes(data.remotes)).catch(() => setError('无法读取连接配置'));
     const reload = () => {
@@ -140,7 +156,7 @@ function Hub() {
     setSelection(resolvedMember(member));
     setLoginRemote(null);
     navigatePane(member.remoteId, member.sessionId);
-    if (window.innerWidth < 760) setSidebarOpen(false);
+    if (sidebar.narrow) setSidebarOpen(false);
     const url = new URL(window.location.href);
     url.searchParams.set('remote', member.remoteId);
     url.searchParams.set('session', member.sessionId);
@@ -162,6 +178,7 @@ function Hub() {
       if (!remoteId) return;
       if (event.data?.kind === 'cloudcli:ready') { markReady(remoteId); return; }
       if (event.data?.kind === 'cloudcli:settings-opened') { if (event.data.remoteId === remoteId) acceptSettingsOpened(remoteId, event.data.requestId); return; }
+      if (event.data?.kind === 'cloudcli:workspace-panel-state') { acceptPanelState(remoteId, event.data); return; }
       if (event.data?.kind === 'cloudcli:chat-visibility') { acceptChatVisibility(remoteId, event.data); return; }
       if (event.data?.kind === 'cloudcli:workspace-nav') { acceptNavigation(remoteId, event.data); return; }
       if (event.data?.kind !== 'cloudcli:selection' || typeof event.data.sessionId !== 'string') return;
@@ -180,7 +197,7 @@ function Hub() {
     };
     window.addEventListener('message', message);
     return () => window.removeEventListener('message', message);
-  }, [selection?.remoteId, loginRemote, remoteForSource, markReady, acceptSettingsOpened, acceptSelection, acceptNavigation, acceptChatVisibility]);
+  }, [selection?.remoteId, loginRemote, remoteForSource, markReady, acceptSettingsOpened, acceptPanelState, acceptSelection, acceptNavigation, acceptChatVisibility]);
   // Import each remote user's existing groups once. Membership order is fetched
   // from that remote in pages, then becomes independent local hub metadata.
   useEffect(() => {
@@ -295,18 +312,18 @@ function Hub() {
     const before = group?.members[index - 1],
       after = group?.members[index + 1];
     const target = drag.dropTarget?.sessionId === key ? drag.dropTarget.position : null;
-    return <div key={key} data-testid="hub-conversation-row" data-group-id={group?.id} data-session-id={key} {...group ? drag.rowProps(group.id, key) : {}} className={`relative flex h-8 min-w-0 items-center gap-1 rounded-md px-1 hover:bg-accent ${selection && memberKey(selection) === key ? 'bg-primary/10' : ''} ${drag.dragState?.sessionId === key ? 'opacity-50' : ''}`}>
-      <SessionAttentionIndicator needsAttention={attention} className="absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2" />
+    return <div key={key} data-testid="hub-conversation-row" data-group-id={group?.id} data-session-id={key} {...group ? drag.rowProps(group.id, key) : {}} className={`relative flex h-8 min-w-0 items-stretch rounded-md hover:bg-accent ${selection && memberKey(selection) === key ? 'bg-primary/10' : ''} ${drag.dragState?.sessionId === key ? 'opacity-50' : ''}`}>
+      <SessionAttentionIndicator needsAttention={attention} className="pointer-events-none absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2" />
       {target && <span className={`pointer-events-none absolute inset-x-0 h-0.5 bg-primary ${target === 'before' ? 'top-0' : 'bottom-0'}`} />}
-      {group ? <button {...drag.dragHandleProps(group.id, key)} disabled={saving} aria-label={`拖动 ${member.title}`} className="h-7 w-5 shrink-0 cursor-grab text-muted-foreground">⋮</button> : <span className="w-1 shrink-0" />}
-      <a href={`/?remote=${member.remoteId}&session=${member.sessionId}`} className="flex min-w-0 flex-1 items-center gap-1.5 text-[13px]" title={`${member.title}\n${remotes.find(r => r.id === member.remoteId)?.name}\n${member.projectPath}`} onClick={e => {
+      {group && <button {...drag.dragHandleProps(group.id, key)} disabled={saving} aria-label={`拖动 ${member.title}`} className="h-full w-6 shrink-0 cursor-grab rounded-l-md text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring">⋮</button>}
+      <a href={`/?remote=${member.remoteId}&session=${member.sessionId}`} className="flex h-full min-w-0 flex-1 items-center gap-1.5 rounded px-1.5 text-[13px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring" title={`${member.title}\n${remotes.find(r => r.id === member.remoteId)?.name}\n${member.projectPath}`} onClick={e => {
         if (e.button || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.defaultPrevented) return;
         e.preventDefault();
         openMember(member);
       }}>
         <span className="min-w-0 flex-1 truncate">{member.title}</span><SessionRunningIndicator isProcessing={running} /><span className={`max-w-16 truncate text-[10px] ${status === 'online' ? 'text-muted-foreground' : 'text-amber-600'}`}>{remotes.find(r => r.id === member.remoteId)?.name}</span>
       </a>
-      <ActionMenu label="会话菜单" ariaLabel={`${member.title} 的菜单`} icon={MoreHorizontal} iconOnly portal variant="ghost" triggerClassName="h-7 w-7 p-0" disabled={saving} items={[{
+      <ActionMenu label="会话菜单" ariaLabel={`${member.title} 的菜单`} icon={MoreHorizontal} iconOnly portal variant="ghost" triggerClassName="h-8 w-8 shrink-0 p-0" disabled={saving} items={[{
         key: 'fork', label: 'Fork 对话', icon: GitFork, disabled: running || status !== 'online',
         description: running ? '本轮结束后可从完整对话创建分支' : undefined,
         onSelect: () => setConversationAction({ kind: 'fork', member, groupId: group?.id })
@@ -354,21 +371,22 @@ function Hub() {
   };
   const groupsToShow = [...groups.groups].sort((a, b) => Number(b.isPinned) - Number(a.isPinned)).filter(g => !groupWindow || g.id === groupWindow);
 
-  return <div className="fixed inset-0 flex bg-background text-foreground">
-    {sidebarOpen && <aside className="absolute inset-y-0 left-0 z-30 flex w-[320px] max-w-[88vw] flex-col border-r border-border bg-card md:relative md:max-w-none" data-testid="hub-sidebar">
+  return <div ref={sidebar.containerRef} className="fixed inset-0 flex bg-background text-foreground">
+    {sidebarOpen && sidebar.narrow && <button type="button" aria-label="关闭侧栏遮罩" className="absolute inset-0 z-20 bg-background/50 backdrop-blur-[2px]" onClick={() => setSidebarOpen(false)} />}
+    {sidebarOpen && <aside style={{ width: sidebar.width }} className={`${sidebar.narrow ? 'absolute inset-y-0 left-0' : 'relative shrink-0'} z-30 flex min-w-0 flex-col border-r border-border bg-card`} data-testid="hub-sidebar">
       <div className="flex h-14 items-center gap-2 px-4"><Layers className="h-5 w-5 text-primary" /><strong className="flex-1">CloudCLI</strong><Button variant="ghost" size="icon" aria-label="通知" onClick={() => {
           setShowNotifications(!showNotifications);
           setNotifications(items => items.map(n => ({
             ...n,
             seen: true
           })));
-        }}><Bell className="h-4 w-4" />{notifications.some(n => !n.seen) && <span className="h-1.5 w-1.5 rounded-full bg-primary" />}</Button><Button variant="ghost" size="icon" aria-label="关闭侧栏" className="md:hidden" onClick={() => setSidebarOpen(false)}><X /></Button></div>
+        }}><Bell className="h-4 w-4" />{notifications.some(n => !n.seen) && <span className="h-1.5 w-1.5 rounded-full bg-primary" />}</Button><Button variant="ghost" size="icon" aria-label="收起左侧栏" title="收起左侧栏" className="h-9 w-9 shrink-0" onClick={() => setSidebarOpen(false)}><PanelLeftClose className="h-4 w-4" /></Button></div>
       <div className="space-y-1 px-3 pb-3">{remotes.map(remote => <div key={remote.id} className="flex items-center gap-2 text-xs"><span className={`h-1.5 w-1.5 rounded-full ${states[remote.id]?.status === 'online' ? 'bg-emerald-500' : states[remote.id]?.status === 'loading' ? 'bg-muted-foreground' : 'bg-amber-500'}`} /><span className="min-w-0 flex-1 truncate" title={remote.name}>{remote.name}</span><button className="rounded px-1.5 py-1 text-muted-foreground hover:bg-accent" onClick={() => {
             setLoginRemote(remote.id);
             setSelection(null);
             navigatePane(remote.id, null);
           }}>{states[remote.id]?.status === 'login' ? '登录' : states[remote.id]?.status === 'offline' ? '离线' : states[remote.id]?.status === 'online' ? '已连接' : '连接中'}</button><button aria-label={`刷新 ${remote.name}`} onClick={() => void refresh(remote.id)} className="p-1"><RefreshCw className="h-3 w-3" /></button></div>)}</div>
-      <div className="mx-3 flex gap-1 rounded-lg bg-muted p-1">{([['groups', '分组'], ['projects', '项目'], ['recent', '最近'], ['running', '运行中']] as const).map(([id, label]) => <button key={id} onClick={() => setMode(id)} className={`flex-1 rounded-md py-1.5 text-xs ${mode === id ? 'bg-background shadow-sm' : ''}`}>{label}</button>)}</div>
+      <div aria-label="侧栏分类" className="mx-3 flex gap-1 rounded-lg bg-muted p-1">{([['groups', '分组'], ['projects', '项目'], ['recent', '最近'], ['running', '运行中']] as const).map(([id, label]) => <button key={id} type="button" aria-pressed={mode === id} onClick={() => setMode(id)} className={`min-h-8 min-w-0 flex-1 rounded-md px-1 py-1.5 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${mode === id ? 'bg-background shadow-sm' : 'hover:bg-background/60'}`}>{label}</button>)}</div>
       <div className="flex gap-2 p-3"><Input value={query} onChange={e => setQuery(e.target.value)} placeholder="搜索会话、文件夹或机器…" className="h-9 text-xs" /><Button size="icon" className="h-9 w-9 shrink-0" aria-label="新建对话" onClick={() => setModal({
           kind: 'new',
           groupId: groupWindow ?? undefined
@@ -384,8 +402,8 @@ function Hub() {
         {groupsToShow.map(group => {
             const isOpen = expanded.has(group.id) || Boolean(query) || Boolean(groupWindow);
             return <section key={group.id} data-testid="hub-group" data-group-id={group.id}>
-          <div className="flex h-9 items-center gap-1 rounded-md pr-1 hover:bg-accent"><button className="flex min-w-0 flex-1 items-center gap-1.5 px-1 text-left text-xs font-medium" aria-expanded={isOpen} onClick={() => expand(group.id)}>{isOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}<span className="min-w-0 flex-1 truncate">{group.name}</span>{group.isPinned && <Pin className="h-3 w-3" />}<span className="text-[10px] text-muted-foreground">{group.members.length}</span></button>
-          <ActionMenu label="分组菜单" ariaLabel={`${group.name} 分组菜单`} icon={MoreHorizontal} iconOnly portal variant="ghost" triggerClassName="h-7 w-7 p-0" disabled={saving} items={[{
+          <div className="flex h-9 items-stretch rounded-md hover:bg-accent"><button type="button" className="flex h-full min-w-0 flex-1 items-center gap-1.5 rounded px-1 text-left text-xs font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring" aria-expanded={isOpen} onClick={() => expand(group.id)}>{isOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}<span className="min-w-0 flex-1 truncate">{group.name}</span>{group.isPinned && <Pin className="h-3 w-3" />}<span className="text-[10px] text-muted-foreground">{group.members.length}</span></button>
+          <ActionMenu label="分组菜单" ariaLabel={`${group.name} 分组菜单`} icon={MoreHorizontal} iconOnly portal variant="ghost" triggerClassName="h-9 w-8 shrink-0 p-0" disabled={saving} items={[{
                   key: 'new',
                   label: '新建对话',
                   icon: Plus,
@@ -437,14 +455,14 @@ function Hub() {
               projectId: project.projectId,
               projectPath: project.fullPath
             }));
-            return <div key={id}><div className="flex items-center"><button className="flex h-9 min-w-0 flex-1 items-center gap-1.5 px-1 text-xs" onClick={() => {
+            return <div key={id}><div className="flex h-9 items-stretch rounded-md hover:bg-accent"><button type="button" aria-expanded={open} className="flex h-full min-w-0 flex-1 items-center gap-1.5 rounded px-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring" onClick={() => {
                   expand(id);
                   if (!open && !projectRows[id]) void loadProject(remote.id, project.projectId);
                 }}>{open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}<Folder className="h-3.5 w-3.5" /><span className="truncate" title={project.fullPath}>{project.displayName}</span></button><button aria-label={`在 ${project.displayName} 新建`} onClick={() => setModal({
                   kind: 'new',
                   remoteId: remote.id,
                   projectId: project.projectId
-                })} className="p-2"><Plus className="h-3.5 w-3.5" /></button></div>{open && <div className="pl-2">{rows.filter(filtered).map(m => renderRow(m))}{rows.length < (project.sessionMeta?.total ?? 0) && <button disabled={loadingRows.has(id)} className="p-2 text-xs text-primary" onClick={() => void loadProject(remote.id, project.projectId, true)}>加载更多</button>}</div>}</div>;
+                })} className="flex h-full w-8 shrink-0 items-center justify-center rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"><Plus className="h-3.5 w-3.5" /></button></div>{open && <div className="pl-2">{rows.filter(filtered).map(m => renderRow(m))}{rows.length < (project.sessionMeta?.total ?? 0) && <button disabled={loadingRows.has(id)} className="p-2 text-xs text-primary" onClick={() => void loadProject(remote.id, project.projectId, true)}>加载更多</button>}</div>}</div>;
           })}</section>)}
         {(mode === 'recent' || mode === 'running') && <>{allConversations.filter(c => mode !== 'running' || states[c.remoteId]?.running.includes(c.sessionId)).filter(filtered).sort((a, b) => Date.parse(b.lastActivity ?? '') - Date.parse(a.lastActivity ?? '')).map(c => renderRow(c))}{mode === 'recent' && remotes.filter(r => (states[r.id]?.total ?? 0) > (states[r.id]?.conversations.length ?? 0)).map(r => <button key={r.id} className="p-2 text-xs text-primary" onClick={() => {
             void hubApi.recent(r.id, states[r.id].conversations.length).then(data => setStates(current => ({
@@ -457,14 +475,11 @@ function Hub() {
           }}>加载更多 · {r.name}</button>)}</>}
       </div>
       <div className="border-t border-border px-4 py-3 text-[11px] leading-relaxed text-muted-foreground">通过本机 SSH 隧道连接 · Claude 在远端运行</div>
+      {!sidebar.narrow && <div role="separator" tabIndex={0} aria-label="调整左侧栏宽度" aria-orientation="vertical" aria-valuemin={sidebar.minWidth} aria-valuemax={sidebar.maxWidth} aria-valuenow={Math.round(sidebar.width)} onPointerDown={sidebar.beginResize} onPointerMove={sidebar.moveResize} onPointerUp={sidebar.endResize} onPointerCancel={sidebar.endResize} onLostPointerCapture={sidebar.endResize} onKeyDown={sidebar.keyResize} className="absolute inset-y-0 -right-1 z-50 w-2 cursor-col-resize touch-none hover:bg-primary/40 focus-visible:bg-primary/40 focus-visible:outline-none" />}
     </aside>}
-    <main className="flex min-w-0 flex-1 flex-col">
-      <header data-testid="hub-workspace-header" className="flex h-12 min-h-12 items-center gap-1.5 border-b border-border px-2">
-        <Button variant="ghost" size="icon" aria-label="展开侧栏" className="h-8 w-8 shrink-0" onClick={() => setSidebarOpen(!sidebarOpen)}><Layers className="h-4 w-4" /></Button>
-        <div className="min-w-0 flex-1 basis-28" title={`${selection?.title ?? ''} · ${selectedRemote?.name ?? ''} · ${selection?.projectPath ?? ''}`}><div className="truncate text-sm font-medium">{selection?.title ?? (loginRemote ? '连接远端' : '所有远端，一个窗口')}</div>{selectedRemote && <div className="truncate text-[10px] text-muted-foreground">{selectedRemote.name}</div>}</div>
-        {selectedRemote && navigation[selectedRemote.id]?.sessionId === (selection?.sessionId ?? null) && <nav aria-label="工作区视图" className="flex min-w-0 max-w-[65%] shrink items-center gap-0.5 overflow-x-auto">{navigation[selectedRemote.id].tabs.map(tab => <button key={tab.id} type="button" aria-pressed={navigation[selectedRemote.id].activeTab === tab.id} onClick={() => selectTab(selectedRemote.id, tab.id)} className={`shrink-0 whitespace-nowrap rounded-md px-2 py-1.5 text-xs ${navigation[selectedRemote.id].activeTab === tab.id ? 'bg-accent font-medium' : 'text-muted-foreground hover:bg-accent'}`}>{tab.label}</button>)}</nav>}
-        {selectedRemote && <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" aria-label={`${selectedRemote.name} 的设置`} title={`${selectedRemote.name} 的设置`} onClick={() => openSettings(selectedRemote.id)}><Settings className="h-4 w-4" /></Button>}
-      </header>
+    <main className="relative flex min-w-0 flex-1 flex-col">
+      {!sidebarOpen && !selectedPanel?.overlayOpen && !selectedPanel?.settingsOpen && <Button variant="outline" size="icon" aria-label="展开左侧栏" title="展开左侧栏" className="absolute left-2 top-2 z-40 h-9 w-9 bg-background/95 shadow-sm" onClick={() => setSidebarOpen(true)}><PanelLeftOpen className="h-4 w-4" />{notifications.some(n => !n.seen) && <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-primary" />}</Button>}
+      {selectedRemote && !selectedPanel?.overlayOpen && !selectedPanel?.settingsOpen && <Button variant="outline" size="icon" aria-label={rightPanelOpen ? '收起右侧工作区' : '打开右侧工作区'} title={`${rightPanelOpen ? '收起' : '打开'}右侧工作区 · ${selectedRemote.name}`} aria-expanded={rightPanelOpen} className="absolute right-0 top-1/2 z-40 h-11 w-9 -translate-y-1/2 rounded-r-none bg-background/95 shadow-sm" onClick={toggleRightPanel}>{rightPanelOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}</Button>}
       {selectedRemote && states[selectedRemote.id]?.status === 'offline' && <div role="status" className="bg-amber-50 px-4 py-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-200">{selectedRemote.name} 连接中断，其他机器仍可使用。<button className="ml-2 underline" onClick={() => void refresh(selectedRemote.id)}>重新连接</button></div>}
       {panes.map(pane => <iframe
         name="cloudcli-remote" key={pane.remoteId}
@@ -475,10 +490,16 @@ function Hub() {
         className={selectedRemote?.id === pane.remoteId ? 'min-h-0 w-full flex-1 border-0' : 'hidden'}
         allow="clipboard-read; clipboard-write; fullscreen"
       />)}
+      {selectedRemote && fallbackToolsRemote === selectedRemote.id && !selectedPanel && <aside aria-label="右侧工作区" className="absolute inset-y-0 right-0 z-30 flex w-[300px] max-w-full flex-col gap-3 border-l border-border bg-background p-4 shadow-lg">
+        <div className="flex min-h-10 items-center gap-2"><div className="min-w-0 flex-1"><div className="truncate text-sm font-medium">{selection?.title ?? '工作区'}</div><div className="truncate text-xs text-muted-foreground">{selectedRemote.name}</div></div><Button variant="ghost" size="icon" aria-label="关闭工作区工具" onClick={() => setFallbackToolsRemote(null)}><PanelRightClose className="h-4 w-4" /></Button></div>
+        <nav aria-label="工作区视图" className="grid grid-cols-2 gap-2">{navigation[selectedRemote.id]?.tabs.map(tab => <Button key={tab.id} variant="outline" className="min-h-11 w-full px-2 text-xs" aria-pressed={navigation[selectedRemote.id].activeTab === tab.id} onClick={() => { selectTab(selectedRemote.id, tab.id); setFallbackToolsRemote(null); }}>{tab.label}</Button>)}</nav>
+        <Button variant="outline" className="min-h-11 justify-start" aria-label={`${selectedRemote.name} 的设置`} onClick={() => { openSettings(selectedRemote.id); setFallbackToolsRemote(null); }}><Settings className="h-4 w-4" />机器设置</Button>
+      </aside>}
       {selectedRemote ? null : <div className="flex flex-1 items-center justify-center p-8 text-center"><div className="max-w-sm"><Server className="mx-auto mb-4 h-8 w-8 text-muted-foreground" /><h1 className="text-lg font-semibold">选择一段对话，继续工作</h1><p className="mt-3 text-sm leading-relaxed text-muted-foreground">先在侧栏连接各台机器。登录使用对应远端的 CloudCLI 账号，项目操作和 Claude 执行都发生在那里。</p><Button className="mt-5" onClick={() => setModal({
             kind: 'new'
           })}>新建对话</Button></div></div>}
     </main>
+    {sidebar.resizing && <div className="fixed inset-0 z-40 cursor-col-resize" aria-hidden />}
     {showNotifications && <div className="absolute right-3 top-14 z-40 w-80 max-w-[95vw] rounded-lg border border-border bg-popover p-3 shadow-xl"><div className="mb-2 flex items-center justify-between text-sm font-medium">通知<button aria-label="关闭通知" onClick={() => setShowNotifications(false)}><X className="h-4 w-4" /></button></div>{notifications.length ? notifications.map(n => <button key={n.id} className="block w-full rounded p-2 text-left text-xs hover:bg-accent" onClick={() => {
         const member = byKey.get(`${n.remoteId}:${n.sessionId}`);
         if (member) openMember(member);

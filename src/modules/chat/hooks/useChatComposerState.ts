@@ -74,7 +74,7 @@ type MentionableFile = {
 };
 
 type CommandExecutionResult = {
-  type: 'builtin' | 'custom';
+  type: 'builtin' | 'custom' | 'native';
   action?: string;
   data?: any;
   content?: string;
@@ -427,7 +427,7 @@ export function useChatComposerState({
             setInput('');
             inputValueRef.current = '';
           }
-        } else if (result.type === 'custom') {
+        } else if (result.type === 'custom' || result.type === 'native') {
           await handleCustomCommand(result);
         }
       } catch (error) {
@@ -482,6 +482,7 @@ export function useChatComposerState({
     handleCommandMenuKeyDown,
   } = useSlashCommands({
     selectedProject,
+    sessionId: sessionKey,
     provider,
     input,
     setInput,
@@ -743,6 +744,10 @@ export function useChatComposerState({
       // Intercept slash commands only when "/" is the first input character.
       // Also accept exact "help" as a convenience alias for users who expect CLI-style help.
       const commandInput = currentInput.trimEnd();
+      if (provider === 'claude' && /^\/compact(?:\s|$)/.test(commandInput) && !sessionKey) {
+        addMessage({ type: 'error', content: t('input.commands.compactNeedsHistory', { defaultValue: '/compact needs an existing conversation with prior messages. Send a normal message first.' }), timestamp: new Date() });
+        return;
+      }
       const isHelpAlias = commandInput.trim().toLowerCase() === 'help';
       if (commandInput.startsWith('/') || isHelpAlias) {
         const firstSpace = commandInput.indexOf(' ');
@@ -759,7 +764,7 @@ export function useChatComposerState({
                 metadata: { type: 'builtin' },
               } as SlashCommand)
             : undefined);
-        if (matchedCommand && matchedCommand.type !== 'skill') {
+        if (matchedCommand && matchedCommand.type !== 'skill' && matchedCommand.type !== 'native') {
           executeCommand(matchedCommand, isHelpAlias ? '/help' : commandInput);
           recordSentMessage(currentInput);
           setInput('');

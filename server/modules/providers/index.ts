@@ -17,3 +17,6 @@ export { isClaudeSessionActive } from './list/claude/claude-runtime.provider.js'
 // Used by Shell and server configuration routes to share Claude session settings.
 export { claudeSessionConfiguration } from './services/claude-session-configuration.service.js';
 export { claudeExecutionRecords } from './services/claude-execution-records.js';
+
+// Commands reads metadata reported by existing remote queries without starting a process.
+export { claudeCommandCatalog } from './list/claude/claude-command-catalog.js';

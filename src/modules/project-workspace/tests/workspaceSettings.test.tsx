@@ -1,13 +1,14 @@
 import { useState } from 'react';
-import type { ReactNode } from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 import type { AgentSettingsProject, Project } from '@/shared/types';
 import { ProjectsStateProvider, useProjectMainState, useProjectSidebarState } from '@/modules/project-workspace/context/ProjectsStateContext';
 import ProjectWorkspaceShell from '@/modules/project-workspace/ProjectWorkspaceShell';
+import { useWorkspacePanels } from '@/modules/workspace-panels';
+import { useModalPresence } from '@/shared/hooks/useModalVisibility';
 
-const fixture = vi.hoisted(() => ({ projects: [] as Project[], activeTab: 'shell' }));
+const fixture = vi.hoisted(() => ({ projects: [] as Project[], activeTab: 'shell', clearSessionSelection: vi.fn() }));
 vi.mock('@/modules/project-workspace/hooks/useProjectsState', () => ({ useProjectsState: () => {
   const [showSettings, setShowSettings] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState('agents');
@@ -15,11 +16,13 @@ vi.mock('@/modules/project-workspace/hooks/useProjectsState', () => ({ useProjec
   return { projects: fixture.projects, selectedProject: null, selectedSession: null,
     activeTab: fixture.activeTab, setActiveTab: vi.fn(), showSettings, settingsInitialTab, openSettings,
     closeSettings: () => setShowSettings(false), sidebarOpen: true,
+    clearSessionSelection: fixture.clearSessionSelection,
     sidebarSharedProps: { onShowSettings: () => openSettings() } };
 } }));
 vi.mock('@/modules/project-workspace/ProjectMainRegion', () => ({ default: function MockProjectMainRegion() {
   const { openSettings } = useProjectMainState();
-  return <button onClick={() => openSettings('git')}>Open from tool panel</button>;
+  const panel = useWorkspacePanels();
+  return <><button onClick={() => openSettings('git')}>Open from tool panel</button><output data-testid="panel-state">{String(panel?.open)}:{panel?.tab}</output></>;
 } }));
 vi.mock('@/modules/project-workspace/ProjectSidebarRegion', () => ({ default: function MockProjectSidebarRegion() {
   const { sidebarSharedProps } = useProjectSidebarState();
@@ -28,7 +31,6 @@ vi.mock('@/modules/project-workspace/ProjectSidebarRegion', () => ({ default: fu
 vi.mock('@/modules/settings', () => ({ Settings: ({ remoteName, projects, initialTab, onClose }: { remoteName?: string; projects: AgentSettingsProject[]; initialTab: string; onClose: () => void }) =>
   <div role="dialog" aria-label={`Settings · ${remoteName ?? 'standalone'}`}><span>{initialTab}</span><output>{JSON.stringify(projects)}</output><button onClick={onClose}>Close settings</button></div>,
 }));
-vi.mock('@/modules/workspace-panels', () => ({ WorkspacePanelsProvider: ({ children }: { children: ReactNode }) => children }));
 vi.mock('@/modules/quick-settings-panel', () => ({ QuickSettingsPanel: () => null }));
 vi.mock('@/modules/project-workspace/controllers/ProjectEffects', () => ({ default: () => null }));
 vi.mock('@/modules/project-workspace/ProjectCommandPalette', () => ({ default: () => null }));
@@ -42,8 +44,10 @@ const receive = (remoteId: string, origin = location.origin, source = parentWind
 const workspace = () => render(<ProjectsStateProvider navigate={vi.fn()} subscribe={() => () => {}} isMobile={false} isSessionProcessing={() => false}>
   <ProjectWorkspaceShell isMobile={false} navigate={vi.fn()} sendMessage={vi.fn()} ws={null} />
 </ProjectsStateProvider>);
+function ModalCoverage({ open }: { open: boolean }) { useModalPresence(open); return null; }
 beforeEach(() => {
   fixture.projects = []; fixture.activeTab = 'shell';
+  fixture.clearSessionSelection.mockClear();
   window.__CLOUDCLI_EMBEDDED__ = true; window.__REMOTE_ID__ = 'alpha'; window.__REMOTE_NAME__ = 'Server Alpha';
   Object.defineProperty(window, 'parent', { configurable: true, value: parentWindow });
 });
@@ -75,6 +79,48 @@ test('commands for another machine or from an untrusted window cannot open this 
   expect(screen.getByRole('dialog', { name: 'Settings · Server Alpha' })).toBeTruthy();
   receive('beta');
   expect(screen.queryByRole('dialog', { name: /Beta/ })).toBeNull();
+});
+
+test('right drawer commands keep explicit state, acknowledge their fixed remote and expose settings coverage', () => {
+  workspace();
+  const send = (open: unknown, remoteId = 'alpha', source = parentWindow) => act(() => window.dispatchEvent(new MessageEvent('message', { origin: location.origin, source, data: { kind: 'cloudcli:workspace-panel', remoteId, open, requestId: 'panel-one' } })));
+  send(true, 'beta'); send(true, 'alpha', window); send('true');
+  expect(screen.getByTestId('panel-state').textContent).toBe('false:preferences');
+  send(true); send(true);
+  expect(screen.getByTestId('panel-state').textContent).toBe('true:preferences');
+  expect(parentWindow.postMessage).toHaveBeenCalledWith({ kind: 'cloudcli:workspace-panel-state', remoteId: 'alpha', open: true, maximized: false, settingsOpen: false, overlayOpen: false, requestId: 'panel-one' }, location.origin);
+  receive('alpha');
+  expect(parentWindow.postMessage).toHaveBeenCalledWith({ kind: 'cloudcli:workspace-panel-state', remoteId: 'alpha', open: true, maximized: false, settingsOpen: true, overlayOpen: true }, location.origin);
+  fireEvent.click(screen.getByText('Close settings'));
+  send(false);
+  expect(screen.getByTestId('panel-state').textContent).toBe('false:preferences');
+});
+
+test('token or review dialogs report overlay coverage and release host controls when closed', () => {
+  workspace();
+  const modal = render(<ModalCoverage open />);
+  expect(parentWindow.postMessage).toHaveBeenCalledWith({ kind: 'cloudcli:workspace-panel-state', remoteId: 'alpha', open: false, maximized: false, settingsOpen: false, overlayOpen: true }, location.origin);
+  modal.rerender(<ModalCoverage open={false} />);
+  expect(parentWindow.postMessage).toHaveBeenLastCalledWith({ kind: 'cloudcli:workspace-panel-state', remoteId: 'alpha', open: false, maximized: false, settingsOpen: false, overlayOpen: false }, location.origin);
+});
+
+test('returning the retained remote to an empty route explicitly clears its chat session binding', () => {
+  workspace();
+  act(() => window.dispatchEvent(new MessageEvent('message', { origin: location.origin, source: window, data: { kind: 'cloudcli:navigate', sessionId: null } })));
+  expect(fixture.clearSessionSelection).not.toHaveBeenCalled();
+  act(() => window.dispatchEvent(new MessageEvent('message', { origin: location.origin, source: parentWindow, data: { kind: 'cloudcli:navigate', sessionId: null } })));
+  expect(fixture.clearSessionSelection).toHaveBeenCalledTimes(1);
+});
+
+test('rapid reverse drawer requests cannot attach an obsolete request id to later overlay broadcasts', () => {
+  workspace();
+  act(() => {
+    for (const [open, requestId] of [[true, 'opening'], [false, 'closing']]) window.dispatchEvent(new MessageEvent('message', { origin: location.origin, source: parentWindow, data: { kind: 'cloudcli:workspace-panel', remoteId: 'alpha', open, requestId } }));
+  });
+  expect(screen.getByTestId('panel-state').textContent).toBe('false:preferences');
+  expect(parentWindow.postMessage).toHaveBeenCalledWith({ kind: 'cloudcli:workspace-panel-state', remoteId: 'alpha', open: false, maximized: false, settingsOpen: false, overlayOpen: false, requestId: 'closing' }, location.origin);
+  render(<ModalCoverage open />);
+  expect(parentWindow.postMessage).toHaveBeenLastCalledWith({ kind: 'cloudcli:workspace-panel-state', remoteId: 'alpha', open: false, maximized: false, settingsOpen: false, overlayOpen: true }, location.origin);
 });
 
 test('standalone sidebar and panel actions share one complete settings instance with normalized remote folders', () => {

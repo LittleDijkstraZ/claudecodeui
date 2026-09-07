@@ -52,7 +52,8 @@ const menuBaseStyle: CSSProperties = {
 
 const namespaceLabels: Record<string, string> = {
   frequent: 'Frequently Used',
-  builtin: 'Built-in Commands',
+  builtin: 'CloudCLI Commands',
+  native: 'Claude Commands',
   skill: 'Skills',
   project: 'Project Commands',
   user: 'User Commands',
@@ -62,6 +63,7 @@ const namespaceLabels: Record<string, string> = {
 const namespaceIcons: Record<string, LucideIcon> = {
   frequent: Star,
   builtin: Terminal,
+  native: Terminal,
   skill: Sparkles,
   project: Folder,
   user: User,
@@ -221,8 +223,8 @@ export default function CommandMenu({
   }
 
   const preferredOrder = hasFrequentCommands
-    ? ['frequent', 'builtin', 'skill', 'project', 'user', 'other']
-    : ['builtin', 'skill', 'project', 'user', 'other'];
+    ? ['frequent', 'builtin', 'native', 'skill', 'project', 'user', 'other']
+    : ['builtin', 'native', 'skill', 'project', 'user', 'other'];
   const extraNamespaces = Object.keys(groupedCommands).filter((namespace) => !preferredOrder.includes(namespace));
   const orderedNamespaces = [...preferredOrder, ...extraNamespaces].filter((namespace) => groupedCommands[namespace]);
   const renderInPortal = (node: ReactElement) =>
@@ -302,7 +304,7 @@ export default function CommandMenu({
                     </span>
                     {command.metadata?.type && (
                       <span className="command-metadata-badge shrink-0 rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground shadow-sm">
-                        {command.metadata.type}
+                        {command.type === 'native' ? t(command.metadata.availability === 'reported' ? 'chat:input.commands.reported' : 'chat:input.commands.documented') : command.metadata.type}
                       </span>
                     )}
                   </div>

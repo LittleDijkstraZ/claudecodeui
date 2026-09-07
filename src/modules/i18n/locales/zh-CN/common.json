@@ -326,6 +326,9 @@
     "noAgents": "当前对话启动的 Agent 会显示在这里，可查看操作、输出和结果。",
     "agentsRunning": "{{count}} 个 Agent 运行中",
     "agentsRecorded": "{{count}} 个 Agent",
-    "reconnectBeforeClose": "请先重新连接此终端，再关闭它，以便真正停止远端进程。"
+    "reconnectBeforeClose": "请先重新连接此终端，再关闭它，以便真正停止远端进程。",
+    "preferences": "偏好",
+    "open": "打开右侧工具面板",
+    "machineSettings": "机器设置"
   }
 }

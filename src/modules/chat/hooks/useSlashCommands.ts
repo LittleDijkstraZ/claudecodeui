@@ -10,6 +10,7 @@ const COMMAND_QUERY_DEBOUNCE_MS = 150;
 
 type UseSlashCommandsOptions = {
   selectedProject: Project | null;
+  sessionId?: string | null;
   provider: LLMProvider;
   input: string;
   setInput: Dispatch<SetStateAction<string>>;
@@ -58,7 +59,7 @@ const isPromiseLike = (value: unknown): value is Promise<unknown> =>
   Boolean(value) && typeof (value as Promise<unknown>).then === 'function';
 
 const isSkillCommand = (command: SlashCommand) =>
-  command.type === 'skill' || command.metadata?.type === 'skill';
+  command.type === 'skill' || command.metadata?.type === 'skill' || command.type === 'native';
 
 const dedupeProviderSkills = (skills: ProviderSkill[]): ProviderSkill[] => {
   const seenCommands = new Set<string>();
@@ -128,6 +129,7 @@ const filterSlashCommands = (
 
 export function useSlashCommands({
   selectedProject,
+  sessionId,
   provider,
   input,
   setInput,
@@ -140,6 +142,16 @@ export function useSlashCommands({
   const [commandQuery, setCommandQuery] = useState('');
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(-1);
   const [slashPosition, setSlashPosition] = useState(-1);
+
+  // Refresh the available surface when this same remote query discovers commands mid-session.
+  const [catalogRevision, setCatalogRevision] = useState(0);
+  useEffect(() => {
+    const changed = (event: Event) => {
+      if (provider === 'claude' && (event as CustomEvent).detail?.sessionId === sessionId) setCatalogRevision(value => value + 1);
+    };
+    window.addEventListener('cloudcli-native-commands-changed', changed);
+    return () => window.removeEventListener('cloudcli-native-commands-changed', changed);
+  }, [provider, sessionId]);
 
   const commandQueryTimerRef = useRef<number | null>(null);
 
@@ -170,15 +182,15 @@ export function useSlashCommands({
 
       try {
         const workspacePath = selectedProject.fullPath || selectedProject.path || '';
-        const response = await api.commands.list(workspacePath || selectedProject.path);
+        const response = await api.commands.list(workspacePath || selectedProject.path, provider, sessionId);
 
         if (!response.ok) {
           throw new Error('Failed to fetch commands');
         }
 
         const data = await response.json();
-        const skillsResponse = await api.providers.skills(provider, { workspacePath });
-        const skillsData = skillsResponse.ok
+        const skillsResponse = await api.providers.skills(provider, { workspacePath }).catch(() => null);
+        const skillsData = skillsResponse?.ok
           ? ((await skillsResponse.json()) as ProviderSkillsResponse)
           : null;
         const skillCommands = dedupeProviderSkills(skillsData?.data?.skills || [])
@@ -189,6 +201,7 @@ export function useSlashCommands({
             type: 'built-in',
           })),
           ...skillCommands,
+          ...(provider === 'claude' ? ((data.native || []) as SlashCommand[]).map(command => ({ ...command, type: 'native' })) : []),
           ...((data.custom || []) as SlashCommand[]).map((command) => ({
             ...command,
             type: 'custom',
@@ -196,7 +209,12 @@ export function useSlashCommands({
         ];
 
         const parsedHistory = readCommandHistory(selectedProject.projectId);
-        const sortedCommands = [...allCommands].sort((commandA, commandB) => {
+        const seen = new Set<string>();
+        const sortedCommands = allCommands.filter(command => {
+          if (seen.has(command.name)) return false;
+          seen.add(command.name);
+          return true;
+        }).sort((commandA, commandB) => {
           const commandAUsage = parsedHistory[commandA.name] || 0;
           const commandBUsage = parsedHistory[commandB.name] || 0;
           return commandBUsage - commandAUsage;
@@ -217,7 +235,7 @@ export function useSlashCommands({
     return () => {
       cancelled = true;
     };
-  }, [selectedProject, provider]);
+  }, [selectedProject, provider, sessionId, catalogRevision]);
 
   useEffect(() => {
     if (!showCommandMenu) {

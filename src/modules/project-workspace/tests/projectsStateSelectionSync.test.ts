@@ -283,3 +283,18 @@ test('a superseded first load never renders the sidebar as empty', async () => {
     `the sidebar must never see a settled empty list while the load is still in flight: ${JSON.stringify(renderedStates)}`,
   );
 });
+
+test('explicit empty navigation releases the selected session without replacing its project or repeating the reset', async () => {
+  respondWith([buildProject({ sessions: [{ id: 'removed-session', summary: 'Old session' }] })]);
+  const { useProjectsState } = await import('@/modules/project-workspace/hooks/useProjectsState');
+  const hook = renderHook(({ sessionId }: { sessionId: string | undefined }) => useProjectsState({ sessionId, navigate: vi.fn(), subscribe: () => () => {}, isMobile: false, isSessionProcessing: () => false }), { initialProps: { sessionId: 'removed-session' as string | undefined } });
+  await waitFor(() => assert.equal(hook.result.current.selectedSession?.id, 'removed-session'));
+  const project = hook.result.current.selectedProject;
+  const trigger = hook.result.current.newSessionTrigger;
+  act(() => { hook.result.current.clearSessionSelection(); hook.rerender({ sessionId: undefined }); });
+  assert.equal(hook.result.current.selectedSession, null);
+  assert.equal(hook.result.current.selectedProject, project);
+  assert.equal(hook.result.current.newSessionTrigger, trigger + 1);
+  act(() => hook.result.current.clearSessionSelection());
+  assert.equal(hook.result.current.newSessionTrigger, trigger + 1, 'a replay cannot clear a new unsent draft again');
+});

@@ -12,12 +12,15 @@ export function useHubPanes() {
   const [selections, setSelections] = useState<Record<string, string>>({});
   // Main chat can stay visible beside a selected tool tab or be covered by a maximized panel.
   const [chatVisibility, setChatVisibility] = useState<Record<string, { sessionId: string | null; visible: boolean }>>({});
+  // Each iframe reports its own drawer and modal visibility; pending intent is not an acknowledgement.
+  const [panelStates, setPanelStates] = useState<Record<string, { open: boolean; maximized: boolean; settingsOpen: boolean; overlayOpen?: boolean; pendingOpen?: boolean }>>({});
   const frames = useRef(new Map<string, HTMLIFrameElement>());
   const ready = useRef(new Set<string>());
   const pending = useRef(new Map<string, string | null>());
   // Clicking settings during login/initial load must open on that machine once
   // its workspace is ready, without falling through to the newly selected pane.
   const pendingSettings = useRef(new Map<string, string>());
+  const pendingPanels = useRef(new Map<string, { requestId: string; open: boolean }>());
   const navigate = useCallback((remoteId: string, sessionId: string | null) => {
     pending.current.set(remoteId, sessionId);
     setPanes(current => current.some(pane => pane.remoteId === remoteId) ? current : [...current, { remoteId, initialSessionId: sessionId }]);
@@ -38,11 +41,13 @@ export function useHubPanes() {
     if (pending.current.has(remoteId)) targetWindow?.postMessage({ kind: 'cloudcli:navigate', sessionId: pending.current.get(remoteId) }, location.origin);
     const settingsRequestId = pendingSettings.current.get(remoteId);
     if (targetWindow && settingsRequestId) targetWindow.postMessage({ kind: 'cloudcli:settings', remoteId, requestId: settingsRequestId }, location.origin);
+    const panelRequest = pendingPanels.current.get(remoteId);
+    if (targetWindow && panelRequest) targetWindow.postMessage({ kind: 'cloudcli:workspace-panel', remoteId, ...panelRequest }, location.origin);
   }, []);
   const acceptSelection = useCallback((remoteId: string, sessionId: string) => {
     // A frame can report its previous selection before a requested navigation settles.
     const target = pending.current.get(remoteId);
-    if (target && target !== sessionId) return false;
+    if (pending.current.has(remoteId) && target !== sessionId) return false;
     pending.current.delete(remoteId);
     setSelections(current => current[remoteId] === sessionId ? current : { ...current, [remoteId]: sessionId });
     return true;
@@ -62,6 +67,25 @@ export function useHubPanes() {
   const acceptSettingsOpened = useCallback((remoteId: string, requestId: unknown) => {
     if (typeof requestId === 'string' && pendingSettings.current.get(remoteId) === requestId) pendingSettings.current.delete(remoteId);
   }, []);
+  const setPanelOpen = useCallback((remoteId: string, open: boolean) => {
+    const request = { requestId: crypto.randomUUID(), open };
+    pendingPanels.current.set(remoteId, request);
+    setPanelStates(current => ({ ...current, [remoteId]: { ...(current[remoteId] ?? { open: false, maximized: false, settingsOpen: false }), pendingOpen: open } }));
+    if (ready.current.has(remoteId)) frames.current.get(remoteId)?.contentWindow?.postMessage({ kind: 'cloudcli:workspace-panel', remoteId, ...request }, location.origin);
+    setPanes(current => current.some(pane => pane.remoteId === remoteId) ? current : [...current, { remoteId, initialSessionId: null }]);
+  }, []);
+  const acceptPanelState = useCallback((remoteId: string, value: unknown) => {
+    if (!value || typeof value !== 'object') return;
+    const state = value as { remoteId?: unknown; open?: unknown; maximized?: unknown; settingsOpen?: unknown; overlayOpen?: unknown; requestId?: unknown };
+    if (state.remoteId !== remoteId || typeof state.open !== 'boolean' || typeof state.maximized !== 'boolean' || typeof state.settingsOpen !== 'boolean') return;
+    const pendingRequest = pendingPanels.current.get(remoteId);
+    if (state.requestId !== undefined) {
+      if (typeof state.requestId !== 'string' || pendingRequest?.requestId !== state.requestId) return;
+      pendingPanels.current.delete(remoteId);
+    }
+    const pendingOpen = pendingPanels.current.get(remoteId)?.open;
+    setPanelStates(current => ({ ...current, [remoteId]: { open: state.open as boolean, maximized: state.maximized as boolean, settingsOpen: state.settingsOpen as boolean, overlayOpen: state.overlayOpen === true || state.settingsOpen === true, pendingOpen } }));
+  }, []);
   const acceptNavigation = useCallback((remoteId: string, value: unknown) => {
     if (!value || typeof value !== 'object') return;
     const nav = value as WorkspaceNavigationState;
@@ -69,7 +93,16 @@ export function useHubPanes() {
     if (!nav.tabs.every(tab => tab && typeof tab.id === 'string' && typeof tab.label === 'string' && tab.label.length <= 100)) return;
     if (!nav.tabs.some(tab => tab.id === nav.activeTab)) return;
     const requested = pending.current.get(remoteId);
-    if (requested && requested !== nav.sessionId) return;
+    if (pending.current.has(remoteId) && requested !== nav.sessionId) return;
+    if (nav.sessionId === null) {
+      // The retained frame has now cleared its selection; older messages from
+      // that frame precede this acknowledgement and were rejected above.
+      pending.current.delete(remoteId);
+      setSelections(current => {
+        if (!(remoteId in current)) return current;
+        const next = { ...current }; delete next[remoteId]; return next;
+      });
+    }
     setNavigation(current => ({ ...current, [remoteId]: { sessionId: nav.sessionId, activeTab: nav.activeTab, tabs: nav.tabs } }));
     frames.current.get(remoteId)?.contentWindow?.postMessage({ kind: 'cloudcli:workspace-nav-ready', sessionId: nav.sessionId }, location.origin);
   }, []);
@@ -83,5 +116,5 @@ export function useHubPanes() {
     if ((state.sessionId !== null && typeof state.sessionId !== 'string') || typeof state.visible !== 'boolean') return;
     setChatVisibility(current => ({ ...current, [remoteId]: { sessionId: state.sessionId, visible: state.visible } }));
   }, []);
-  return { chatVisibility, acceptChatVisibility, navigation, selections, acceptNavigation, selectTab, panes, navigate, register, remoteForSource, markReady, acceptSelection, openSettings, acceptSettingsOpened };
+  return { chatVisibility, acceptChatVisibility, navigation, selections, acceptNavigation, selectTab, panes, navigate, register, remoteForSource, markReady, acceptSelection, openSettings, acceptSettingsOpened, panelStates, setPanelOpen, acceptPanelState };
 }

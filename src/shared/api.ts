@@ -416,7 +416,7 @@ export const api = {
   commands: {
     // `projectPath` stays optional: a workspace without a resolved path omits
     // the field entirely, which is what the server expects.
-    list: (projectPath: string | undefined) => post('/api/commands/list', { projectPath }),
+    list: (projectPath: string | undefined, provider?: LLMProvider, sessionId?: string | null) => post('/api/commands/list', { projectPath, provider, sessionId }),
     execute: (payload: unknown) => post('/api/commands/execute', payload),
   },
 

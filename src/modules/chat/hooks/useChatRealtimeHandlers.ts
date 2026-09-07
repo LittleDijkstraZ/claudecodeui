@@ -353,7 +353,9 @@ export function useChatRealtimeHandlers({
         }
 
         case 'status': {
-          if (msg.text === 'foreground_complete') {
+          if (msg.text === 'native_commands_changed') {
+            if (sid) window.dispatchEvent(new CustomEvent('cloudcli-native-commands-changed', { detail: { sessionId: sid } }));
+          } else if (msg.text === 'foreground_complete') {
             if (!sid) break;
             const key = `${sid}:${String(msg.runId ?? msg.executionId ?? '')}:${String(msg.seq ?? msg.id ?? '')}`;
             if (foregroundCompletionKeys.current.has(key)) break;

@@ -142,6 +142,11 @@
       "notDelivered": "Not delivered to Claude",
       "remoteUnsupported": "This remote process does not report support for continued input. This draft waits until the entire current run finishes.",
       "preparing": "The previous message is still preparing. Your new draft remains here; send it after preparation finishes."
+    },
+    "commands": {
+      "reported": "This session",
+      "documented": "Documented default",
+      "compactNeedsHistory": "/compact needs an existing conversation with prior messages. Send a normal message first."
     }
   },
   "composer": {

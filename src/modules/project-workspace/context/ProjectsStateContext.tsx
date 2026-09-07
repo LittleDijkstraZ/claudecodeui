@@ -23,6 +23,7 @@ type ProjectMainState = Pick<
   | 'setSidebarOpen'
   | 'isLoadingProjects'
   | 'openSettings'
+  | 'clearSessionSelection'
   | 'externalMessageUpdate'
   | 'newSessionTrigger'
   | 'registerOptimisticSession'
@@ -102,6 +103,7 @@ export function ProjectsStateProvider({
       setSidebarOpen: state.setSidebarOpen,
       isLoadingProjects: state.isLoadingProjects,
       openSettings: state.openSettings,
+      clearSessionSelection: state.clearSessionSelection,
       externalMessageUpdate: state.externalMessageUpdate,
       newSessionTrigger: state.newSessionTrigger,
       registerOptimisticSession: state.registerOptimisticSession,
@@ -115,6 +117,7 @@ export function ProjectsStateProvider({
       state.isLoadingProjects,
       state.newSessionTrigger,
       state.openSettings,
+      state.clearSessionSelection,
       state.refreshProjectsSilently,
       state.registerOptimisticSession,
       state.selectedProject,

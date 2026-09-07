@@ -1,9 +1,7 @@
-import { MessageSquare, Terminal, Folder, GitBranch, ClipboardCheck, MonitorPlay, Bot, MessagesSquare, type LucideIcon } from 'lucide-react';
-import { Fragment } from 'react';
+import { MessageSquare, Terminal, Folder, GitBranch, ClipboardCheck, MonitorPlay, Bot, MessagesSquare, SlidersHorizontal, type LucideIcon } from 'lucide-react';
 import type { KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { Tooltip, PillBar, Pill } from '@/shared/ui';
 import type { AppTab, WorkspacePanelTab } from '@/shared/types';
 import { usePlugins, PluginIcon } from '@/modules/plugins';
 import { useWorkspaceNavigationBridge } from '@/modules/project-workspace/hooks/useWorkspaceNavigationBridge';
@@ -36,6 +34,7 @@ type PluginTab = {
 type TabDefinition = BuiltInTab | PluginTab;
 
 const BASE_TABS: BuiltInTab[] = [
+  { kind: 'builtin', id: 'preferences', labelKey: 'workspacePanel.preferences', icon: SlidersHorizontal },
   { kind: 'builtin', id: 'chat',  labelKey: 'tabs.chat',  icon: MessageSquare },
   { kind: 'builtin', id: 'shell', labelKey: 'tabs.shell', icon: Terminal },
   { kind: 'builtin', id: 'files', labelKey: 'tabs.files', icon: Folder },
@@ -57,7 +56,7 @@ const TASKS_TAB: BuiltInTab = {
   icon: ClipboardCheck,
 };
 
-/** Rendered by WorkspaceHeader to show the built-in workspace tabs plus any enabled plugin tabs. */
+/** Rendered inside the workspace drawer to keep built-in and enabled plugin tools reachable with large labeled controls. */
 export default function WorkspaceTabs({
   activeTab,
   sessionId = null,
@@ -111,49 +110,18 @@ export default function WorkspaceTabs({
     tabButtons[nextIndex]?.click();
   };
 
-  return (
-    <PillBar
-      role="tablist"
-      aria-label={t('tabs.views', { defaultValue: 'Workspace views' })}
-      className="min-w-max border border-border/40 bg-muted/50 shadow-inner shadow-black/[0.025] dark:shadow-black/10"
-    >
-      {tabs.map((tab, index) => {
-        const isActive = tab.id === activeTab;
-        const displayLabel = tab.kind === 'builtin' ? t(tab.labelKey) : tab.label;
-
-        return (
-          <Fragment key={`${tab.id}-${index}`}>
-            {index === builtInTabs.length && pluginTabs.length > 0 && (
-              <span aria-hidden="true" className="mx-1 h-4 w-px shrink-0 bg-border" />
-            )}
-            <Tooltip content={displayLabel} position="bottom">
-              <Pill
-                role="tab"
-                aria-label={displayLabel}
-                aria-selected={isActive}
-                tabIndex={isActive ? 0 : -1}
-                isActive={isActive}
-                onClick={() => setActiveTab(tab.id)}
-                onKeyDown={handleTabKeyDown}
-                className="h-7 max-w-40 px-2 py-1"
-              >
-                {tab.kind === 'builtin' ? (
-                  <tab.icon className="h-3.5 w-3.5 shrink-0" strokeWidth={isActive ? 2.2 : 1.8} />
-                ) : (
-                  <PluginIcon
-                    pluginName={tab.pluginName}
-                    iconFile={tab.iconFile}
-                    className="flex h-3.5 w-3.5 shrink-0 items-center justify-center [&>svg]:h-full [&>svg]:w-full"
-                  />
-                )}
-                <span className={`${isActive ? 'inline max-w-28' : 'hidden'} truncate sm:max-w-36 lg:inline`}>
-                  {displayLabel}
-                </span>
-              </Pill>
-            </Tooltip>
-          </Fragment>
-        );
-      })}
-    </PillBar>
-  );
+  return <div role="tablist" aria-label={t('tabs.views', { defaultValue: 'Workspace views' })} className="scrollbar-hide flex items-center gap-1 overflow-x-auto overscroll-x-contain px-2 py-1" data-testid="workspace-tool-navigation">
+    {tabs.map(tab => {
+      const isActive = tab.id === activeTab;
+      const label = tab.kind === 'builtin' ? t(tab.labelKey) : tab.label;
+      return <button
+        key={tab.id} type="button" role="tab" title={label} aria-label={label} aria-selected={isActive}
+        tabIndex={isActive ? 0 : -1} onClick={() => setActiveTab(tab.id)} onKeyDown={handleTabKeyDown}
+        className={`flex h-11 min-h-11 min-w-11 shrink-0 items-center justify-center gap-2 rounded-lg px-3 py-2 text-left text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary ${isActive ? 'bg-accent font-medium text-accent-foreground' : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'}`}
+      >
+        {tab.kind === 'builtin' ? <tab.icon className="h-[18px] w-[18px] shrink-0" /> : <PluginIcon pluginName={tab.pluginName} iconFile={tab.iconFile} className="flex h-[18px] w-[18px] shrink-0 items-center justify-center [&>svg]:h-full [&>svg]:w-full" />}
+        <span className={isActive ? 'max-w-40 truncate' : 'sr-only'}>{label}</span>
+      </button>;
+    })}
+  </div>;
 }

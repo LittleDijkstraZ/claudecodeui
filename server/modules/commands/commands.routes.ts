@@ -10,6 +10,7 @@ type CommandsRouterDependencies = {
   homeDirectory(): string;
   appRoot: string;
   models: typeof import('../providers/index.js').providerModelsService;
+  nativeCommands?: { list(projectPath: string, sessionId?: string | null): ReturnType<typeof import('../providers/index.js').claudeCommandCatalog.list> };
   runtime: {
     uptime(): number;
     memoryUsage(): NodeJS.MemoryUsage;
@@ -223,6 +224,12 @@ ${cmd.description}
 `,
   )
   .join("\n")}
+
+## Native Remote Commands
+
+${(readModelProvider(context?.provider) === 'claude' ? dependencies.nativeCommands?.list(context?.projectPath || '', context?.sessionId).native || [] : []).map(command => `${command.name}: ${command.description}`).join("\n")}
+
+Native commands are sent through the conversation input. /compact changes the real remote context and may require a model call; completion is confirmed only by Claude's compact boundary. It does not erase spent tokens or cost. The menu marks commands reported by this session separately from documented defaults. Terminal-only and session-switching commands require the corresponding Shell or CloudCLI control.
 
 ## Custom Commands
 
@@ -449,7 +456,8 @@ Custom commands can be created in:
  */
 router.post("/list", async (req, res) => {
   try {
-    const { projectPath } = req.body;
+    const { projectPath, provider, sessionId } = req.body;
+    const native = provider && provider !== "claude" ? {} : dependencies.nativeCommands?.list(typeof projectPath === "string" ? projectPath : "", typeof sessionId === "string" ? sessionId : null) || {};
     const allCommands = [...builtInCommands];
 
     // Scan project-level commands (.claude/commands/)
@@ -482,9 +490,10 @@ router.post("/list", async (req, res) => {
     customCommands.sort((a, b) => a.name.localeCompare(b.name));
 
     res.json({
+      ...native,
       builtIn: builtInCommands,
       custom: customCommands,
-      count: allCommands.length,
+      count: allCommands.length + (native.native?.length || 0),
     });
   } catch (error) {
     console.error("Error listing commands:", error);
@@ -531,6 +540,13 @@ router.post("/execute", async (req, res) => {
           command: commandName,
         });
       }
+    }
+
+    const native = context.provider && context.provider !== 'claude' ? null : dependencies.nativeCommands?.list(context.projectPath || '', context.sessionId);
+    const unavailable = native?.unavailable.find(command => command.name === commandName);
+    if (unavailable) return res.status(400).json({ error: unavailable.reason, command: commandName });
+    if (native?.native.some(command => command.name === commandName)) {
+      return res.json({ type: 'native', command: commandName, content: [commandName, ...args].join(' ') });
     }
 
     // Handle custom commands

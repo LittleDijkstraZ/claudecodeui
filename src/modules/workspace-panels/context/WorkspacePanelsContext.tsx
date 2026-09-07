@@ -14,6 +14,7 @@ type PanelState = {
 };
 type PanelActions = {
   openPanel: (tab: WorkspacePanelTab) => void;
+  setPanelOpen: (open: boolean) => void;
   collapsePanel: () => void;
   toggleMaximized: () => void;
   openAgent: (messageKey: string, toolId?: string) => void;
@@ -27,7 +28,7 @@ const WorkspacePanelActionsContext = createContext<PanelActions | null>(null);
 /** Used by project-workspace to retain panel state while chat selection and views change. */
 export function WorkspacePanelsProvider({ children }: { children: ReactNode }) {
   // Keep the selected view and visited views even while the panel is collapsed.
-  const [panel, setPanel] = useState({ open: false, maximized: false, tab: 'files' as WorkspacePanelTab, visited: new Set<WorkspacePanelTab>() });
+  const [panel, setPanel] = useState({ open: false, maximized: false, tab: 'preferences' as WorkspacePanelTab, visited: new Set<WorkspacePanelTab>() });
   // Hold the viewed chat's normalized agent records for the separate detail pane.
   const [agents, setAgents] = useState<WorkspaceAgentsSnapshot | null>(null);
   // Identify an exact agent/tool requested from a transcript or changes summary.
@@ -39,12 +40,16 @@ export function WorkspacePanelsProvider({ children }: { children: ReactNode }) {
     setPanel(current => ({ ...current, open: true, tab, visited: new Set(current.visited).add(tab) }));
   }, []);
   const collapsePanel = useCallback(() => setPanel(current => ({ ...current, open: false, maximized: false })), []);
+  const setPanelOpen = useCallback((open: boolean) => setPanel(current => current.open === open ? current : {
+    ...current, open, maximized: open && current.maximized,
+    visited: open ? new Set(current.visited).add(current.tab) : current.visited,
+  }), []);
   const toggleMaximized = useCallback(() => setPanel(current => ({ ...current, open: true, maximized: !current.maximized })), []);
   const openAgent = useCallback((messageKey: string, toolId?: string) => {
     setAgentReveal({ messageKey, toolId, requestId: ++requestSequence.current });
     openPanel('agents');
   }, [openPanel]);
-  const actions = useMemo(() => ({ openPanel, collapsePanel, toggleMaximized, openAgent, publishAgents: setAgents, setSideChatCount }), [openPanel, collapsePanel, toggleMaximized, openAgent]);
+  const actions = useMemo(() => ({ openPanel, setPanelOpen, collapsePanel, toggleMaximized, openAgent, publishAgents: setAgents, setSideChatCount }), [openPanel, setPanelOpen, collapsePanel, toggleMaximized, openAgent]);
   const state = useMemo(() => ({ ...panel, agents, agentReveal, sideChatCount }), [panel, agents, agentReveal, sideChatCount]);
   return <WorkspacePanelActionsContext.Provider value={actions}><WorkspacePanelStateContext.Provider value={state}>{children}</WorkspacePanelStateContext.Provider></WorkspacePanelActionsContext.Provider>;
 }

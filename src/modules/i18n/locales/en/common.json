@@ -411,6 +411,9 @@
     "agentsRecorded": "{{count}} agents",
     "reconnectBeforeClose": "Reconnect this terminal before closing it so its remote process can be stopped.",
     "agentsRunning_one": "{{count}} agent running",
-    "agentsRecorded_one": "{{count}} agent"
+    "agentsRecorded_one": "{{count}} agent",
+    "preferences": "Preferences",
+    "open": "Open workspace panel",
+    "machineSettings": "Machine settings"
   }
 }

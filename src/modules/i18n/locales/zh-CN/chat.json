@@ -142,6 +142,11 @@
       "notDelivered": "尚未送达 Claude",
       "remoteUnsupported": "当前远端进程未报告支持持续输入。这条草稿要等整个运行结束后才会发送。",
       "preparing": "上一条消息仍在准备发送。新草稿会留在这里，请等准备完成后再发送。"
+    },
+    "commands": {
+      "reported": "远端已确认",
+      "documented": "文档支持",
+      "compactNeedsHistory": "/compact 需要已有对话的历史上下文，请先正常发送一条消息。"
     }
   },
   "providerSelection": {

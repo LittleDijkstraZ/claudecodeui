@@ -496,3 +496,35 @@ The compact change-review button reports added and removed lines from successful
 recorded edits for its selected scope. These are per-edit totals, not a Git net
 diff; missing baselines and ambiguous repeated replacements remain explicitly
 unquantified. Pending or failed tool edits do not inflate the badge.
+
+
+## Native Claude commands in Chat
+
+The slash menu separates CloudCLI controls from Claude commands. `/compact [focus instructions]`, `/context`, and `/usage` are offered as documented SDK defaults before any command metadata has been observed. Once a normal user-started query reports its command surface, the menu uses that app session, native session, and project’s reported list, including dynamic command updates. Discovery reads only the existing query’s `supportedCommands()` and `system/init` / `commands_changed` messages; it never launches a discovery session or sends a test prompt. User/project skills continue to appear alongside the native commands; duplicate names keep the existing UI/skill choice.
+
+Selecting a native command fills the composer. Sending uses the ordinary session-bound input/receipt path: a running Workflow keeps its original query and receives the command through that query’s input stream; an idle conversation resumes its recorded native session. `/compact` cannot allocate an empty conversation, and it never truncates UI messages to simulate compaction. Only a native `compact_boundary` reports that context was actually compacted. A successful result without a boundary may instead explain that there are too few messages; UUID-correlated command output preserves that explanation. Compaction consumes model resources when Claude needs to summarize, and accumulated token/cost accounting is retained.
+
+Commands which switch/reset the native conversation (`/clear`, `/reset`, `/resume`, `/fork`, `/rewind`) are not supported through Chat’s raw command path; use New Conversation, the sidebar, Side chat, or Rewind instead. Terminal lifecycle/display commands such as `/exit`, `/login`, and `/theme` show a specific explanation rather than silently modifying the Chat runtime. Existing CloudCLI `/help`, model, cost and settings controls remain available. An unreported command is not advertised as universally supported; the remote Claude process remains authoritative for typed commands and skill availability.
+
+Reference: [Claude SDK command discovery and compaction](https://code.claude.com/docs/en/agent-sdk/slash-commands).
+
+
+## Adjustable workspace sides
+
+The unified hub has no global workspace header. Its left sidebar can collapse
+and be resized by pointer or keyboard, with its preferred width preserved across
+narrow windows and reloads. Conversation and group hit targets include their full
+row height; drag handles and menus retain separate actions.
+
+The right-edge control opens the retained workspace drawer. A compact identity
+header and a single row of large tool targets keep most height available for
+Shell, Files, Source Control and Agents. Preferences includes the existing quick
+settings and a machine-labelled entry to complete settings. Closing, resizing or
+maximizing the panel does not replace its remote frame or running terminal. The
+hub keeps legacy tools reachable while a remote has not yet adopted the new
+drawer protocol. Shared modal coverage hides outer handles and preserves unread
+state while token statistics, change review or settings covers the conversation.
+
+## Continued history branches
+
+History projection follows the latest verifiable main user prompt ancestry when a conversation continues an earlier edited branch. Late assistant, tool, synthetic or sidechain records alone do not reactivate an abandoned prompt. Normal prompt replacement and parallel tool output remain supported; the native transcript, resume anchor and cumulative usage records are never rewritten by this display repair.

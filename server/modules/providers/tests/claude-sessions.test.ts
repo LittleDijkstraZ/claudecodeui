@@ -13,6 +13,7 @@ async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promis
 
   closeConnection();
   process.env.DATABASE_PATH = path.join(tempDirectory, 'auth.db');
+  await writeFile(process.env.DATABASE_PATH, '');
   await initializeDatabase();
 
   try {
@@ -570,4 +571,69 @@ test('resolving an edit anchor skips rows that are not conversation turns', { co
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
+});
+
+
+async function checkResumedBranch(extraRows: Record<string, unknown>[], verify: (history: Awaited<ReturnType<ClaudeSessionsProvider['fetchHistory']>>, provider: ClaudeSessionsProvider) => Promise<void> | void) {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'claude-resumed-branch-'));
+  try {
+    const transcriptPath = await writeEditedTranscript(directory);
+    const original = await readFile(transcriptPath, 'utf8');
+    const rows = extraRows.map((row, index) => ({ sessionId: EDIT_SESSION_ID, timestamp: `2026-08-23T10:01:${String(index).padStart(2, '0')}.000Z`, ...row }));
+    const fixture = original + rows.map(row => JSON.stringify(row)).join('\n') + '\n';
+    await writeFile(transcriptPath, fixture);
+    await withIsolatedDatabase(async () => {
+      const now = new Date().toISOString();
+      sessionsDb.createSession(EDIT_SESSION_ID, 'claude', directory, 'Resumed branch fixture', now, now, transcriptPath);
+      const provider = new ClaudeSessionsProvider();
+      await verify(await provider.fetchHistory(EDIT_SESSION_ID, { providerSessionId: EDIT_SESSION_ID }), provider);
+    });
+    assert.equal(await readFile(transcriptPath, 'utf8'), fixture, 'History projection must never edit the provider transcript.');
+  } finally { await rm(directory, { recursive: true, force: true }); }
+}
+const prompt = (uuid: string, parentUuid: string, text: string, extra: Record<string, unknown> = {}) => ({ type: 'user', uuid, parentUuid, message: { role: 'user', content: [{ type: 'text', text }] }, ...extra });
+const answer = (uuid: string, parentUuid: string, text: string) => ({ type: 'assistant', uuid, parentUuid, message: { role: 'assistant', content: [{ type: 'text', text }] } });
+
+test('a real user continuation after rewind restores the older sibling ancestry and its new replies', { concurrency: false }, async () => {
+  await checkResumedBranch([prompt('u3', 'a2', 'Continue original branch'), answer('a3', 'u3', 'New reply after resuming')], async (history, provider) => {
+    assert.deepEqual(history.messages.map(message => message.content), ['first prompt', 'first answer', 'original second prompt', 'answer to be replaced', 'Continue original branch', 'New reply after resuming']);
+    assert.deepEqual(await provider.resolveEditAnchor(EDIT_SESSION_ID, 'u3'), { found: true, resumeThroughId: 'a2' }, 'Future edits still use the real native ancestry.');
+  });
+});
+
+test('late assistant, sidechain prompts, notifications and tool-result text do not reactivate the replaced branch', { concurrency: false }, async () => {
+  await checkResumedBranch([
+    answer('late-a', 'a2', 'Late obsolete output'),
+    prompt('side-user', 'a2', 'Sidechain prompt', { isSidechain: true }),
+    prompt('task-note', 'a2', '<task-notification>background</task-notification>'),
+    { type: 'user', uuid: 'late-tool', parentUuid: 'a2', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'old-tool', content: 'Tool output' }, { type: 'text', text: 'Tool annotation' }] } },
+  ], history => {
+    assert.deepEqual(history.messages.map(message => message.content), ['first prompt', 'first answer', 'edited second prompt', 'answer to the edit']);
+  });
+});
+
+test('a later edit of the restored continuation still hides only the replaced prompt branch', { concurrency: false }, async () => {
+  await checkResumedBranch([
+    prompt('u3', 'a2', 'Restored continuation'), answer('a3', 'u3', 'Restored reply'),
+    prompt('u3-edit', 'a2', 'Edited continuation'), answer('a3-edit', 'u3-edit', 'Current edited reply'),
+  ], history => {
+    assert.deepEqual(history.messages.map(message => message.content), ['first prompt', 'first answer', 'original second prompt', 'answer to be replaced', 'Edited continuation', 'Current edited reply']);
+  });
+});
+
+test('duplicate old UUID replays cannot select the obsolete branch or erase the currently selected prompt', { concurrency: false }, async () => {
+  await checkResumedBranch([prompt('u2', 'a1', 'original second prompt')], history => {
+    assert.deepEqual(history.messages.map(message => message.content), ['first prompt', 'first answer', 'edited second prompt', 'answer to the edit']);
+  });
+});
+
+test('missing-parent and cyclic metadata leave the newest independent prompt visible without looping', { concurrency: false }, async () => {
+  await checkResumedBranch([
+    prompt('new-independent', 'missing-parent', 'New independent prompt'), answer('new-independent-answer', 'new-independent', 'Independent reply'),
+    { type: 'system', uuid: 'cycle-one', parentUuid: 'cycle-two' }, { type: 'system', uuid: 'cycle-two', parentUuid: 'cycle-one' },
+  ], history => {
+    assert.ok(history.messages.some(message => message.content === 'New independent prompt'));
+    assert.ok(history.messages.some(message => message.content === 'Independent reply'));
+    assert.ok(history.messages.some(message => message.content === 'edited second prompt'));
+  });
 });

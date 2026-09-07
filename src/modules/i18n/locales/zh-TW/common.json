@@ -266,5 +266,10 @@
       "updateAvailable": "有可用更新",
       "closeSidebar": "關閉側邊欄"
     }
+  },
+  "workspacePanel": {
+    "preferences": "偏好",
+    "open": "開啟右側工具面板",
+    "machineSettings": "機器設定"
   }
 }

@@ -37,7 +37,7 @@ function getTabTitle(activeTab: AppTab, shouldShowTasksTab: boolean, t: (key: st
   return t('misc.projectFallback');
 }
 
-/** Rendered by WorkspaceHeader to label the workspace with the active session or tab name. */
+/** Rendered by the workspace drawer to identify the session, remote machine and project behind its tools. */
 export default function WorkspaceTitle({
   activeTab,
   machineLabel,

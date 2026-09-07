@@ -1,6 +1,8 @@
+import { useId } from 'react';
 import { useTranslation } from 'react-i18next';
+import { X } from 'lucide-react';
 
-import { Dialog, DialogContent, DialogTitle } from '@/shared/ui';
+import { Button, Dialog, DialogContent, DialogTitle } from '@/shared/ui';
 import { isClaudeUsageSnapshot } from '@/modules/chat/utils/claudeUsageSnapshot';
 import type { ClaudeUsageBuckets, ClaudeUsageModelCounters, ClaudeUsageSnapshot } from '@/shared/types';
 
@@ -79,8 +81,14 @@ export function UnverifiedClaudeUsageDetails({ usage }: { usage: Record<string, 
 /** The composer opens this live view; receiving a newer snapshot updates an already-open dialog. */
 export default function TokenUsageModal({ usage, onClose }: { usage: Record<string, unknown> | null; onClose: () => void }) {
   const { t } = useTranslation('chat');
-  return <Dialog open onOpenChange={open => { if (!open) onClose(); }}><DialogContent className="max-h-[88vh] max-w-3xl overflow-y-auto">
-    <DialogTitle>{t('usage.title')}</DialogTitle>
-    {isClaudeUsageSnapshot(usage) ? <ClaudeUsageDetails usage={usage} /> : <UnverifiedClaudeUsageDetails usage={usage} />}
+  const titleId = useId();
+  return <Dialog open onOpenChange={open => { if (!open) onClose(); }}><DialogContent className="flex max-h-[88dvh] w-[calc(100%_-_1rem)] max-w-3xl flex-col overflow-hidden" aria-labelledby={titleId}>
+    <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-4 py-3 sm:px-6">
+      <DialogTitle id={titleId} className="not-sr-only text-base font-semibold">{t('usage.title')}</DialogTitle>
+      <Button type="button" variant="ghost" size="icon" className="h-8 w-8 shrink-0" aria-label={t('misc.close')} onClick={onClose}><X className="h-4 w-4" /></Button>
+    </div>
+    <div className="min-h-0 overflow-y-auto overscroll-contain p-4 sm:p-6" data-testid="token-usage-content">
+      {isClaudeUsageSnapshot(usage) ? <ClaudeUsageDetails usage={usage} /> : <UnverifiedClaudeUsageDetails usage={usage} />}
+    </div>
   </DialogContent></Dialog>;
 }

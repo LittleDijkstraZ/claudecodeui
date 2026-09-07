@@ -4,6 +4,21 @@ import { describe, expect, test, vi } from 'vitest';
 import { useHubPanes } from '@/modules/remote-hub/hooks/useHubPanes';
 
 describe('machine pane lifetime', () => {
+  test('empty navigation rejects the deleted session until the remote acknowledges its cleared workspace', () => {
+    const { result } = renderHook(useHubPanes);
+    act(() => { result.current.navigate('alpha', 'old'); result.current.acceptSelection('alpha', 'old'); result.current.navigate('beta', 'other'); result.current.acceptSelection('beta', 'other'); });
+    const retained = result.current.panes[0];
+    act(() => result.current.navigate('alpha', null));
+    expect(result.current.acceptSelection('alpha', 'old')).toBe(false);
+    act(() => result.current.acceptNavigation('alpha', { sessionId: 'old', activeTab: 'chat', tabs: [{ id: 'chat', label: 'Chat' }] }));
+    expect(result.current.navigation.alpha).toBeUndefined();
+    act(() => result.current.acceptNavigation('alpha', { sessionId: null, activeTab: 'chat', tabs: [{ id: 'chat', label: 'Chat' }] }));
+    expect(result.current.navigation.alpha.sessionId).toBeNull();
+    expect(result.current.selections.alpha).toBeUndefined();
+    expect(result.current.selections.beta).toBe('other');
+    expect(result.current.panes[0]).toBe(retained);
+    act(() => { expect(result.current.acceptSelection('alpha', 'created-in-empty-chat')).toBe(true); });
+  });
   test('switching conversations and machines keeps the initial iframe URLs and sends navigation inside the existing app', () => {
     const { result } = renderHook(useHubPanes);
     const postMessage = vi.fn();
@@ -83,4 +98,34 @@ test('settings clicked before readiness stays bound to its machine after switchi
   act(() => result.current.acceptSettingsOpened('alpha', requestId));
   act(() => result.current.markReady('alpha'));
   expect(alpha).toHaveBeenLastCalledWith({ kind: 'cloudcli:settings', remoteId: 'alpha', requestId: newerId }, location.origin);
+});
+
+test('drawer requests retain machine identity and explicit intent through readiness and stale acknowledgements', () => {
+  const { result } = renderHook(useHubPanes);
+  const alpha = vi.fn(), beta = vi.fn();
+  act(() => {
+    result.current.setPanelOpen('alpha', true);
+    result.current.navigate('beta', 'other-session');
+    result.current.register('alpha', { contentWindow: { postMessage: alpha } } as unknown as HTMLIFrameElement);
+    result.current.register('beta', { contentWindow: { postMessage: beta } } as unknown as HTMLIFrameElement);
+    result.current.markReady('beta');
+  });
+  expect(beta.mock.calls.some(([message]) => message.kind === 'cloudcli:workspace-panel')).toBe(false);
+  act(() => result.current.markReady('alpha'));
+  const opening = alpha.mock.calls.at(-1)![0];
+  expect(opening).toMatchObject({ kind: 'cloudcli:workspace-panel', remoteId: 'alpha', open: true });
+  act(() => result.current.setPanelOpen('alpha', false));
+  const closing = alpha.mock.calls.at(-1)![0];
+  act(() => result.current.acceptPanelState('alpha', { remoteId: 'alpha', requestId: opening.requestId, open: true, maximized: false, settingsOpen: false }));
+  expect(result.current.panelStates.alpha.pendingOpen).toBe(false);
+  act(() => result.current.acceptPanelState('alpha', { remoteId: 'beta', requestId: closing.requestId, open: false, maximized: false, settingsOpen: false }));
+  expect(result.current.panelStates.alpha.pendingOpen).toBe(false);
+  act(() => result.current.acceptPanelState('alpha', { remoteId: 'alpha', requestId: closing.requestId, open: false, maximized: false, settingsOpen: false }));
+  expect(result.current.panelStates.alpha).toEqual({ open: false, maximized: false, settingsOpen: false, overlayOpen: false, pendingOpen: undefined });
+  const delivered = alpha.mock.calls.length;
+  act(() => result.current.markReady('alpha'));
+  expect(alpha).toHaveBeenCalledTimes(delivered);
+  act(() => result.current.acceptPanelState('beta', { remoteId: 'beta', open: true, maximized: true, settingsOpen: true }));
+  expect(result.current.panelStates.alpha.open).toBe(false);
+  expect(result.current.panelStates.beta).toMatchObject({ open: true, maximized: true, settingsOpen: true });
 });

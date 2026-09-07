@@ -1,5 +1,4 @@
 import type { TFunction } from 'i18next';
-import type { CSSProperties } from 'react';
 import type { NavigateFunction } from 'react-router-dom';
 
 //----------------- LLM PROVIDER MODEL CATALOG ------------
@@ -1139,9 +1138,6 @@ export type PreferenceToggleKey =
 export type QuickSettingsPreferences = Record<PreferenceToggleKey, boolean>;
 
 
-/** Inline style for the quick settings drag handle, produced by the drag hook from the stored handle position and applied by the handle component. */
-export type QuickSettingsHandleStyle = CSSProperties;
-
 // ---------------------------
 
 //----------------- SETTINGS ------------
@@ -1840,7 +1836,7 @@ export type ClaudeUsageSnapshot = {
 //----------------- RIGHT WORKSPACE PANELS ------------
 
 /** A retained workspace view shown beside the primary conversation. */
-export type WorkspacePanelTab = Exclude<AppTab, 'chat'> | 'agents' | 'sideChat';
+export type WorkspacePanelTab = Exclude<AppTab, 'chat'> | 'agents' | 'sideChat' | 'preferences';
 
 /** The normalized agents in the viewed conversation and callbacks back to that conversation. */
 export type WorkspaceAgentsSnapshot = {

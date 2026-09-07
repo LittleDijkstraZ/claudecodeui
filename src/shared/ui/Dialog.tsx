@@ -2,6 +2,7 @@ import * as React from 'react';
 import { createPortal } from 'react-dom';
 
 import { cn } from '@/shared/utils';
+import { useModalPresence } from '@/shared/hooks/useModalVisibility';
 
 type DialogContextValue = {
   open: boolean;
@@ -104,6 +105,7 @@ const FOCUSABLE_SELECTOR = 'a[href], button:not([disabled]), input:not([disabled
 export const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(
   ({ className, children, onEscapeKeyDown, onPointerDownOutside, wrapperClassName, animationClassName, ...props }, ref) => {
     const { open, onOpenChange, triggerRef } = useDialog();
+    useModalPresence(open);
     const contentRef = React.useRef<HTMLDivElement | null>(null);
     const previousFocusRef = React.useRef<HTMLElement | null>(null);
 
@@ -219,4 +221,3 @@ export const DialogTitle = React.forwardRef<HTMLHeadingElement, React.HTMLAttrib
   )
 );
 DialogTitle.displayName = 'DialogTitle';
-

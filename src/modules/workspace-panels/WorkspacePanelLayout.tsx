@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, PointerEvent, ReactNode } from 'react';
-import { Maximize2, Minimize2, PanelRightClose } from 'lucide-react';
+import { Maximize2, Minimize2, PanelRightClose, PanelRightOpen } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/shared/ui';
@@ -11,10 +11,11 @@ const MIN_WIDTH = 300;
 const MIN_MAIN_WIDTH = 320;
 
 /** Used by project-workspace to give every right-hand view the same retained, resizable frame. */
-export function WorkspacePanelLayout({ main, children, title, sessionId = null, mainCovered = false }: { main: ReactNode; children: ReactNode; title: string; sessionId?: string | null; mainCovered?: boolean }) {
+export function WorkspacePanelLayout({ main, children, title, heading, navigation, sessionId = null, mainCovered = false }: { main: ReactNode; children: ReactNode; title: string; heading?: ReactNode; navigation?: ReactNode; sessionId?: string | null; mainCovered?: boolean }) {
   const { t } = useTranslation('common');
   const panel = useWorkspacePanels();
   const actions = useWorkspacePanelActions();
+  const hubControlsPanel = Boolean(window.__CLOUDCLI_EMBEDDED__ && !window.__CLOUDCLI_SIDE_CHAT__);
   const containerRef = useRef<HTMLDivElement>(null);
   // Measure the actual chat workspace, which may itself be inside a hub iframe.
   const [availableWidth, setAvailableWidth] = useState(0);
@@ -62,6 +63,7 @@ export function WorkspacePanelLayout({ main, children, title, sessionId = null, 
   };
 
   return <div ref={containerRef} className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden" data-testid="workspace-panel-layout">
+    {!hubControlsPanel && !panel?.open && !mainCovered && <Button variant="ghost" size="icon" className="absolute right-0 top-1/2 z-40 h-11 w-10 -translate-y-1/2 rounded-l-lg rounded-r-none border border-r-0 border-border/50 bg-background/95 shadow-sm" aria-label={t('workspacePanel.open', { defaultValue: 'Open workspace panel' })} aria-expanded={false} onClick={() => actions?.setPanelOpen(true)}><PanelRightOpen className="h-5 w-5" /></Button>}
     <div className={`min-h-0 min-w-0 flex-1 ${panel?.open && (narrow || panel.maximized) ? 'hidden' : 'flex flex-col'}`} data-testid="workspace-main-chat">{main}</div>
     <aside
       aria-label={t('workspacePanel.title', { defaultValue: 'Workspace panel' })}
@@ -70,11 +72,12 @@ export function WorkspacePanelLayout({ main, children, title, sessionId = null, 
       data-testid="workspace-right-panel"
     >
       {!narrow && !panel?.maximized && <div role="separator" aria-label={t('workspacePanel.resize', { defaultValue: 'Resize workspace panel' })} aria-orientation="vertical" aria-valuemin={MIN_WIDTH} aria-valuemax={Math.max(MIN_WIDTH, availableWidth - MIN_MAIN_WIDTH)} aria-valuenow={Math.round(effectiveWidth)} tabIndex={0} onPointerDown={beginResize} onPointerMove={moveResize} onPointerUp={endResize} onPointerCancel={endResize} onLostPointerCapture={endResize} onKeyDown={keyResize} className="absolute inset-y-0 left-0 z-50 w-1.5 cursor-col-resize touch-none hover:bg-primary/60 focus-visible:bg-primary/60 focus-visible:outline-none" />}
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
-        <h2 className="min-w-0 flex-1 truncate text-xs font-medium">{title}</h2>
-        <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={t(panel?.maximized ? 'workspacePanel.restore' : 'workspacePanel.maximize', { defaultValue: panel?.maximized ? 'Restore split view' : 'Maximize panel' })} onClick={actions?.toggleMaximized}>{panel?.maximized ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}</Button>
-        <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={t('workspacePanel.collapse', { defaultValue: 'Collapse panel; keep work running' })} onClick={actions?.collapsePanel}><PanelRightClose className="h-3.5 w-3.5" /></Button>
+      <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border pl-4 pr-2">
+        <div className="min-w-0 flex-1">{heading ?? <h2 className="truncate text-sm font-medium">{title}</h2>}</div>
+        <Button variant="ghost" size="icon" className="h-9 w-9" aria-label={t(panel?.maximized ? 'workspacePanel.restore' : 'workspacePanel.maximize', { defaultValue: panel?.maximized ? 'Restore split view' : 'Maximize panel' })} onClick={actions?.toggleMaximized}>{panel?.maximized ? <Minimize2 className="h-[18px] w-[18px]" /> : <Maximize2 className="h-[18px] w-[18px]" />}</Button>
+        <Button variant="ghost" size="icon" className="h-9 w-9" aria-label={t('workspacePanel.collapse', { defaultValue: 'Collapse panel; keep work running' })} onClick={actions?.collapsePanel}><PanelRightClose className="h-5 w-5" /></Button>
       </div>
+      {navigation && <div className="shrink-0 border-b border-border" data-testid="workspace-drawer-navigation">{navigation}</div>}
       <div className="relative min-h-0 flex-1 overflow-hidden">{children}</div>
     </aside>
     {resizing && <div className="absolute inset-0 z-40 cursor-col-resize" aria-hidden />}

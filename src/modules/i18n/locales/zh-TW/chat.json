@@ -118,6 +118,11 @@
       "notDelivered": "尚未送達 Claude",
       "remoteUnsupported": "目前遠端程序未回報支援持續輸入。這則草稿要等整個執行結束後才會傳送。",
       "preparing": "上一則訊息仍在準備傳送。新草稿會留在這裡，請等準備完成後再傳送。"
+    },
+    "commands": {
+      "reported": "遠端已確認",
+      "documented": "文件支援",
+      "compactNeedsHistory": "/compact 需要既有對話的歷史上下文，請先正常傳送一則訊息。"
     }
   },
   "thinkingMode": {

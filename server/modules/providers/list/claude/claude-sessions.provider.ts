@@ -336,73 +336,73 @@ async function readTranscriptRows(jsonlPath: string, providerSessionId: string):
 
 /** True for a row the user typed, as opposed to a tool result or an injected note. */
 function isUserPromptRow(row: AnyRecord): boolean {
-  if (row.type !== 'user' || row.isMeta === true || row.isCompactSummary === true) {
-    return false;
-  }
-
+  if (row.type !== 'user' || row.isMeta === true || row.isCompactSummary === true || row.isSynthetic === true
+    || row.isSidechain === true || row.parent_tool_use_id || row.parentToolUseId) return false;
+  const isPromptText = (text: unknown) => typeof text === 'string' && text.trim().length > 0
+    && !isInternalContent(text.trimStart()) && !/^<(?:task-notification|local-command-stdout)>/.test(text.trimStart());
   const content = row.message?.content;
   if (Array.isArray(content)) {
-    return content.some((part: AnyRecord) => part?.type === 'text' || part?.type === 'image');
+    // A tool-result row can carry additional text, but is still not a new user prompt.
+    return !content.some((part: AnyRecord) => part?.type === 'tool_result')
+      && content.some((part: AnyRecord) => part?.type === 'image' || part?.type === 'text' && isPromptText(part.text));
   }
-
-  return typeof content === 'string' && content.length > 0;
+  return isPromptText(content);
 }
 
 /**
- * Drops the rows belonging to prompts that were replaced by an edit.
- *
- * When a message is edited, Claude resumes the conversation partway and appends
- * the replacement, so two prompts end up sharing one parent and the file holds
- * both the abandoned attempt and the live one. A flat read would show them
- * stacked, which reads as the app having sent the message twice.
- *
- * Only sibling *prompts* are treated as a fork. Branch points made by parallel
- * tool calls are extremely common — one assistant turn writes several chained
- * rows and each tool result parents onto its own — and pruning those would
- * delete tool output from every transcript in the app.
+ * Selects edited prompt branches without hiding a later return to an older branch.
+ * A new main user prompt is evidence of which saved ancestry the user continued;
+ * a late assistant/tool/background row alone must not revive a replaced prompt.
+ * No provider transcript or resume mapping is modified: this is a display projection.
  */
 function dropSupersededPromptBranches(rows: AnyRecord[]): AnyRecord[] {
-  const promptSiblings = new Map<string, AnyRecord[]>();
+  const promptSiblings = new Map<string, Map<string, AnyRecord>>();
+  const byUuid = new Map<string, AnyRecord>();
+  const children = new Map<string, Set<string>>();
+  const ambiguous = new Set<string>();
+  let latestPrompt: AnyRecord | undefined;
   for (const row of rows) {
-    if (typeof row.parentUuid !== 'string' || !isUserPromptRow(row)) {
-      continue;
+    if (typeof row.uuid !== 'string' || !row.uuid) continue;
+    const previous = byUuid.get(row.uuid);
+    if (previous && previous.parentUuid !== row.parentUuid) ambiguous.add(row.uuid);
+    byUuid.set(row.uuid, row);
+    if (typeof row.parentUuid === 'string') {
+      if (!children.has(row.parentUuid)) children.set(row.parentUuid, new Set());
+      children.get(row.parentUuid)!.add(row.uuid);
     }
-    const siblings = promptSiblings.get(row.parentUuid);
-    if (siblings) {
-      siblings.push(row);
-    } else {
-      promptSiblings.set(row.parentUuid, [row]);
-    }
+    if (!isUserPromptRow(row)) continue;
+    // Replayed copies of the same UUID are not new user actions or new siblings.
+    if (!previous) latestPrompt = row;
+    if (typeof row.parentUuid !== 'string') continue;
+    if (!promptSiblings.has(row.parentUuid)) promptSiblings.set(row.parentUuid, new Map());
+    promptSiblings.get(row.parentUuid)!.set(row.uuid, row);
   }
 
-  const supersededRoots = new Set<string>();
-  for (const siblings of promptSiblings.values()) {
-    if (siblings.length < 2) {
-      continue;
-    }
-    // The transcript is append-only, so the last prompt written under a parent
-    // is the one that replaced the others.
-    for (const row of siblings.slice(0, -1)) {
-      if (typeof row.uuid === 'string') {
-        supersededRoots.add(row.uuid);
+  const activeAncestors = new Set<string>();
+  let cursor = latestPrompt;
+  while (cursor && typeof cursor.uuid === 'string' && !activeAncestors.has(cursor.uuid)) {
+    if (ambiguous.has(cursor.uuid)) break;
+    activeAncestors.add(cursor.uuid);
+    cursor = typeof cursor.parentUuid === 'string' ? byUuid.get(cursor.parentUuid) : undefined;
+  }
+
+  const abandoned = new Set<string>();
+  for (const group of promptSiblings.values()) {
+    const siblings = [...group.values()];
+    if (siblings.length < 2 || siblings.some(row => ambiguous.has(row.uuid))) continue;
+    const retained = siblings.find(row => activeAncestors.has(row.uuid)) ?? siblings.at(-1)!;
+    for (const row of siblings) if (row.uuid !== retained.uuid) abandoned.add(row.uuid);
+  }
+  // Follow explicit parent links even when a preserved/replayed segment is out of file order.
+  const pending = [...abandoned];
+  for (let index = 0; index < pending.length; index++) {
+    for (const child of children.get(pending[index]) || []) {
+      if (!abandoned.has(child) && !activeAncestors.has(child) && !ambiguous.has(child)) {
+        abandoned.add(child); pending.push(child);
       }
     }
   }
-
-  if (supersededRoots.size === 0) {
-    return rows;
-  }
-
-  const abandoned = new Set(supersededRoots);
-  // Rows are appended in order, so one forward pass propagates each superseded
-  // root to its whole subtree.
-  for (const row of rows) {
-    if (typeof row.parentUuid === 'string' && abandoned.has(row.parentUuid) && typeof row.uuid === 'string') {
-      abandoned.add(row.uuid);
-    }
-  }
-
-  return rows.filter((row) => typeof row.uuid !== 'string' || !abandoned.has(row.uuid));
+  return rows.filter(row => typeof row.uuid !== 'string' || !abandoned.has(row.uuid));
 }
 
 async function getSessionMessages(
@@ -690,6 +690,17 @@ export class ClaudeSessionsProvider implements IProviderSessions {
     const messages: NormalizedMessage[] = [];
     const ts = raw.timestamp || new Date().toISOString();
     const baseId = raw.uuid || generateMessageId('claude');
+
+    // The native boundary is the authoritative completion signal, also retained in JSONL history.
+    if (raw.type === 'system' && raw.subtype === 'compact_boundary' && !raw.parent_tool_use_id && !raw.isSidechain) {
+      return [createNormalizedMessage({ id: baseId, sessionId, timestamp: ts, provider: PROVIDER,
+        kind: 'task_notification', status: 'info', summary: 'Claude compacted this conversation’s context.',
+        compactMetadata: raw.compact_metadata ?? raw.compactMetadata })];
+    }
+    if (raw.type === 'system' && raw.subtype === 'status' && !raw.parent_tool_use_id && !raw.isSidechain) {
+      if (raw.status === 'compacting') return [createNormalizedMessage({ id: baseId, sessionId, timestamp: ts, provider: PROVIDER, kind: 'status', text: 'Compacting context…' })];
+      if (raw.compact_result === 'failed') return [createNormalizedMessage({ id: baseId, sessionId, timestamp: ts, provider: PROVIDER, kind: 'error', content: typeof raw.compact_error === 'string' ? raw.compact_error : 'Claude could not compact this conversation.' })];
+    }
 
     if (raw.message?.role === 'user' && raw.message?.content && raw.isMeta !== true) {
       if (Array.isArray(raw.message.content)) {

@@ -49,6 +49,7 @@ import {
 } from '@/modules/notifications/index.js';
 
 import { rememberClaudeSupportedModels } from './claude-model-catalog.js';
+import { claudeCommandCatalog } from './claude-command-catalog.js';
 
 type ActiveSession = {
   instance: Query;
@@ -616,6 +617,7 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
   let foreground = true;
   let streamStarted = false;
   let streamGeneration = 0;
+  let commandCatalogGeneration = 0;
   const pendingUsageSummaries = new Set<Promise<void>>();
   const inputQueue = createClaudeInputQueue((entry, error) => {
     ws.send(createNormalizedMessage({ kind: 'status', text: 'message_delivery', provider: 'claude', sessionId: sessionKey(),
@@ -627,6 +629,7 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
     phase: foreground ? 'foreground' : 'background', acceptsInput: streamStarted && inputQueue.isOpen(), backgroundTasks: backgroundWork.pendingCount(), executionId }));
   const enqueueInput = async (command: string, next: AnyRecord): Promise<boolean> => {
     if (!streamStarted || !inputQueue.isOpen()) return false;
+    claudeCommandCatalog.assertAllowed(command, capturedSessionId);
     if (next.cwd && path.resolve(next.cwd) !== path.resolve(options.cwd)) throw new Error('The queued message must use this Claude process’s project folder.');
     if (typeof next.clientMessageId !== 'string') throw new Error('A message identifier is required for the existing input stream.');
     const slot = inputQueue.begin(next.clientMessageId, command, false, { images: next.images, files: next.files });
@@ -669,6 +672,7 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
   const textStream = createClaudeTextStream((message, sid) => context.normalizeMessage(transformMessage(message as AnyRecord), sid));
 
   try {
+    claudeCommandCatalog.assertAllowed(command, capturedSessionId);
     if ('expectedProviderSessionId' in options && options.expectedProviderSessionId !== providerSessionId) throw new Error('The conversation changed before Claude started. Retry using its current state.');
     if (options.executionSettings && sessionId) {
       const permissionSelection = resolveClaudePermissionSelection(options);
@@ -840,6 +844,18 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
       void queryInstance.supportedModels().then(rememberClaudeSupportedModels).catch(() => {});
     }
 
+    // Command discovery is metadata on this same query, never a discovery prompt.
+    if (typeof queryInstance.supportedCommands === 'function') {
+      const generation = commandCatalogGeneration;
+      const commandQuery = queryInstance;
+      void Promise.resolve().then(() => commandQuery.supportedCommands()).then(commands => {
+        if (generation === commandCatalogGeneration && getSession(sessionKey()!)?.instance === commandQuery && sessionKey()) {
+          claudeCommandCatalog.remember(sessionKey()!, capturedSessionId, options.cwd || '', commands);
+          ws.send(createNormalizedMessage({ kind: 'status', text: 'native_commands_changed', sessionId: sessionKey(), provider: 'claude' }));
+        }
+      }).catch(() => {});
+    }
+
     // Metadata comes only from the query the user already requested. It does
     // not generate a prompt. Guard its response against intervening config changes.
     const refreshAppliedSettings = async () => {
@@ -874,6 +890,9 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
       // SDK messages are validated by the SDK; its newer additive event fields
       // are intentionally accepted here while the normalizer guards their shape.
       const message: AnyRecord = sdkMessage;
+      // Scope only command metadata/compaction feedback; preserve the existing general stream behavior.
+      if (message.type === 'system' && (message.subtype === 'commands_changed' || message.subtype === 'compact_boundary' || message.subtype === 'status' && (message.status === 'compacting' || message.compact_result))
+        && message.session_id && capturedSessionId && message.session_id !== capturedSessionId && !message.parent_tool_use_id) continue;
       streamGeneration++;
       inputQueue.observe(message);
       if (!message.parent_tool_use_id && !message.isSidechain && (message.type === 'assistant' || message.type === 'stream_event' && message.event?.type === 'message_start')) {
@@ -897,6 +916,16 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
         }
       } else {
         // session_id already captured
+      }
+
+      if (!message.parent_tool_use_id && (!message.session_id || message.session_id === capturedSessionId)) {
+        const commands = message.type === 'system' && message.subtype === 'init' ? message.slash_commands
+          : message.type === 'system' && message.subtype === 'commands_changed' ? message.commands : undefined;
+        if (Array.isArray(commands) && sessionKey()) {
+          commandCatalogGeneration++;
+          claudeCommandCatalog.remember(sessionKey()!, capturedSessionId, options.cwd || '', commands);
+          ws.send(createNormalizedMessage({ kind: 'status', text: 'native_commands_changed', sessionId: sessionKey(), provider: 'claude' }));
+        }
       }
 
       // Transform and normalize message via adapter
@@ -962,6 +991,11 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
       }
 
       if (message.type === 'result') {
+        const nativeReports = inputQueue.commandsForResult(message).map(command => command.match(/^\/(compact|context|usage)(?:\s|$)/)?.[1]).filter(Boolean);
+        if (message.session_id === capturedSessionId && !message.is_error && nativeReports.length && typeof message.result === 'string' && message.result.trim()) {
+          ws.send(createNormalizedMessage({ kind: 'task_notification', status: 'info', provider: 'claude', sessionId: sid,
+            id: `native-result-${message.uuid || message.user_message_uuid}`, summary: `Claude /${nativeReports.join(', /')}: ${message.result}` }));
+        }
         lastResultFailed = message.is_error === true;
         const turn = backgroundWork.finishTurn(lastResultFailed);
         const abortPending = sessionKey() ? abortedSessionIds.has(sessionKey()!) : false;

@@ -1,18 +1,23 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
+import { Settings } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { ChatInterface, AgentsPanel } from '@/modules/chat';
 import { GitPanel } from '@/modules/git-panel';
 import { PluginTabContent } from '@/modules/plugins';
 import { BrowserUsePanel, useBrowserUseEnabled } from '@/modules/browser-use';
+import { QuickSettingsPanel } from '@/modules/quick-settings-panel';
 import { usePaletteOpsRegister } from '@/modules/command-palette';
 import { TaskMasterPanel, useTaskMasterProjectSync, useTasksSettings } from '@/modules/task-master';
 import type { AppTab, CodeEditorDiffInfo, CodeEditorFile, Project, ProjectSession, SessionEstablishedContext, SessionNavigationOptions, SettingsMainTab, WorkspacePanelTab } from '@/shared/types';
 import { useUiPreferences } from '@/shared/context/UiPreferencesContext';
+import { useModalVisibility } from '@/shared/hooks/useModalVisibility';
 import { useFileOpenResolver } from '@/modules/project-workspace/hooks/useFileOpenResolver';
 import { SideChatPanel, WorkspacePanelLayout, useWorkspacePanelActions, useWorkspacePanels } from '@/modules/workspace-panels';
-import WorkspaceHeader from '@/modules/project-workspace/WorkspaceHeader';
+import WorkspaceTabs from '@/modules/project-workspace/WorkspaceTabs';
+import WorkspaceTitle from '@/modules/project-workspace/WorkspaceTitle';
+import MobileMenuButton from '@/modules/project-workspace/MobileMenuButton';
 import WorkspaceStateView from '@/modules/project-workspace/WorkspaceStateView';
 import WorkspaceErrorBoundary from '@/modules/project-workspace/WorkspaceErrorBoundary';
 import WorkspaceFilesPanel from '@/modules/project-workspace/WorkspaceFilesPanel';
@@ -49,6 +54,8 @@ function WorkspaceMain({
 }: WorkspaceMainProps) {
   const { t } = useTranslation('common');
   const preferences = useUiPreferences();
+  const modalVisible = useModalVisibility();
+  const mainCovered = settingsOpen || modalVisible;
   const { showRawParameters, showThinking, sendByCtrlEnter } = preferences;
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
   const browserUseEnabled = useBrowserUseEnabled();
@@ -82,6 +89,7 @@ function WorkspaceMain({
   const visible = (tab: WorkspacePanelTab) => Boolean(panel?.open && panel.tab === tab);
   const retained = (tab: WorkspacePanelTab) => Boolean(panel?.visited.has(tab));
   const title = panel?.tab === 'agents' ? t('workspacePanel.agents', { defaultValue: 'Agents' })
+    : panel?.tab === 'preferences' ? t('workspacePanel.preferences', { defaultValue: 'Preferences' })
     : panel?.tab === 'sideChat' ? t('workspacePanel.sideChat', { defaultValue: 'Side chat' })
       : panel?.tab === 'git' ? t('workspacePanel.sourceControl', { defaultValue: 'Source Control' })
         : panel?.tab.startsWith('plugin:') ? panel.tab.slice(7)
@@ -90,7 +98,7 @@ function WorkspaceMain({
     {isLoading ? <WorkspaceStateView mode="loading" isMobile={isMobile} onMenuClick={onMenuClick} />
       : !selectedProject ? <WorkspaceStateView mode="empty" isMobile={isMobile} onMenuClick={onMenuClick} />
         : <WorkspaceErrorBoundary showDetails><ChatInterface
-          isActive={!settingsOpen}
+          isActive={!mainCovered}
           selectedProject={selectedProject} selectedSession={selectedSession} ws={ws} sendMessage={sendMessage}
           onFileOpen={handleFileOpen} onNavigateToSession={onNavigateToSession} onSessionEstablished={onSessionEstablished}
           onShowSettings={onShowSettings} showRawParameters={showRawParameters} showThinking={showThinking}
@@ -98,13 +106,18 @@ function WorkspaceMain({
           onShowAllTasks={tasksEnabled ? showAllTasks : null}
         /></WorkspaceErrorBoundary>}
   </div>;
+  const machineLabel = window.__REMOTE_NAME__ || window.__REMOTE_ID__ || t('workspacePanel.currentRemote', { defaultValue: 'Current remote' });
+  const drawerHeading = selectedProject
+    ? <WorkspaceTitle activeTab="chat" machineLabel={machineLabel} selectedProject={selectedProject} selectedSession={selectedSession} shouldShowTasksTab={shouldShowTasksTab} />
+    : <div className="truncate text-sm font-medium">{machineLabel}</div>;
+  const drawerNavigation = <WorkspaceTabs activeTab={panel?.open ? panel.tab : 'chat'} sessionId={selectedSession?.id ?? null} setActiveTab={selectView} shouldShowTasksTab={shouldShowTasksTab} shouldShowBrowserTab={shouldShowBrowserTab} />;
   return <div className="flex h-full min-h-0 min-w-0 flex-col">
-    {selectedProject && <WorkspaceHeader
-      activeTab={panel?.open ? panel.tab : 'chat'} setActiveTab={selectView}
-      selectedProject={selectedProject} selectedSession={selectedSession} shouldShowTasksTab={shouldShowTasksTab}
-      shouldShowBrowserTab={shouldShowBrowserTab} isMobile={isMobile} onMenuClick={onMenuClick} onShowSettings={() => onShowSettings()}
-    />}
-    <WorkspacePanelLayout main={main} mainCovered={settingsOpen} title={title} sessionId={selectedSession?.id ?? null}>
+    {!window.__CLOUDCLI_EMBEDDED__ && isMobile && selectedProject && <div className="absolute left-2 top-2 z-40"><MobileMenuButton onMenuClick={onMenuClick} compact /></div>}
+    <WorkspacePanelLayout main={main} mainCovered={mainCovered} navigation={drawerNavigation} heading={drawerHeading} title={title} sessionId={selectedSession?.id ?? null}>
+      {retained('preferences') && <div className={`h-full min-h-0 flex-col ${visible('preferences') ? 'flex' : 'hidden'}`}>
+        <div className="shrink-0 border-b border-border/60 p-3"><button type="button" onClick={() => onShowSettings()} className="flex min-h-11 w-full items-center gap-2.5 rounded-lg border border-border px-3 py-2 text-left text-sm hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary" aria-label={`${machineLabel} · ${t('workspacePanel.machineSettings', { defaultValue: 'Machine settings' })}`}><Settings className="h-[18px] w-[18px] shrink-0" /><span>{t('workspacePanel.machineSettings', { defaultValue: 'Machine settings' })}</span></button></div>
+        <QuickSettingsPanel />
+      </div>}
       {retained('shell') && <div className={`h-full ${visible('shell') ? 'block' : 'hidden'}`}><WorkspaceTerminals project={selectedProject} session={selectedSession} visible={visible('shell')} /></div>}
       {retained('files') && <div className={`h-full ${visible('files') ? 'block' : 'hidden'}`}><WorkspaceFilesPanel project={selectedProject} editingFile={editing?.file ?? null} editingProject={editing?.project ?? null} onFileOpen={openFile} onClose={() => setEditing(null)} /></div>}
       {retained('git') && <div className={`h-full ${visible('git') ? 'block' : 'hidden'}`}>{selectedProject && <GitPanel selectedProject={selectedProject} isMobile={isMobile} onFileOpen={handleFileOpen} onProjectSelect={onProjectSelect} onProjectsRefresh={onProjectsRefresh} />}</div>}

@@ -704,6 +704,14 @@ export function useProjectsState({
     setShowSettings(true);
   }, []);
   const closeSettings = useCallback(() => setShowSettings(false), []);
+  // Hub removal/navigation can return this retained frame to a blank chat.
+  // Use the existing explicit reset signal to release Chat's native binding,
+  // without replacing the project or any retained terminal/panel instances.
+  const clearSessionSelection = useCallback(() => {
+    if (selectedSessionRef.current) setNewSessionTrigger(previous => previous + 1);
+    selectedSessionRef.current = null;
+    setSelectedSession(null);
+  }, []);
 
   useEffect(() => {
     if (mountFetchStartedRef.current) {
@@ -1298,6 +1306,7 @@ export function useProjectsState({
     setShowSettings,
     openSettings,
     closeSettings,
+    clearSessionSelection,
     fetchProjects,
     refreshProjectsSilently,
     registerOptimisticSession,

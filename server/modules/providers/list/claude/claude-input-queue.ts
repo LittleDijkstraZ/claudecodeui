@@ -72,6 +72,12 @@ export function createClaudeInputQueue(onDelivery: (entry: Entry, error?: string
   return { stream, begin, observe, release, isOpen: () => !closed,
     hasPending: () => preparing > 0 || pending.length > 0 || [...entries.values()].some(entry => !entry.initial && !entry.processed),
     messageCount: () => entries.size,
+    // Only explicit native receipt IDs can attribute command output; a Workflow result cannot.
+    commandsForResult: (message: AnyRecord): string[] => {
+      if (message.type !== 'result' || message.parent_tool_use_id || message.isSidechain) return [];
+      const ids = new Set([message.user_message_uuid, ...(Array.isArray(message.user_message_uuids) ? message.user_message_uuids : [])]);
+      return [...ids].flatMap(id => typeof id === 'string' && entries.has(id) ? [entries.get(id)!.command] : []);
+    },
     ownsUserEcho: (message: AnyRecord) => message.type === 'user' && !message.parent_tool_use_id && !message.isSidechain && !message.isSynthetic && !message.tool_use_result && entries.has(message.uuid) && !(Array.isArray(message.message?.content) && message.message.content.some((block: AnyRecord) => block.type === 'tool_result')),
   };
 }

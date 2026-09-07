@@ -1,7 +1,7 @@
 import * as fs from 'node:fs/promises';
 import os from 'node:os';
 
-import { providerModelsService } from '@/modules/providers/index.js';
+import { providerModelsService, claudeCommandCatalog, sessionsService } from '@/modules/providers/index.js';
 import { findApplicationRoot, getModuleDirectory } from '@/shared/utils.js';
 
 import { createCommandsRouter } from './commands.routes.js';
@@ -12,6 +12,9 @@ export const commandsRoutes = createCommandsRouter({
   homeDirectory: os.homedir,
   appRoot: findApplicationRoot(getModuleDirectory(import.meta.url)),
   models: providerModelsService,
+  nativeCommands: {
+    list: (projectPath, sessionId) => claudeCommandCatalog.list(projectPath, sessionId, sessionsService.resolveProviderSessionId(sessionId)),
+  },
   runtime: {
     uptime: process.uptime,
     memoryUsage: process.memoryUsage,
