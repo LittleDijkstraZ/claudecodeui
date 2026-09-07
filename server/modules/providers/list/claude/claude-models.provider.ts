@@ -1,13 +1,13 @@
 import { readFile } from 'node:fs/promises';
 
 import { sessionsDb } from '@/modules/database/index.js';
-import type { IProviderModels } from '@/shared/interfaces.js';
 import type {
+  IProviderModels,
   ProviderCurrentActiveModel,
   ProviderModelOption,
   ProviderModelsDefinition,
-} from '@/shared/types.js';
-import { buildDefaultProviderCurrentActiveModel } from '@/shared/utils.js';
+} from '@/shared/index.js';
+import { buildDefaultProviderCurrentActiveModel } from '@/shared/index.js';
 
 /**
  * Ultracode is not one of the SDK's reasoning-effort levels. Selecting it runs the turn at
@@ -22,6 +22,7 @@ const ULTRACODE_EFFORT_OPTION = {
   description: 'Highest effort plus standing workflow orchestration.',
 };
 
+/** Used by the Claude model catalog and runtime to validate model-specific choices. */
 export const CLAUDE_PREDEFINED_MODELS: ProviderModelsDefinition = {
   OPTIONS: [
     {
@@ -159,6 +160,7 @@ export const CLAUDE_PREDEFINED_MODELS: ProviderModelsDefinition = {
   DEFAULT: 'default',
 };
 
+/** Used by provider model consumers to resolve entries in the Claude catalog. */
 export const findClaudeModelOption = (model: string | undefined | null): ProviderModelOption | null => {
   const normalizedModel = typeof model === 'string' ? model.trim() : '';
   if (!normalizedModel) {
@@ -276,6 +278,7 @@ const readClaudeSessionModelFromJsonl = async (
   return null;
 };
 
+/** Supplies model choices and current-session metadata to the Claude provider. */
 export class ClaudeProviderModels implements IProviderModels {
   async getSupportedModels(): Promise<ProviderModelsDefinition> {
     // claude creates a new jsonl file as a separate session for this request.
