@@ -99,3 +99,24 @@ test('a replacement echo survives a kept turn that repeats its text', () => {
   const persisted = [...kept, userRow('persisted', 'continue', '2026-01-01T00:00:25.000Z')];
   assert.deepEqual(removeOptimisticUserEchoes(persisted, [echo]), []);
 });
+
+
+test('UUID-stamped queued and failed repeated sends cannot be retired by an older same-text turn', () => {
+  const oldTurn = createUserMessage('old-native', '2026-07-28T20:30:21.000Z', { content: 'continue' });
+  for (const delivery of ['queued', 'failed'] as const) {
+    const local = createUserMessage('client_new-send', '2026-07-28T20:30:22.000Z', {
+      content: 'continue', clientMessageId: 'new-send', delivery,
+    });
+    assert.deepEqual(removeOptimisticUserEchoes([oldTurn], [local]), [local]);
+  }
+});
+
+test('replayed client receipts retire only on their exact persisted native identity', () => {
+  const local = createUserMessage('client_send-uuid', '2026-07-28T20:30:22.000Z', {
+    content: 'continue', clientMessageId: 'send-uuid', delivery: 'delivered',
+  });
+  for (const identity of [{ id: 'send-uuid' }, { transcriptAnchorId: 'send-uuid' }, { clientMessageId: 'send-uuid' }]) {
+    const persisted = createUserMessage('native-row', '2026-07-28T20:30:22.000Z', { content: 'continue', ...identity });
+    assert.deepEqual(removeOptimisticUserEchoes([persisted], [local]), []);
+  }
+});

@@ -344,11 +344,12 @@ test('same-user activity observers receive metadata without replacing the active
     run.writer.sendComplete({ exitCode: 0 });
     run.writer.sendComplete({ exitCode: 1 });
     assert.deepEqual(observer.frames.map(frame => frame.status), ['running', 'permission', 'complete']);
+    assert.deepEqual(observer.frames.map(frame => frame.isProcessing), [true, true, false]);
     assert.deepEqual(observer.frames.map(frame => frame.seq), [0, 2, 3]);
     assert.equal(new Set(observer.frames.map(frame => frame.runId)).size, 1);
     assert.equal(new Set(observer.frames.map(frame => frame.eventId)).size, 3);
     for (const frame of observer.frames) {
-      assert.deepEqual(Object.keys(frame).sort(), ['eventId', 'kind', 'provider', 'runId', 'seq', 'sessionId', 'status']);
+      assert.deepEqual(Object.keys(frame).sort(), ['eventId', 'isProcessing', 'kind', 'provider', 'runId', 'seq', 'sessionId', 'status']);
       assert.equal(frame.kind, 'session_activity'); assert.equal(frame.sessionId, 'activity-main');
     }
     assert.equal(JSON.stringify(observer.frames).includes('private'), false);
@@ -359,7 +360,7 @@ test('same-user activity observers receive metadata without replacing the active
   });
 });
 
-test('an error plus terminal completion yields one failure notification and a new run gets a fresh identity', async () => {
+test('an error and terminal completion carry distinct running states and a new run gets a fresh identity', async () => {
   await withIsolatedDatabase(() => {
     sessionsDb.createAppSession('activity-error', 'claude', '/workspace/demo');
     const active = new FakeConnection(); const observer = new FakeConnection();
@@ -369,16 +370,43 @@ test('an error plus terminal completion yields one failure notification and a ne
     first.writer.send({ kind: 'error', provider: 'claude', content: 'Private diagnostic' });
     first.writer.sendComplete({ exitCode: 1 });
     first.writer.sendComplete({ exitCode: 1 });
-    assert.deepEqual(observer.frames.map(frame => frame.status), ['running', 'error']);
+    assert.deepEqual(observer.frames.map(frame => frame.status), ['running', 'error', 'error']);
+    assert.deepEqual(observer.frames.map(frame => frame.isProcessing), [true, true, false]);
     const oldRunId = observer.frames[0]?.runId;
     const second = chatRunRegistry.startRun(input); assert.ok(second);
     assert.notEqual(observer.frames.at(-1)?.runId, oldRunId);
     // An old runtime winding down cannot publish activity for the replacement.
     first.writer.send({ kind: 'error', provider: 'claude', content: 'Late old failure' });
-    assert.equal(observer.frames.length, 3);
+    assert.equal(observer.frames.length, 4);
     second.writer.sendComplete({ exitCode: 2 });
-    assert.deepEqual(observer.frames.map(frame => frame.status), ['running', 'error', 'running', 'error']);
+    assert.deepEqual(observer.frames.map(frame => frame.status), ['running', 'error', 'error', 'running', 'error']);
+    assert.deepEqual(observer.frames.map(frame => frame.isProcessing), [true, true, false, true, false]);
     assert.equal(JSON.stringify(observer.frames).includes('diagnostic'), false);
+  });
+});
+
+test('a recoverable error preserves the active run and queued receipts until a later successful completion', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('activity-recovered', 'claude', '/workspace/demo');
+    const observer = new FakeConnection();
+    connectedClients.add(observer as never);
+    chatRunRegistry.registerActivityObserver(observer, 1);
+    const run = chatRunRegistry.startRun({ appSessionId: 'activity-recovered', provider: 'claude', providerSessionId: null, connection: null, userId: 1 });
+    assert.ok(run);
+    run.writer.send({ kind: 'status', provider: 'claude', text: 'message_delivery', clientMessageId: 'queued-after-error', content: 'Follow up', delivery: 'queued' });
+    run.writer.send({ kind: 'error', provider: 'claude', content: 'Temporary API failure' });
+    assert.equal(run.status, 'running');
+    assert.equal(chatRunRegistry.isProcessing('activity-recovered'), true);
+    assert.equal(run.messageReceipts.get('queued-after-error')?.delivery, 'queued');
+    assert.deepEqual(observer.frames.map(frame => [frame.status, frame.isProcessing]), [['running', true], ['error', true]]);
+    run.writer.send({ kind: 'status', provider: 'claude', text: 'message_delivery', clientMessageId: 'queued-after-error', content: 'Follow up', delivery: 'processed' });
+    run.writer.sendComplete({ exitCode: 0 });
+    run.writer.sendComplete({ exitCode: 0 });
+    assert.equal(run.status, 'completed');
+    assert.equal(chatRunRegistry.isProcessing('activity-recovered'), false);
+    assert.equal(run.messageReceipts.get('queued-after-error')?.delivery, 'processed');
+    assert.deepEqual(observer.frames.map(frame => [frame.status, frame.isProcessing]), [['running', true], ['error', true], ['complete', false]]);
+    assert.equal(JSON.stringify(observer.frames).includes('Temporary API failure'), false);
   });
 });
 
@@ -390,5 +418,74 @@ test('unidentified runs cannot broadcast activity to authenticated observers', a
     const run = chatRunRegistry.startRun({ appSessionId: 'activity-unknown', provider: 'claude', providerSessionId: null, connection: new FakeConnection(), userId: null });
     assert.ok(run); run.writer.sendComplete({ exitCode: 0 });
     assert.deepEqual(observer.frames, []);
+  });
+});
+
+test('pending delivery receipts survive stream-buffer eviction and replay in sequence order', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('receipt-retained', 'claude', '/workspace/demo');
+    const run = chatRunRegistry.startRun({ appSessionId: 'receipt-retained', provider: 'claude', providerSessionId: null, connection: null, userId: 1 });
+    assert.ok(run);
+    run.writer.send({ kind: 'status', provider: 'claude', text: 'message_delivery', clientMessageId: 'pending-input', content: 'Follow up', delivery: 'queued' });
+    for (let index = 0; index < 5_005; index += 1) run.writer.send({ kind: 'text', provider: 'claude', content: `stream ${index}` });
+    assert.equal(run.events.length, 5_000);
+    assert.equal(run.events.some(event => event.clientMessageId === 'pending-input'), false);
+    const replay = chatRunRegistry.replayEvents('receipt-retained', 0);
+    assert.equal(replay.length, 5_001);
+    assert.equal(replay[0]?.clientMessageId, 'pending-input');
+    assert.equal(replay[0]?.delivery, 'queued');
+    assert.deepEqual(replay.map(event => event.seq), [...replay.map(event => event.seq)].sort((a, b) => a! - b!));
+    assert.equal(new Set(replay.map(event => event.seq)).size, replay.length);
+    assert.equal(chatRunRegistry.replayEvents('receipt-retained', 1).some(event => event.clientMessageId === 'pending-input'), false);
+  });
+});
+
+test('receipt replay keeps the latest delivery outside the buffer and does not duplicate buffered receipts', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('receipt-latest', 'claude', '/workspace/demo');
+    const run = chatRunRegistry.startRun({ appSessionId: 'receipt-latest', provider: 'claude', providerSessionId: null, connection: null, userId: 1 });
+    assert.ok(run);
+    for (const delivery of ['queued', 'delivered', 'processed']) run.writer.send({ kind: 'status', provider: 'claude', text: 'message_delivery', clientMessageId: 'old-input', content: 'Original', delivery });
+    for (let index = 0; index < 5_001; index += 1) run.writer.send({ kind: 'text', provider: 'claude', content: `stream ${index}` });
+    run.writer.send({ kind: 'status', provider: 'claude', text: 'message_delivery', clientMessageId: 'new-input', content: 'New', delivery: 'queued' });
+    run.writer.sendComplete({ exitCode: 0 });
+    const replay = chatRunRegistry.replayEvents('receipt-latest', 0);
+    assert.equal(run.status, 'completed');
+    assert.deepEqual(replay.filter(event => event.clientMessageId === 'old-input').map(event => event.delivery), ['processed']);
+    assert.equal(replay.filter(event => event.clientMessageId === 'new-input').length, 1);
+    assert.equal(replay.at(-1)?.kind, 'complete');
+    assert.equal(new Set(replay.map(event => event.seq)).size, replay.length);
+  });
+});
+
+test('receipt history evicts settled inputs before queued inputs at its retention limit', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('receipt-limit', 'claude', '/workspace/demo');
+    const run = chatRunRegistry.startRun({ appSessionId: 'receipt-limit', provider: 'claude', providerSessionId: null, connection: null, userId: 1 });
+    assert.ok(run);
+    run.writer.send({ kind: 'status', provider: 'claude', text: 'message_delivery', clientMessageId: 'still-pending', content: 'Pending', delivery: 'queued' });
+    for (let index = 0; index < 130; index += 1) run.writer.send({ kind: 'status', provider: 'claude', text: 'message_delivery', clientMessageId: `settled-${index}`, content: `Message ${index}`, delivery: 'processed' });
+    assert.equal(run.messageReceipts.size, 128);
+    assert.equal(run.messageReceipts.has('still-pending'), true);
+    assert.equal(run.messageReceipts.has('settled-0'), false);
+    assert.equal(run.messageReceipts.has('settled-2'), false);
+    assert.equal(run.messageReceipts.has('settled-3'), true);
+    assert.equal(run.messageReceipts.has('settled-129'), true);
+  });
+});
+
+test('starting a replacement run does not reuse a completed run receipt history', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('receipt-replacement', 'claude', '/workspace/demo');
+    const input = { appSessionId: 'receipt-replacement', provider: 'claude' as const, providerSessionId: null, connection: null, userId: 1 };
+    const first = chatRunRegistry.startRun(input);
+    assert.ok(first);
+    first.writer.send({ kind: 'status', provider: 'claude', text: 'message_delivery', clientMessageId: 'old-input', content: 'Old', delivery: 'processed' });
+    first.writer.sendComplete({ exitCode: 0 });
+    const second = chatRunRegistry.startRun(input);
+    assert.ok(second);
+    assert.equal(second.messageReceipts.size, 0);
+    assert.deepEqual(chatRunRegistry.replayEvents('receipt-replacement', 0), []);
+    assert.equal(first.messageReceipts.get('old-input')?.delivery, 'processed');
   });
 });

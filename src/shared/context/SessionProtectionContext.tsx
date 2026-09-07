@@ -13,6 +13,7 @@ import {
 } from '@/shared/hooks/useSessionProtection';
 import type { IsSessionProcessing, MarkSessionIdle, MarkSessionProcessing, SessionActivityMap, SyncProcessingSessions } from '@/shared/types';
 import { api } from '@/shared/api';
+import { readSessionRuntimeState } from '@/shared/utils';
 import { useWebSocket } from '@/shared/context/WebSocketContext';
 
 type RunningSessionApiItem = {
@@ -20,6 +21,10 @@ type RunningSessionApiItem = {
   startedAt?: unknown;
   statusText?: unknown;
   canInterrupt?: unknown;
+  phase?: unknown;
+  acceptsInput?: unknown;
+  backgroundTasks?: unknown;
+  executionId?: unknown;
 };
 
 type RunningSessionsApiPayload = {
@@ -91,9 +96,14 @@ export function SessionProtectionProvider({ children }: { children: ReactNode })
   const syncProcessingSessions = useCallback<SyncProcessingSessions>((...args) => { activityRevision.current++; applySnapshot(...args); }, [applySnapshot]);
 
   useEffect(() => subscribe(event => {
+    if (event.kind === 'status' && event.text === 'claude_runtime_state' && typeof event.sessionId === 'string') {
+      markSessionProcessing(event.sessionId, { ...readSessionRuntimeState(event), statusText: null });
+      return;
+    }
     if (event.kind !== 'session_activity' || typeof event.sessionId !== 'string') return;
-    if (event.status === 'running' || event.status === 'permission') markSessionProcessing(event.sessionId);
-    if (event.status === 'complete' || event.status === 'error') markSessionIdle(event.sessionId);
+    const liveError = event.status === 'error' && event.isProcessing === true;
+    if (event.status === 'running' || event.status === 'permission' || event.status === 'response_complete' || liveError) markSessionProcessing(event.sessionId, readSessionRuntimeState(event));
+    if (event.status === 'complete' || (event.status === 'error' && !liveError)) markSessionIdle(event.sessionId);
   }), [subscribe, markSessionProcessing, markSessionIdle]);
 
   const refreshRunningSessions = useCallback(async () => {
@@ -118,6 +128,7 @@ export function SessionProtectionProvider({ children }: { children: ReactNode })
             }
 
             return {
+              ...readSessionRuntimeState(session),
               sessionId: session.sessionId,
               startedAt: parseStartedAt(session.startedAt),
               statusText: typeof session.statusText === 'string' ? session.statusText : undefined,

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { NormalizedMessage, Project, ProjectSession } from '@/shared/types';
+import type { NormalizedMessage, Project, ProjectSession, SessionActivityMap } from '@/shared/types';
 
 /**
  * The transcript's scroll position is written from five places coordinated by
@@ -96,13 +96,16 @@ function createStore(messagesBySession: Map<string, NormalizedMessage[]>) {
 async function renderChatSessionState(options: {
   session: ProjectSession;
   store: ReturnType<typeof createStore>;
+  processingSessions?: SessionActivityMap;
 }) {
   const { useChatSessionState } = await import('@/modules/chat/hooks/useChatSessionState');
 
   return renderHook(
-    ({ session }: { session: ProjectSession }) =>
+    ({ session, active = true, update = 0 }: { session: ProjectSession; active?: boolean; update?: number }) =>
       useChatSessionState({
-        isActive: true,
+        isActive: active,
+        externalMessageUpdate: update,
+        processingSessions: options.processingSessions,
         selectedProject: project,
         selectedSession: session,
         ws: null,
@@ -111,7 +114,7 @@ async function renderChatSessionState(options: {
         lastSeqRef: { current: new Map() },
         sessionStore: options.store as never,
       }),
-    { initialProps: { session: options.session } },
+    { initialProps: { session: options.session } as { session: ProjectSession; active?: boolean; update?: number } },
   );
 }
 
@@ -254,5 +257,28 @@ describe('search jump ownership', () => {
       0,
       'and must not flash the search highlight on one of its rows',
     );
+  });
+});
+
+
+describe('external Shell history while Chat is processing', () => {
+  it('refreshes a busy visible chat, defers a hidden pane, and flushes it when revealed', async () => {
+    const session = { id: SESSION_A } as ProjectSession;
+    const store = createStore(new Map([[SESSION_A, [buildMessage(0, '2026-01-01T00:00:00Z')]]]));
+    const processingSessions: SessionActivityMap = new Map([[SESSION_A, {
+      statusText: 'Background workflow', canInterrupt: true, startedAt: Date.now(),
+      phase: 'background', acceptsInput: true,
+    }]]);
+    const hook = await renderChatSessionState({ session, store, processingSessions });
+    expect(hook.result.current.isProcessing).toBe(true);
+    store.refreshLatestFromServer.mockClear();
+    await act(async () => { hook.rerender({ session, update: 1 }); });
+    expect(store.refreshLatestFromServer).toHaveBeenCalledTimes(1);
+    expect(store.refreshLatestFromServer.mock.calls[0][0]).toBe(SESSION_A);
+    await act(async () => { hook.rerender({ session, active: false, update: 2 }); });
+    expect(store.refreshLatestFromServer).toHaveBeenCalledTimes(1);
+    await act(async () => { hook.rerender({ session, active: true, update: 2 }); });
+    expect(store.refreshLatestFromServer).toHaveBeenCalledTimes(2);
+    expect(hook.result.current.isProcessing).toBe(true);
   });
 });

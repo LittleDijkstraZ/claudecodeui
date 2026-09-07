@@ -133,6 +133,8 @@ function ChatInterface({
     addMessage,
     sessionActivity,
     isProcessing,
+    isComposerBusy,
+    isForegroundBusy,
     canAbortSession,
     currentSessionId,
     setCurrentSessionId,
@@ -357,7 +359,7 @@ function ChatInterface({
     cyclePermissionMode,
     currentProviderModel,
     currentProviderEffort,
-    isLoading: isProcessing,
+    isLoading: isComposerBusy,
     processingSessions,
     canAbortSession,
     tokenBudget,
@@ -625,12 +627,12 @@ function ChatInterface({
           )}
 
           <ChatComposer
-          modelDetails={<ModelIdentitySummary provider={provider} sessionId={viewedSessionId} selectedModel={currentProviderModel} revision={`${isProcessing}-${chatMessages.length}`} />}
+          modelDetails={<ModelIdentitySummary provider={provider} sessionId={viewedSessionId} selectedModel={currentProviderModel} revision={`${isProcessing}-${chatMessages.length}`} continuesExecution={sessionActivity?.acceptsInput === true} />}
           pendingPermissionRequests={pendingPermissionRequests}
           handlePermissionDecision={handlePermissionDecision}
           handleGrantToolPermission={handleGrantToolPermission}
           activity={sessionActivity}
-          isLoading={isProcessing}
+          isLoading={isForegroundBusy}
           onAbortSession={handleAbortSession}
           permissionMode={permissionMode}
           availablePermissionModes={availablePermissionModes}

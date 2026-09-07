@@ -364,6 +364,14 @@ export type NormalizedMessage = {
   status?: string;
   summary?: string;
   tokenBudget?: unknown;
+  /** Retained native process state is independent of its foreground generation phase. */
+  phase?: 'foreground' | 'background';
+  acceptsInput?: boolean;
+  backgroundTasks?: number;
+  executionId?: string;
+  /** Correlates one queued send and native acknowledgement without implying processing completion. */
+  clientMessageId?: string;
+  delivery?: 'queued' | 'delivered' | 'failed';
   /**
    * Timeline of everything a subagent did, attached to the `tool_use` that
    * spawned it. Present for Claude `Agent`/`Task` calls and Codex
@@ -1420,6 +1428,8 @@ export type ClaudeUsageContext = {
 export type ClaudeUsageTurn = {
   id: string; status: 'running' | 'complete' | 'error' | 'interrupted'; models: Record<string, ClaudeUsageModelCounters>;
   estimatedCostUsd: number | null; coverage: 'sdk-query-pipeline' | 'observed-requests';
+  /** Multiple prompts can share a retained Query and its background bill; do not present this as one prompt's cost. */
+  userMessageCount?: number;
 };
 /** Shared REST/history/live snapshot. Revision is durable and monotonic per stable app session on one remote. */
 export type ClaudeUsageSnapshot = {

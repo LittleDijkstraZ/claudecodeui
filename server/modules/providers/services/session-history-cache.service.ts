@@ -41,6 +41,10 @@ type GetFullHistoryArgs = {
   loadFull: () => Promise<FetchHistoryResult>;
 };
 
+type PendingHistoryLoad = Pick<CacheEntry, 'transcriptPath' | 'mtimeMs' | 'size'> & {
+  result: Promise<FetchHistoryResult>;
+};
+
 /**
  * A transcript entry's heap cost is roughly the file it was parsed from, so
  * the budget is expressed in file bytes. The newest entry is always retained
@@ -55,7 +59,7 @@ export function createSessionHistoryCache(
   maxEntries = MAX_CACHE_ENTRIES,
 ) {
   const entries = new Map<string, CacheEntry>();
-  const pendingLoads = new Map<string, Promise<FetchHistoryResult>>();
+  const pendingLoads = new Map<string, PendingHistoryLoad>();
 
   function evictOverBudget(): void {
     let totalBytes = 0;
@@ -107,30 +111,29 @@ export function createSessionHistoryCache(
         return cached.full;
       }
 
-      // Concurrent requests for the same session share one parse. The file may
-      // gain rows while the load runs; the pre-load stat is what the entry is
-      // keyed by, so the next request would see a changed stat and re-read.
+      // Share only the same transcript snapshot. Shell may append new rows
+      // (or rewind may remap the native path) while an older parse is pending.
       const pending = pendingLoads.get(sessionId);
-      if (pending) {
-        return pending;
+      if (pending && pending.transcriptPath === transcriptPath
+        && pending.mtimeMs === stat.mtimeMs && pending.size === stat.size) {
+        return pending.result;
       }
 
       const load = loadFull().then((full) => {
-        entries.delete(sessionId);
-        entries.set(sessionId, {
-          transcriptPath,
-          mtimeMs: stat.mtimeMs,
-          size: stat.size,
-          full,
-        });
-        evictOverBudget();
+        // A slow parse of an old snapshot must not overwrite the cache after
+        // a newer request has already loaded the changed transcript.
+        if (pendingLoads.get(sessionId)?.result === load) {
+          entries.delete(sessionId);
+          entries.set(sessionId, { transcriptPath, mtimeMs: stat.mtimeMs, size: stat.size, full });
+          evictOverBudget();
+        }
         return full;
       });
-      pendingLoads.set(sessionId, load);
+      pendingLoads.set(sessionId, { transcriptPath, mtimeMs: stat.mtimeMs, size: stat.size, result: load });
       try {
         return await load;
       } finally {
-        pendingLoads.delete(sessionId);
+        if (pendingLoads.get(sessionId)?.result === load) pendingLoads.delete(sessionId);
       }
     },
   };

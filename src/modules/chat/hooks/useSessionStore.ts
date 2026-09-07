@@ -11,7 +11,7 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 
 import { acceptClaudeUsageSnapshot, isClaudeUsageSnapshot } from '@/modules/chat/utils/claudeUsageSnapshot';
 import { api } from '@/shared/api';
-import type { LLMProvider, NormalizedMessage } from '@/shared/types';
+import type { ChatMessageDelivery, LLMProvider, NormalizedMessage } from '@/shared/types';
 import { removeOptimisticUserEchoes } from '@/modules/chat/utils/sessionMessageReconciliation';
 import {
   hasReachedCachedTailTimeBoundary,
@@ -297,15 +297,20 @@ function dedupeAdjacentAssistantEchoes(merged: NormalizedMessage[]): NormalizedM
 function pruneRealtimeSupersededByServer(
   serverMessages: NormalizedMessage[],
   realtimeMessages: NormalizedMessage[],
+  realtimeAtRequestStart?: ReadonlySet<NormalizedMessage>,
 ): NormalizedMessage[] {
   if (realtimeMessages.length === 0) {
     return realtimeMessages;
   }
 
   const serverIds = new Set(serverMessages.map((message) => message.id));
-  const reconciledRealtimeMessages = removeOptimisticUserEchoes(serverMessages, realtimeMessages);
+  const reconciledRealtimeMessages = new Set(removeOptimisticUserEchoes(serverMessages, realtimeMessages));
 
-  return reconciledRealtimeMessages.filter((message) => {
+  return realtimeMessages.filter((message) => {
+    // A REST response reflects an earlier point in time. New or replaced WS
+    // rows received during its request must survive even with the same ID.
+    if (realtimeAtRequestStart && !realtimeAtRequestStart.has(message)) return true;
+    if (!reconciledRealtimeMessages.has(message)) return false;
     if (serverIds.has(message.id)) {
       return false;
     }
@@ -348,6 +353,10 @@ function computeMerged(server: NormalizedMessage[], realtime: NormalizedMessage[
 
   const serverIds = new Set(server.map((message) => message.id));
   const reconciledRealtime = removeOptimisticUserEchoes(server, realtime);
+  // Rows surviving history reconciliation are newer than that snapshot (or
+  // not yet persisted). A same-ID live update must win over stale REST data.
+  const realtimeById = new Map(reconciledRealtime.map(message => [message.id, message]));
+  const serverWithLiveUpdates = server.map(message => realtimeById.get(message.id) ?? message);
   const extra = reconciledRealtime.filter((message) => {
     if (serverIds.has(message.id)) {
       return false;
@@ -356,7 +365,7 @@ function computeMerged(server: NormalizedMessage[], realtime: NormalizedMessage[
   });
 
   if (extra.length === 0) {
-    return dedupeAdjacentAssistantEchoes(server);
+    return dedupeAdjacentAssistantEchoes(serverWithLiveUpdates);
   }
 
   // Interleave by timestamp so live rows stay with their turn instead of
@@ -368,7 +377,7 @@ function computeMerged(server: NormalizedMessage[], realtime: NormalizedMessage[
     0,
   );
   return dedupeAdjacentAssistantEchoes(
-    [...server, ...extra].sort(
+    [...serverWithLiveUpdates, ...extra].sort(
       (a, b) => readSortTime(a, newestServerTime) - readSortTime(b, newestServerTime),
     ),
   );
@@ -433,6 +442,7 @@ async function refreshLatestSlotFromServer(
   const previousServerMessages = slot.serverMessages;
   const previousTotal = slot.total;
   const previousHasMore = slot.hasMore;
+  const realtimeAtRequestStart = new Set(slot.realtimeMessages);
   const latestPage = await requestSessionHistoryPage(sessionId, {
     limit,
     offset: 0,
@@ -535,6 +545,7 @@ async function refreshLatestSlotFromServer(
   slot.realtimeMessages = pruneRealtimeSupersededByServer(
     slot.serverMessages,
     slot.realtimeMessages,
+    realtimeAtRequestStart,
   );
   recomputeMergedIfNeeded(slot);
 
@@ -602,6 +613,7 @@ export function useSessionStore() {
       }
 
       try {
+        const realtimeAtRequestStart = new Set(slot.realtimeMessages);
         const data = await requestSessionHistoryPage(sessionId, requestOptions);
         slot.serverMessages = data.messages;
         slot.total = data.total;
@@ -612,6 +624,7 @@ export function useSessionStore() {
         slot.realtimeMessages = pruneRealtimeSupersededByServer(
           slot.serverMessages,
           slot.realtimeMessages,
+          realtimeAtRequestStart,
         );
         recomputeMergedIfNeeded(slot);
         if (data.tokenUsage !== undefined) {
@@ -755,13 +768,41 @@ export function useSessionStore() {
       msg.sessionId === sessionId
         ? msg
         : { ...msg, sessionId };
-    let updated = [...slot.realtimeMessages, normalizedMessage];
+    // A delivery receipt can replay after navigation/reconnect. Client identity
+    // replaces its optimistic bubble instead of adding a second copy.
+    const existingIndex = normalizedMessage.clientMessageId
+      ? slot.realtimeMessages.findIndex(message => message.clientMessageId === normalizedMessage.clientMessageId)
+      : -1;
+    let updated = [...slot.realtimeMessages];
+    if (existingIndex >= 0) {
+      const previous = updated[existingIndex];
+      updated[existingIndex] = {
+        ...previous, ...normalizedMessage, id: previous.id,
+        delivery: previous.delivery === 'delivered' || (previous.delivery === 'failed' && normalizedMessage.delivery === 'queued')
+          ? previous.delivery : normalizedMessage.delivery,
+      };
+    } else {
+      updated.push(normalizedMessage);
+    }
     if (updated.length > MAX_REALTIME_MESSAGES) {
       updated = updated.slice(-MAX_REALTIME_MESSAGES);
     }
     slot.realtimeMessages = updated;
     recomputeMergedIfNeeded(slot);
     notify(sessionId);
+  }, [getSlot, notify]);
+
+  /** Applies only server-confirmed delivery and never lets an older replay undo consumption. */
+  const updateMessageDelivery = useCallback((sessionId: string, clientMessageId: string, delivery: ChatMessageDelivery, error?: string) => {
+    const slot = getSlot(sessionId);
+    let changed = false;
+    slot.realtimeMessages = slot.realtimeMessages.map(message => {
+      if (message.clientMessageId !== clientMessageId || message.delivery === 'delivered') return message;
+      if (message.delivery === 'failed' && delivery === 'queued') return message;
+      changed = true;
+      return { ...message, delivery, deliveryError: error };
+    });
+    if (changed) { recomputeMergedIfNeeded(slot); notify(sessionId); }
   }, [getSlot, notify]);
 
   /**
@@ -893,6 +934,7 @@ export function useSessionStore() {
     fetchFromServer,
     fetchMore,
     appendRealtime,
+    updateMessageDelivery,
     truncateAt,
     refreshLatestFromServer,
     setActiveSession,
@@ -903,7 +945,7 @@ export function useSessionStore() {
     getMessages,
     getSessionSlot,
   }), [
-    fetchFromServer, fetchMore, appendRealtime, truncateAt, refreshLatestFromServer,
+    fetchFromServer, fetchMore, appendRealtime, updateMessageDelivery, truncateAt, refreshLatestFromServer,
     setActiveSession, isStale, updateStreaming, finalizeStreaming,
     resetHistory, getMessages, getSessionSlot,
   ]);

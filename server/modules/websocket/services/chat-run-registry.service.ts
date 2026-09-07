@@ -29,12 +29,13 @@ type ChatRunStatus = 'running' | 'completed';
 type ChatRun = {
   appSessionId: string;
   runId: string;
-  activityErrorSent: boolean;
+  runtimeState?: { phase: 'foreground' | 'background'; acceptsInput: boolean; backgroundTasks: number; executionId?: string };
   provider: LLMProvider;
   providerSessionId: string | null;
   status: ChatRunStatus;
   lastSeq: number;
   events: NormalizedMessage[];
+  messageReceipts: Map<string, NormalizedMessage>;
   writer: ChatSessionWriter;
   startedAt: number;
   completedAt: number | null;
@@ -67,14 +68,14 @@ const sessionMutations = new Set<string>();
 const projectMutations = new Set<string>();
 const activityObservers = new WeakMap<RealtimeClientConnection, string | number | null>();
 
-function broadcastSessionActivity(run: ChatRun, status: 'running' | 'complete' | 'error' | 'permission'): void {
+function broadcastSessionActivity(run: ChatRun, status: 'running' | 'complete' | 'error' | 'permission' | 'response_complete'): void {
   // Never let a superseded run update the activity of a newer run under the same app id.
   if (runs.get(run.appSessionId) !== run) return;
   const owner = run.writer.userId;
   if (owner === null) return;
   const payload = JSON.stringify({
     kind: 'session_activity', sessionId: run.appSessionId, provider: run.provider,
-    status, runId: run.runId, seq: run.lastSeq, eventId: `${run.runId}:${status}:${run.lastSeq}`,
+    status, isProcessing: run.status === 'running', ...(run.runtimeState ?? {}), runId: run.runId, seq: run.lastSeq, eventId: `${run.runId}:${status}:${run.lastSeq}`,
   });
   for (const client of connectedClients) {
     const observer = activityObservers.get(client);
@@ -124,6 +125,10 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
     seq: run.lastSeq,
   };
 
+  const runtimeStateChanged = message.kind === 'status' && message.text === 'claude_runtime_state'
+    && (message.phase === 'foreground' || message.phase === 'background') && typeof message.acceptsInput === 'boolean';
+  if (runtimeStateChanged) run.runtimeState = { phase: message.phase!, acceptsInput: message.acceptsInput!, backgroundTasks: Math.max(0, Number(message.backgroundTasks) || 0), executionId: message.executionId };
+
   if (message.kind === 'complete') {
     // The provider may report its own id here; the frontend only ever knows
     // the app id, so the "actual" id is by definition the app id as well.
@@ -133,17 +138,26 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
     evictRunLater(run.appSessionId);
   }
 
+  if (message.kind === 'status' && message.text === 'message_delivery' && message.clientMessageId) {
+    run.messageReceipts.set(message.clientMessageId, outbound);
+    // Keep waiting receipts even after a long Workflow exceeds the stream replay buffer.
+    if (run.messageReceipts.size > 128) {
+      const oldest = [...run.messageReceipts].find(([, receipt]) => receipt.delivery !== 'queued');
+      if (oldest) run.messageReceipts.delete(oldest[0]);
+    }
+  }
   run.events.push(outbound);
   if (run.events.length > MAX_BUFFERED_EVENTS_PER_RUN) {
     run.events.splice(0, run.events.length - MAX_BUFFERED_EVENTS_PER_RUN);
   }
 
+  if (runtimeStateChanged) broadcastSessionActivity(run, 'running');
+  if (message.kind === 'status' && message.text === 'foreground_complete') broadcastSessionActivity(run, 'response_complete');
   if (message.kind === 'permission_request') {
     broadcastSessionActivity(run, 'permission');
   } else if (message.kind === 'error') {
     broadcastSessionActivity(run, 'error');
-    run.activityErrorSent = true;
-  } else if (message.kind === 'complete' && !run.activityErrorSent) {
+  } else if (message.kind === 'complete') {
     broadcastSessionActivity(run, typeof message.exitCode === 'number' && message.exitCode !== 0 ? 'error' : 'complete');
   }
 
@@ -225,12 +239,12 @@ export const chatRunRegistry = {
     const run: ChatRun = {
       appSessionId: input.appSessionId,
       runId: randomUUID(),
-      activityErrorSent: false,
       provider: input.provider,
       providerSessionId: input.providerSessionId,
       status: 'running',
       lastSeq: 0,
       events: [],
+      messageReceipts: new Map(),
       writer: null as unknown as ChatSessionWriter,
       startedAt: Date.now(),
       completedAt: null,
@@ -296,6 +310,7 @@ export const chatRunRegistry = {
     provider: LLMProvider;
     startedAt: number;
     lastSeq: number;
+    phase?: 'foreground' | 'background'; acceptsInput?: boolean; backgroundTasks?: number; executionId?: string;
   }> {
     return Array.from(runs.values())
       .filter((run) => run.status === 'running')
@@ -304,6 +319,7 @@ export const chatRunRegistry = {
         provider: run.provider,
         startedAt: run.startedAt,
         lastSeq: run.lastSeq,
+        ...(run.runtimeState ?? {}),
       }));
   },
 
@@ -342,7 +358,8 @@ export const chatRunRegistry = {
       return [];
     }
 
-    return run.events.filter((event) => typeof event.seq === 'number' && event.seq > afterSeq);
+    const frames = new Map([...run.messageReceipts.values(), ...run.events].map(event => [event.seq, event]));
+    return [...frames.values()].filter(event => typeof event.seq === 'number' && event.seq > afterSeq).sort((a, b) => a.seq! - b.seq!);
   },
 
   /**

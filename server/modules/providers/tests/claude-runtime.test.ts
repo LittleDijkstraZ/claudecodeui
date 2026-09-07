@@ -19,6 +19,7 @@ const models: ProviderModelsDefinition = {
 test('SDK options enable partial messages and map ultracode to a session setting plus xhigh', () => {
   const options = mapCliOptionsToSDK({ model: 'fixture', effort: 'ultracode', effortModels: models });
   assert.equal(options.includePartialMessages, true);
+  assert.equal(options.forwardSubagentText, true);
   assert.equal(options.effort, 'xhigh');
   assert.deepEqual(options.settings, { ultracode: true, enableWorkflows: true });
   assert.deepEqual(options.settingSources, ['project', 'user', 'local']);
@@ -68,15 +69,17 @@ function runtimeHarness(steps: (state: {
   const events: NormalizedMessage[] = [];
   let sdkOptions: Options | undefined;
   let inputClosed = false;
+  const inputs: AnyRecord[] = [];
+  let queryCount = 0; let interrupts = 0;
   const queryMock = ((input: Parameters<typeof query>[0]) => {
-    sdkOptions = input.options;
+    queryCount++; sdkOptions = input.options;
     assert.notEqual(typeof input.prompt, 'string');
     const inputDone = (async () => {
-      for await (const message of input.prompt) assert.equal(typeof message, 'object');
+      for await (const message of input.prompt) { assert.equal(typeof message, 'object'); inputs.push(message as AnyRecord); }
       inputClosed = true;
     })();
     const iterator = steps({ events, inputClosed: () => inputClosed, inputDone });
-    return Object.assign(iterator, { interrupt: async () => undefined }) as unknown as Query;
+    return Object.assign(iterator, { interrupt: async () => { interrupts++; } }) as unknown as Query;
   }) as typeof query;
   const runtime = createClaudeRuntime({ query: queryMock, loadMcpConfig: async () => null, waitCeilingMs });
   const appSessionId = `fixture-app-${++harnessSequence}`;
@@ -89,7 +92,8 @@ function runtimeHarness(steps: (state: {
     isProviderInstalled: async () => true,
   };
   return {
-    events,
+    events, inputs, queries: () => queryCount, interrupts: () => interrupts,
+    enqueue: (command: string, clientMessageId: string) => runtime.enqueue!(appSessionId, command, { clientMessageId }),
     options: () => sdkOptions,
     abort: () => runtime.abort(appSessionId),
     run: () => runtime.run('Fixture only; no model call is made.', { sessionId: appSessionId }, {
@@ -132,11 +136,12 @@ test('successor Workflow after a completed Workflow keeps the original UI run ac
   assert.equal(h.events.at(-1)?.success, true);
 });
 
-test('legacy background Bash still completes the UI at launch and holds input until its follow-up', async () => {
+test('legacy background Bash permits further input and completes the runtime only after its follow-up', async () => {
   const h = runtimeHarness(async function* ({ events, inputClosed, inputDone }) {
     yield { type: 'assistant', session_id: nativeSession, message: { role: 'assistant', content: [{ type: 'tool_use', id: 'bash-call', name: 'Bash', input: { run_in_background: true } }] } };
     yield result();
-    assert.equal(events.filter(event => event.kind === 'complete').length, 1);
+    assert.equal(events.filter(event => event.kind === 'complete').length, 0);
+    assert.ok(events.some(event => event.text === 'claude_runtime_state' && event.phase === 'background' && event.acceptsInput));
     assert.equal(inputClosed(), false);
     yield result(); await inputDone;
   });
@@ -154,21 +159,22 @@ test('Workflow denied at launch completes normally without a background hold', a
   assert.equal(h.events.filter(event => event.kind === 'complete').length, 1);
 });
 
-test('Workflow wait ceiling reports incomplete work as failure instead of a successful completion', async () => {
-  const h = runtimeHarness(async function* ({ inputDone }) {
+test('a silent Workflow remains alive beyond the legacy idle ceiling', async () => {
+  const h = runtimeHarness(async function* ({ inputDone, inputClosed, events }) {
     yield workflow(); yield started(); yield result();
-    await delay(20); // Keep the test event loop active while the runtime's unref timer expires.
-    await inputDone;
+    await delay(20);
+    assert.equal(inputClosed(), false);
+    assert.equal(events.some(event => event.kind === 'complete'), false);
+    yield notification(); yield result(); await inputDone;
   }, 5);
   await h.run();
   assert.equal(h.events.filter(event => event.kind === 'complete').length, 1);
-  assert.equal(h.events.at(-1)?.success, false);
-  assert.equal(h.events.some(event => event.kind === 'error' && event.content?.includes('wait limit')), true);
+  assert.equal(h.events.at(-1)?.success, true);
 });
 
-test('terminal SDK result errors produce a failed completion while a Workflow is running', async () => {
-  const h = runtimeHarness(async function* ({ inputDone }) {
-    yield workflow(); yield started(); yield result(true); await inputDone;
+test('native exit after an SDK error produces a failed completion while a Workflow is running', async () => {
+  const h = runtimeHarness(async function* () {
+    yield workflow(); yield started(); yield result(true);
   });
   await h.run();
   assert.equal(h.events.filter(event => event.kind === 'complete').length, 1);
@@ -238,4 +244,86 @@ test('ordinary user runs enable native file checkpoints and replay their message
   const options = mapCliOptionsToSDK({ model: 'default' });
   assert.equal(options.enableFileCheckpointing, true);
   assert.deepEqual(options.extraArgs, { 'replay-user-messages': null });
+});
+
+test('Workflow accepts multiple messages through the same native query and never interrupts it', async () => {
+  const second = '01234567-1234-4234-9234-123456789abc';
+  const third = '01234567-1234-4234-9234-123456789abd';
+  const h = runtimeHarness(async function* ({ inputDone, inputClosed, events }) {
+    yield workflow(); yield started(); yield result();
+    assert.equal(await h.enqueue('Second user question', second), true);
+    assert.equal(await h.enqueue('Third user question', third), true);
+    await delay(0);
+    assert.equal(h.queries(), 1); assert.equal(h.interrupts(), 0);
+    assert.equal(h.inputs.length, 3);
+    assert.equal(h.inputs[1].uuid, second); assert.equal(h.inputs[2].uuid, third);
+    assert.equal(h.inputs[1].priority, 'next');
+    assert.deepEqual(events.filter(event => event.clientMessageId === second).map(event => event.delivery), ['queued']);
+    yield { type: 'user', uuid: second, session_id: nativeSession, message: { role: 'user', content: 'Second user question' } };
+    assert.deepEqual(events.filter(event => event.clientMessageId === second && event.text === 'message_delivery').map(event => event.delivery), ['queued', 'delivered']);
+    yield { ...result(), user_message_uuid: second };
+    yield notification(); yield result(); // Background follow-up cannot consume the third user question.
+    assert.equal(inputClosed(), false);
+    assert.equal(events.some(event => event.kind === 'complete'), false);
+    yield { type: 'user', uuid: third, session_id: nativeSession, message: { role: 'user', content: 'Third user question' } };
+    yield { ...result(), user_message_uuids: [third] };
+    await inputDone;
+  });
+  await h.run();
+  assert.equal(h.queries(), 1); assert.equal(h.interrupts(), 0);
+  assert.equal(h.events.filter(event => event.kind === 'complete').length, 1);
+  assert.equal(h.events.at(-1)?.success, true);
+});
+
+test('a second run request cannot replace a live Workflow or start another native process', async () => {
+  const h = runtimeHarness(async function* ({ inputDone }) {
+    yield workflow(); yield started(); yield result();
+    await assert.rejects(h.run(), /already owns this session/);
+    assert.equal(h.queries(), 1); assert.equal(h.interrupts(), 0);
+    yield notification(); yield result(); await inputDone;
+  });
+  await h.run();
+  assert.equal(h.queries(), 1); assert.equal(h.interrupts(), 0);
+});
+
+test('owned native user replays emit one delivery transition without duplicating prompt rows; tool results and external users remain visible', async () => {
+  const clientMessageId = '679293f2-15f7-4f75-b1dc-8aefb2c629a3';
+  const h = runtimeHarness(async function* ({ inputDone, events }) {
+    yield workflow(); yield started(); yield result();
+    assert.equal(await h.enqueue('Replay fixture prompt', clientMessageId), true);
+    await delay(0);
+    // Native producers may use a string or a text-block array for the same replay.
+    yield { type: 'user', uuid: clientMessageId, isReplay: true, session_id: nativeSession, message: { role: 'user', content: 'Replay fixture prompt' } };
+    yield { type: 'user', uuid: clientMessageId, isReplay: true, session_id: nativeSession, message: { role: 'user', content: [{ type: 'text', text: 'Replay fixture prompt' }] } };
+    assert.deepEqual(events.filter(event => event.clientMessageId === clientMessageId && event.text === 'message_delivery').map(event => event.delivery), ['queued', 'delivered']);
+    assert.equal(events.some(event => event.kind === 'text' && event.role === 'user' && event.content === 'Replay fixture prompt'), false);
+    yield { type: 'user', uuid: clientMessageId, session_id: nativeSession, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'fixture-tool', content: 'Tool result fixture' }] } };
+    assert.ok(events.some(event => event.kind === 'tool_result' && event.toolId === 'fixture-tool'));
+    yield { type: 'user', uuid: 'external-user-row', session_id: nativeSession, message: { role: 'user', content: 'External user fixture' } };
+    assert.ok(events.some(event => event.kind === 'text' && event.role === 'user' && event.content === 'External user fixture'));
+    yield { ...result(), user_message_uuids: [clientMessageId] };
+    yield notification(); yield result(); await inputDone;
+  });
+  await h.run();
+  assert.equal(h.queries(), 1);
+  assert.equal(h.interrupts(), 0);
+  assert.equal(h.events.filter(event => event.kind === 'complete').length, 1);
+});
+
+test('a foreground API error does not close or stop an existing Workflow', async () => {
+  const followup = '01234567-1234-4234-9234-123456789abe';
+  const h = runtimeHarness(async function* ({ inputDone, inputClosed, events }) {
+    yield workflow(); yield started(); yield result();
+    assert.equal(await h.enqueue('Follow-up that encounters an API error', followup), true);
+    yield { ...result(true), subtype: 'success', result: 'Fixture temporary API error', user_message_uuid: followup };
+    await delay(0);
+    assert.equal(inputClosed(), false);
+    assert.equal(h.interrupts(), 0);
+    assert.equal(events.some(event => event.kind === 'complete'), false);
+    assert.ok(events.some(event => event.kind === 'error' && event.content === 'Fixture temporary API error'));
+    yield notification(); yield result(); await inputDone;
+  });
+  await h.run();
+  assert.equal(h.queries(), 1);
+  assert.equal(h.events.filter(event => event.kind === 'complete').length, 1);
 });

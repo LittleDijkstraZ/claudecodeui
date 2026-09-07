@@ -87,6 +87,10 @@ export function createProviderRuntimeService(
 
   return {
     run,
+    /** Appends to the owning process without resolving new launch settings or creating a new execution. */
+    async enqueue(providerName: LLMProvider, sessionId: string, command: string, options: AnyRecord): Promise<boolean> {
+      return await dependencies.resolveProvider(providerName).runtime.enqueue?.(sessionId, command, options) ?? false;
+    },
 
     hasRuntime(providerName: string): boolean {
       try {

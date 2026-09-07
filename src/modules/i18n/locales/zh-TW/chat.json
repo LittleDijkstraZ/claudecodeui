@@ -105,7 +105,8 @@
     "stop": "停止",
     "hintText": {
       "ctrlEnter": "Ctrl+Enter 傳送 • Shift+Enter 換行 • Tab 切換模式 • / 斜線指令",
-      "enter": "Enter 傳送 • Shift+Enter 換行 • Tab 切換模式 • / 斜線指令"
+      "enter": "Enter 傳送 • Shift+Enter 換行 • Tab 切換模式 • / 斜線指令",
+      "liveQueue": "按 Enter 傳送至目前對話"
     },
     "clickToChangeMode": "點擊變更權限模式（或在輸入框中按 Tab）",
     "showAllCommands": "顯示所有指令",
@@ -240,7 +241,9 @@
     },
     "providers": {
       "assistant": "助理"
-    }
+    },
+    "background": "{{count}} 個背景任務",
+    "acceptingInput": "可以繼續傳送訊息"
   },
   "projectSelection": {
     "startChatWithProvider": "選擇一個專案以開始與 {{provider}} 聊天"
@@ -250,7 +253,12 @@
   },
   "message": {
     "editAndResend": "編輯並重新傳送",
-    "forkFromHere": "從此處分支"
+    "forkFromHere": "從此處分支",
+    "delivery": {
+      "queued": "等待處理",
+      "delivered": "已送達",
+      "failed": "未確認送達"
+    }
   },
   "composer": {
     "editing": {
@@ -291,5 +299,11 @@
     "failed": "未傳送 — {{reason}}",
     "cancel": "取消排程訊息",
     "dismiss": "關閉失敗提示"
+  },
+  "usage": {
+    "sharedExecution": "此執行中 {{count}} 條訊息的合計；SDK 無法完整拆分背景任務的歸屬。"
+  },
+  "modelIdentity": {
+    "continuesExecution": "目前程序沿用已生效設定；變更會在下一次啟動對話執行時生效。"
   }
 }

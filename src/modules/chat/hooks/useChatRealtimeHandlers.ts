@@ -11,7 +11,7 @@ import type {
   NormalizedMessage,
 } from '@/shared/types';
 import { showCompletionTitleIndicator } from '@/modules/chat/utils/pageTitleNotification';
-import { playChatCompletionSound, playNotificationSound } from '@/shared/utils';
+import { playChatCompletionSound, playNotificationSound, readSessionRuntimeState } from '@/shared/utils';
 import type { SessionStore } from '@/modules/chat/hooks/useSessionStore';
 import { createSessionStreamBuffer } from '@/modules/chat/utils/sessionStreamBuffer';
 
@@ -86,6 +86,9 @@ export function useChatRealtimeHandlers({
   activeViewSessionIdRef.current = selectedSession?.id || currentSessionId || null;
   const isActiveRef = useRef(isActive);
   isActiveRef.current = isActive;
+  // Replaying a foreground boundary refreshes history at most once per run/seq;
+  // it must never replay whole-run completion effects or clear the Workflow.
+  const foregroundCompletionKeys = useRef(new Set<string>());
 
   // Buffer callbacks use the current store without recreating per-session timers.
   const sessionStoreRef = useRef(sessionStore);
@@ -151,7 +154,7 @@ export function useChatRealtimeHandlers({
           if (!sid) return;
 
           if (msg.isProcessing) {
-            onSessionProcessing?.(sid);
+            onSessionProcessing?.(sid, readSessionRuntimeState(msg));
           } else {
             // Idle ack: ignore it if a newer request started after the
             // subscribe was sent — the ack describes the older state.
@@ -181,7 +184,12 @@ export function useChatRealtimeHandlers({
           if (sid) {
             // Surface the failure in the conversation and stop the spinner —
             // the run never started (or was rejected), so no `complete` follows.
-            onSessionIdle?.(sid);
+            if (typeof msg.clientMessageId === 'string') {
+              sessionStore.updateMessageDelivery(sid, msg.clientMessageId, 'failed', String(msg.error || 'Request failed'));
+              if (msg.isProcessing === false) onSessionIdle?.(sid);
+            } else {
+              onSessionIdle?.(sid);
+            }
             sessionStore.appendRealtime(sid, {
               id: `protocol_error_${Date.now()}`,
               sessionId: sid,
@@ -311,7 +319,39 @@ export function useChatRealtimeHandlers({
         }
 
         case 'status': {
-          if (msg.text === 'token_budget' && msg.tokenBudget) {
+          if (msg.text === 'foreground_complete') {
+            if (!sid) break;
+            const key = `${sid}:${String(msg.runId ?? msg.executionId ?? '')}:${String(msg.seq ?? msg.id ?? '')}`;
+            if (foregroundCompletionKeys.current.has(key)) break;
+            foregroundCompletionKeys.current.add(key);
+            if (foregroundCompletionKeys.current.size > 1000) foregroundCompletionKeys.current.delete(foregroundCompletionKeys.current.values().next().value!);
+            if (sid === activeViewSessionId) void requestLatestMessages(sid, isActiveRef.current);
+          } else if (msg.text === 'message_delivery') {
+            if (!sid || typeof msg.clientMessageId !== 'string'
+              || !['queued', 'delivered', 'failed'].includes(String(msg.delivery))) break;
+            const delivery = msg.delivery as 'queued' | 'delivered' | 'failed';
+            // Receipts carry the user text so a reconnect can reconstruct a
+            // pending prompt that has not reached the native transcript yet.
+            if (typeof msg.content === 'string') {
+              sessionStore.appendRealtime(sid, {
+                id: `client_${msg.clientMessageId}`,
+                sessionId: sid,
+                provider,
+                kind: 'text', role: 'user',
+                timestamp: typeof msg.timestamp === 'string' ? msg.timestamp : new Date().toISOString(),
+                clientMessageId: msg.clientMessageId,
+                transcriptAnchorId: typeof msg.transcriptAnchorId === 'string' ? msg.transcriptAnchorId : undefined,
+                content: msg.content,
+                images: Array.isArray(msg.images) ? msg.images as NormalizedMessage['images'] : undefined,
+                files: Array.isArray(msg.files) ? msg.files as NormalizedMessage['files'] : undefined,
+                delivery,
+                deliveryError: typeof msg.error === 'string' ? msg.error : undefined,
+              });
+            }
+            sessionStore.updateMessageDelivery(sid, msg.clientMessageId, delivery, typeof msg.error === 'string' ? msg.error : undefined);
+          } else if (msg.text === 'claude_runtime_state') {
+            if (sid) onSessionProcessing?.(sid, { ...readSessionRuntimeState(msg), statusText: null });
+          } else if (msg.text === 'token_budget' && msg.tokenBudget) {
             // The counter shows the viewed session's context; budgets from
             // other concurrently running sessions must not overwrite it.
             if (sid === activeViewSessionId) {

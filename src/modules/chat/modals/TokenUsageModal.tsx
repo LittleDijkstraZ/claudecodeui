@@ -42,6 +42,7 @@ export function ClaudeUsageDetails({ usage }: { usage: ClaudeUsageSnapshot }) {
       <h3 className="font-semibold">{t('usage.turn')} <span className="text-sm font-normal text-muted-foreground">{usage.turn ? t(`usage.${usage.turn.status}`) : t('usage.unknown')}</span></h3>
       <p className="mt-2 text-xl tabular-nums">{turnTokens === null ? '—' : tokens(turnTokens)} <span className="text-sm text-muted-foreground">{t('usage.tokens')}</span></p>
       {usage.turn && table(usage.turn.models)}
+      {(usage.turn?.userMessageCount ?? 0) > 1 && <p className="mt-2 text-xs text-muted-foreground">{t('usage.sharedExecution', { count: usage.turn!.userMessageCount, defaultValue: '{{count}} messages share this execution total. The SDK cannot fully attribute background work to individual messages.' })}</p>}
       {usage.turn?.coverage === 'observed-requests' && <p className="mt-2 text-xs text-muted-foreground">{t('usage.partialTurn')}</p>}
     </section>
     <section aria-label={t('usage.session')} className="rounded-xl border border-border p-4">

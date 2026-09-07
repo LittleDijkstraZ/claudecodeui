@@ -12,6 +12,7 @@ import ChatMessageFiles from '@/modules/chat/transcript/ChatMessageFiles';
 import { Markdown } from '@/modules/chat/transcript/Markdown';
 import StreamingMarkdown from '@/modules/chat/transcript/StreamingMarkdown';
 import MessageCopyControl from '@/modules/chat/transcript/MessageCopyControl';
+import { MessageDeliveryStatus } from '@/modules/chat/transcript/MessageDeliveryStatus';
 import MessageSpeakControl from '@/modules/chat/transcript/MessageSpeakControl';
 import { useIsExportingTranscript } from '@/modules/chat/context/TranscriptRenderContext';
 import { MemoryCitations } from '@/modules/chat/transcript/MemoryCitations';
@@ -158,6 +159,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                   )}
                   {!isExporting && <MessageSessionActions message={message} />}
                   <span>{formattedTime}</span>
+                  {!isExporting && <MessageDeliveryStatus message={message} />}
                 </div>
               </div>
             ) : (
@@ -165,6 +167,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
               <div className="flex items-center justify-end gap-1 text-xs text-muted-foreground">
                 {!isExporting && <MessageSessionActions message={message} />}
                 <span>{formattedTime}</span>
+                {!isExporting && <MessageDeliveryStatus message={message} />}
               </div>
             )}
           </div>

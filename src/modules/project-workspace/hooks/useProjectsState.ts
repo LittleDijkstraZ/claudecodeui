@@ -386,7 +386,6 @@ export function useProjectsState({
   navigate,
   subscribe,
   isMobile,
-  isSessionProcessing,
 }: UseProjectsStateArgs) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
@@ -820,8 +819,10 @@ export function useProjectsState({
       if (
         currentSelectedSession
         && upsert.sessionId === currentSelectedSession.id
-        && !isSessionProcessing(upsert.sessionId)
       ) {
+        // A Shell execution may append to this transcript while a separate
+        // Chat Workflow remains active. Busy state does not make disk updates
+        // redundant; the history store reconciles them with in-flight text.
         setExternalMessageUpdate((prev) => prev + 1);
       }
       if (messagesAdvanced) {
@@ -909,7 +910,7 @@ export function useProjectsState({
     };
 
     return subscribe(handleEvent);
-  }, [isSessionProcessing, markSessionAttention, navigate, refreshProjectsSilently, sessionId, subscribe]);
+  }, [markSessionAttention, navigate, refreshProjectsSilently, sessionId, subscribe]);
 
   useEffect(() => {
     return () => {

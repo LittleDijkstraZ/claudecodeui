@@ -23,8 +23,8 @@ const emit = (event: ServerEvent) => act(() => { for (const listener of listener
 const upsert = (id: string, update: Partial<ProjectSession>) => ({
   kind: 'session_upserted', sessionId: id, provider: 'claude', session: { id, ...update }, project,
 });
-const setup = async () => {
-  const hook = renderHook(() => useProjectsState({ sessionId: 'one', navigate, subscribe, isMobile: false, isSessionProcessing }));
+const setup = async (processing = isSessionProcessing) => {
+  const hook = renderHook(() => useProjectsState({ sessionId: 'one', navigate, subscribe, isMobile: false, isSessionProcessing: processing }));
   await waitFor(() => expect(hook.result.current.selectedSession?.id).toBe('one'));
   return hook;
 };
@@ -111,4 +111,15 @@ test('replayed completion metadata does not turn an already read completion unre
   expect(unread(hook, 'one')).toBe(false);
   emit({ ...completion, eventId: 'execution-2:complete' });
   expect(unread(hook, 'one')).toBe(true);
+});
+
+
+test('a selected session updated from Shell refreshes history while a Chat query is still running', async () => {
+  const hook = await setup(() => true);
+  const before = hook.result.current.externalMessageUpdate;
+  emit(upsert('one', { messageCount: 0, lastActivity: '2026-01-02T00:00:00Z' }));
+  expect(hook.result.current.externalMessageUpdate).toBe(before + 1);
+  expect(unread(hook, 'one')).toBe(false);
+  emit(upsert('two', { messageCount: 0 }));
+  expect(hook.result.current.externalMessageUpdate).toBe(before + 1);
 });

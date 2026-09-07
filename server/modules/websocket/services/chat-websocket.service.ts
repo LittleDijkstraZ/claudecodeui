@@ -72,6 +72,7 @@ export type ProviderRuntimeGateway = {
     options: AnyRecord,
     writer: ProviderRuntimeWriter,
   ): Promise<unknown>;
+  enqueue?(provider: LLMProvider, sessionId: string, command: string, options: AnyRecord): Promise<boolean>;
   abort(provider: LLMProvider, sessionId: string): Promise<boolean>;
   resolveToolApproval(requestId: string, payload: ProviderPermissionDecision): void;
   getPendingApprovalsForSession(sessionId: string): unknown[];
@@ -122,13 +123,16 @@ function sendProtocolError(
   ws: WebSocket,
   code: string,
   error: string,
-  sessionId?: string
+  sessionId?: string,
+  clientMessageId?: string
 ): void {
   sendJson(ws, {
     kind: 'protocol_error',
     code,
     error,
+    ...(clientMessageId ? { clientMessageId } : {}),
     sessionId: sessionId ?? null,
+    isProcessing: Boolean(sessionId && chatRunRegistry.isProcessing(sessionId)),
     timestamp: new Date().toISOString(),
   });
 }
@@ -175,7 +179,7 @@ function resolveSendTarget(
 ): ResolvedSendTarget | null {
   const sessionId = readRequiredSessionId(data);
   if (!sessionId) {
-    sendProtocolError(ws, 'SESSION_ID_REQUIRED', `${frameName} requires a sessionId.`);
+    sendProtocolError(ws, 'SESSION_ID_REQUIRED', `${frameName} requires a sessionId.`, undefined, data.clientMessageId);
     return null;
   }
 
@@ -185,14 +189,14 @@ function resolveSendTarget(
       ws,
       'SESSION_NOT_FOUND',
       `Session "${sessionId}" was not found. Create it via POST /api/providers/sessions first.`,
-      sessionId
+      sessionId, data.clientMessageId
     );
     return null;
   }
 
   const provider = session.provider as LLMProvider;
   if (!dependencies.runtime.hasRuntime(provider)) {
-    sendProtocolError(ws, 'UNSUPPORTED_PROVIDER', `Provider "${provider}" is not available.`, sessionId);
+    sendProtocolError(ws, 'UNSUPPORTED_PROVIDER', `Provider "${provider}" is not available.`, sessionId, data.clientMessageId);
     return null;
   }
 
@@ -217,41 +221,8 @@ async function dispatchRun(
 ): Promise<{ started: boolean; error: string | null }> {
   const provider = session.provider as LLMProvider;
 
-  const run = chatRunRegistry.startRun({
-    appSessionId: sessionId,
-    provider,
-    providerSessionId: session.provider_session_id,
-    connection: ws,
-    userId,
-  });
-
-  if (!run) {
-    if (ws) {
-      sendProtocolError(
-        ws,
-        'RUN_IN_PROGRESS',
-        `Session "${sessionId}" already has a run in progress.`,
-        sessionId
-      );
-    }
-    return { started: false, error: 'A run is already in progress for this session.' };
-  }
-
   const clientOptions = (data.options ?? {}) as AnyRecord;
   const command = typeof data.content === 'string' ? data.content : '';
-
-  // Group-created drafts have no initial message at allocation time. Name only
-  // accepted sends so a rejected competing send cannot rename the conversation.
-  sessionsService.initializeAppSessionName(sessionId, command);
-
-  // Initialize draft choices once. Claude launches reread the canonical session
-  // selection, so a stale browser cannot overwrite a newer saved choice here.
-  if ((provider !== 'claude' || !session.model) && typeof clientOptions.model === 'string' && clientOptions.model.trim()) {
-    providerModelsService.setSessionModel(provider, sessionId, clientOptions.model);
-  }
-  if ((provider !== 'claude' || !session.effort) && typeof clientOptions.effort === 'string' && clientOptions.effort.trim()) {
-    providerModelsService.setSessionEffort(provider, sessionId, clientOptions.effort);
-  }
 
   const attachmentCandidates = [
     ...normalizeAttachmentDescriptors(clientOptions.images),
@@ -272,6 +243,7 @@ async function dispatchRun(
   const runtimeOptions: AnyRecord = {
     ...clientOptions,
     ...extraRuntimeOptions,
+    clientMessageId: data.clientMessageId,
     // Attachments are re-validated server-side: only direct children of the
     // global upload store may reach provider runtimes or their file tools.
     attachments: uniqueAttachments,
@@ -281,6 +253,73 @@ async function dispatchRun(
     cwd: session.project_path ?? clientOptions.cwd ?? undefined,
     projectPath: session.project_path ?? clientOptions.projectPath,
   };
+
+  const clientMessageId = typeof data.clientMessageId === 'string' ? data.clientMessageId : undefined;
+  if (data.clientMessageId !== undefined && (!clientMessageId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientMessageId))) {
+    if (ws) sendProtocolError(ws, 'INVALID_MESSAGE_ID', 'A valid client message UUID is required.', sessionId, clientMessageId);
+    return { started: false, error: 'Invalid client message identifier.' };
+  }
+  const existing = chatRunRegistry.getRun(sessionId);
+  const previousReceipt = clientMessageId ? existing?.messageReceipts.get(clientMessageId) : undefined;
+  if (existing?.status === 'completed' && previousReceipt) {
+    if (String(existing.writer.userId) !== String(userId) || previousReceipt.content !== command
+      || JSON.stringify([previousReceipt.images ?? [], previousReceipt.files ?? []]) !== JSON.stringify([runtimeOptions.images ?? [], runtimeOptions.files ?? []])) {
+      if (ws) sendProtocolError(ws, 'MESSAGE_ID_CONFLICT', 'This message identifier cannot be reused for another send.', sessionId, clientMessageId);
+      return { started: false, error: 'Message identifier conflict.' };
+    }
+    // A retry after completion may repeat its receipt, never launch the same prompt again.
+    if (ws) sendJson(ws, previousReceipt);
+    return { started: true, error: null };
+  }
+  if (existing?.status === 'running' && provider === 'claude' && dependencies.runtime.enqueue && !beforeRun && Object.keys(extraRuntimeOptions).length === 0 && clientMessageId) {
+    if (String(existing.writer.userId) !== String(userId)) {
+      if (ws) sendProtocolError(ws, 'RUN_OWNER_MISMATCH', 'This process belongs to a different authenticated user.', sessionId, clientMessageId);
+      return { started: false, error: 'Run owner mismatch.' };
+    }
+    if (ws) chatRunRegistry.attachConnection(sessionId, ws);
+    try {
+      if (!await dependencies.runtime.enqueue(provider, sessionId, command, runtimeOptions)) throw new Error('The existing Claude input stream is not ready. This message was not submitted; retry after its state updates.');
+      return { started: true, error: null };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      if (ws) sendProtocolError(ws, 'INPUT_NOT_ACCEPTED', reason, sessionId, clientMessageId);
+      return { started: false, error: reason };
+    }
+  }
+
+  const run = chatRunRegistry.startRun({
+    appSessionId: sessionId,
+    provider,
+    providerSessionId: session.provider_session_id,
+    connection: ws,
+    userId,
+  });
+
+  if (!run) {
+    if (ws) {
+      sendProtocolError(
+        ws,
+        'RUN_IN_PROGRESS',
+        `Session "${sessionId}" already has a run in progress.`,
+        sessionId,
+        clientMessageId
+      );
+    }
+    return { started: false, error: 'A run is already in progress for this session.' };
+  }
+
+  // Group-created drafts have no initial message at allocation time. Name only
+  // accepted sends so a rejected competing send cannot rename the conversation.
+  sessionsService.initializeAppSessionName(sessionId, command);
+
+  // Initialize draft choices once. Claude launches reread the canonical session
+  // selection, so a stale browser cannot overwrite a newer saved choice here.
+  if ((provider !== 'claude' || !session.model) && typeof clientOptions.model === 'string' && clientOptions.model.trim()) {
+    providerModelsService.setSessionModel(provider, sessionId, clientOptions.model);
+  }
+  if ((provider !== 'claude' || !session.effort) && typeof clientOptions.effort === 'string' && clientOptions.effort.trim()) {
+    providerModelsService.setSessionEffort(provider, sessionId, clientOptions.effort);
+  }
 
   let failure: string | null = null;
   try {
@@ -490,6 +529,7 @@ function handleChatSubscribe(
       kind: 'chat_subscribed',
       sessionId,
       isProcessing,
+      ...(run?.runtimeState ?? {}),
       lastSeq: run?.lastSeq ?? 0,
       pendingPermissions,
       timestamp: new Date().toISOString(),

@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, expect, test, vi } from 'vitest';
 const api = vi.hoisted(() => ({ forkSession: vi.fn(), deleteSession: vi.fn(), renameSession: vi.fn() }));
 vi.mock('@/shared/api', () => ({ hubApi: api }));
-import { HubConversationDialog } from '@/modules/remote-hub/HubConversationDialog';
+import { HubConversationDialog } from '@/modules/remote-hub/modals/HubConversationDialog';
 const member = { remoteId: 'beta', sessionId: 'same', title: 'Study', provider: 'claude', projectId: 'p', projectPath: '/remote/project' };
 beforeEach(() => { vi.resetAllMocks(); api.forkSession.mockResolvedValue({ sessionId: 'fork', sessionName: 'Branch' }); });
 test('fork targets its own machine and a failed group save can retry without duplicating the fork', async () => {

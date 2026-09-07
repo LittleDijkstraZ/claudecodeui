@@ -158,8 +158,16 @@ export type InstallMode = 'git' | 'npm';
 
 //----------------- SESSION PROCESSING STATE ------------
 
-/** What a session that is currently producing a response is doing, as shown by the activity indicator. */
-export type SessionActivity = {
+/** Authoritative state of a live Claude execution; background work keeps the run alive without blocking its input stream. */
+export type SessionRuntimeState = {
+  phase?: 'foreground' | 'background';
+  acceptsInput?: boolean;
+  backgroundTasks?: number;
+  executionId?: string;
+};
+
+/** What a live session is doing; presence protects its execution even while only background tasks remain. */
+export type SessionActivity = SessionRuntimeState & {
   /** Provider-supplied status line; null renders the default activity label. */
   statusText: string | null;
   canInterrupt: boolean;
@@ -176,7 +184,7 @@ export type SessionActivityMap = ReadonlyMap<string, SessionActivity>;
 /** Marks a session as producing a response; call it as soon as a send is dispatched so the UI reacts immediately. */
 export type MarkSessionProcessing = (
   sessionId?: string | null,
-  activity?: { statusText?: string | null; canInterrupt?: boolean },
+  activity?: SessionRuntimeState & { statusText?: string | null; canInterrupt?: boolean },
 ) => void;
 
 /** Marks a session as finished; `ifStartedBefore` lets a late acknowledgement clear only a stale run. */
@@ -194,7 +202,7 @@ export type SyncProcessingSessions = (
 export type IsSessionProcessing = (sessionId?: string | null) => boolean;
 
 /** One running session as reported by the server, before it is folded into the client-side activity map. */
-export type SessionActivitySnapshot = {
+export type SessionActivitySnapshot = SessionRuntimeState & {
   sessionId: string;
   statusText?: string | null;
   canInterrupt?: boolean;
@@ -286,9 +294,15 @@ export type SubagentInfo = {
   activityCount?: number;
 };
 
+/** Delivery of a client-addressed user message; only a remote Claude acknowledgement can mark it delivered. */
+export type ChatMessageDelivery = 'queued' | 'delivered' | 'failed';
+
 /** One rendered entry in a chat transcript — user turn, assistant turn, tool call and result, local command output, or subagent container — and the shape the chat message list and message components consume. */
 export type ChatMessage = {
   type: string;
+  clientMessageId?: string;
+  delivery?: ChatMessageDelivery;
+  deliveryError?: string;
   content?: string;
   displayText?: string;
   timestamp: string | number | Date;
@@ -408,6 +422,9 @@ type QuestionOption = {
 /** A provider-agnostic transcript event as normalized by the backend adapters, with all kind-specific fields kept flat; it is the shape the session store holds and that chat converts into ChatMessage for rendering, so treat it as the wire contract rather than a view model. */
 export type NormalizedMessage = {
   id: string;
+  clientMessageId?: string;
+  delivery?: ChatMessageDelivery;
+  deliveryError?: string;
   /**
    * The provider's own id for the transcript row behind this message, when the
    * provider has stable per-row identity (today: Claude). Sent back as the
@@ -1684,6 +1701,29 @@ export type HubGroupState = {
   groups: HubGroup[];
   imported: string[];
 };
+/** A remote-bound row mutation shown by the Hub conversation dialog. */
+export type HubConversationAction = { kind: 'fork' | 'delete' | 'rename'; member: HubConversation; groupId?: string };
+
+/** User action shown in the unified Hub group or new-conversation dialog. */
+export type HubDialogState = {
+  kind: 'group';
+  group?: HubGroup;
+} | {
+  kind: 'remove';
+  group: HubGroup;
+} | {
+  kind: 'assign';
+  member: HubConversation;
+} | {
+  kind: 'new';
+  groupId?: string;
+  remoteId?: string;
+  projectId?: string;
+};
+
+/** Existing directories reported by a selected remote, with its canonical current path. */
+export type HubDirectoryListing = { path: string; suggestions: FolderSuggestion[] };
+
 /** Independent connection and session snapshot for one machine. */
 export type HubRemoteState = {
   status: 'loading' | 'online' | 'offline' | 'login';
@@ -1782,6 +1822,7 @@ export type ClaudeUsageContext = {
 export type ClaudeUsageTurn = {
   id: string; status: 'running' | 'complete' | 'error' | 'interrupted'; models: Record<string, ClaudeUsageModelCounters>;
   estimatedCostUsd: number | null; coverage: 'sdk-query-pipeline' | 'observed-requests';
+  userMessageCount?: number;
 };
 /** Shared REST/history/live snapshot. Revision is durable and monotonic per stable app session on one remote. */
 export type ClaudeUsageSnapshot = {

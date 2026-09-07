@@ -215,8 +215,11 @@ export async function initializeSessionsWatcher(): Promise<void> {
         followSymlinks: false,
         depth: 6,
         usePolling: true,
-        interval: 6_000,
-        binaryInterval: 6_000,
+        // External Shell sessions persist their transcript without a Chat
+        // websocket stream. Keep disk catch-up responsive on network mounts,
+        // retaining polling reliability and the existing debounced batch.
+        interval: 1_000,
+        binaryInterval: 1_000,
       });
 
       watcher

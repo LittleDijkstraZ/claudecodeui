@@ -18,7 +18,7 @@ describe('model evidence in the existing menu', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Select model and reasoning effort' }));
     await waitFor(() => expect(screen.getByText('remote-reported-exact')).toBeTruthy());
     expect(screen.getByText('Last response:', { exact: false })).toBeTruthy();
-    expect(screen.getByText('本次执行与下轮设置')).toBeTruthy();
+    expect(screen.getByText('本次执行与下次启动设置')).toBeTruthy();
     expect(screen.queryByText(/执行配置 · 实际模型未确认/)).toBeNull();
     fireEvent.keyDown(document, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByTestId('model-identity-summary')).toBeNull());

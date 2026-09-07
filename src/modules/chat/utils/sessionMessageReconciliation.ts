@@ -42,6 +42,15 @@ function findServerEchoForLocalUser(
   serverMessages: NormalizedMessage[],
   claimedServerIds: Set<string>,
 ): NormalizedMessage | null {
+  // Queued multi-turn sends can repeat earlier text. A stamped client UUID
+  // provides identity, so only that exact persisted send can retire its echo.
+  if (localMessage.clientMessageId) {
+    return serverMessages.find(message => !claimedServerIds.has(message.id)
+      && message.kind === 'text' && message.role === 'user'
+      && (message.clientMessageId === localMessage.clientMessageId
+        || message.id === localMessage.clientMessageId
+        || message.transcriptAnchorId === localMessage.clientMessageId)) ?? null;
+  }
   const localFingerprint = userTurnFingerprint(localMessage);
   const localTime = readMessageTime(localMessage);
   if (!localFingerprint || localTime === null) {
@@ -103,7 +112,7 @@ export function removeOptimisticUserEchoes(
   const claimedServerIds = new Set<string>();
 
   return realtimeMessages.filter((message) => {
-    if (!message.id.startsWith('local_')) {
+    if (!message.clientMessageId && !message.id.startsWith('local_')) {
       return true;
     }
 

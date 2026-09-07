@@ -123,7 +123,8 @@
       "ctrlEnter": "Ctrl+Enter 发送 • Shift+Enter 换行 • Tab 切换模式 • / 斜杠命令",
       "enter": "Enter 发送 • Shift+Enter 换行 • Tab 切换模式 • / 斜杠命令",
       "queue": "Enter 排队发送下一条消息",
-      "updateQueued": "Enter 更新排队消息"
+      "updateQueued": "Enter 更新排队消息",
+      "liveQueue": "按 Enter 发送到当前对话"
     },
     "clickToChangeMode": "点击更改权限模式（或在输入框中按 Tab）",
     "showAllCommands": "显示所有命令",
@@ -232,7 +233,9 @@
     },
     "providers": {
       "assistant": "Assistant"
-    }
+    },
+    "background": "{{count}} 个后台任务",
+    "acceptingInput": "可以继续发送消息"
   },
   "projectSelection": {
     "startChatWithProvider": "选择一个项目以开始与 {{provider}} 聊天"
@@ -242,7 +245,12 @@
   },
   "message": {
     "editAndResend": "编辑并重新发送",
-    "forkFromHere": "从此处派生"
+    "forkFromHere": "从此处派生",
+    "delivery": {
+      "queued": "等待处理",
+      "delivered": "已送达",
+      "failed": "未确认送达"
+    }
   },
   "export": {
     "trigger": "导出对话",
@@ -351,7 +359,8 @@
     "unconfirmed": "尚未确认",
     "selected": "已选择",
     "followRemote": "跟随远端配置",
-    "reasoning": "推理强度"
+    "reasoning": "推理强度",
+    "continuesExecution": "当前进程沿用已生效配置；更改将在下一次启动会话执行时生效。"
   },
   "sessionActions": {
     "menu": "消息操作",
@@ -430,6 +439,7 @@
     "legacyExplanation": "当前连接尚未返回可核对的 Claude 统计。旧数值可能混合单次请求与多次请求的消耗，不能据此确认当前上下文、本轮消耗或整个对话累计。",
     "awaitingExplanation": "这个对话尚未收到可核对的统计。缺少数据不代表消耗为零。",
     "unverifiedValue": "未核对的原始数值（仅供参考）",
-    "legacyRefresh": "这台机器的 CloudCLI 更新完成后，请刷新页面。新版会分别显示当前上下文、本轮消耗和整个对话累计；历史数据不完整时仍会注明。"
+    "legacyRefresh": "这台机器的 CloudCLI 更新完成后，请刷新页面。新版会分别显示当前上下文、本轮消耗和整个对话累计；历史数据不完整时仍会注明。",
+    "sharedExecution": "此执行中 {{count}} 条消息的合计；SDK 不能完整拆分后台任务的归属。"
   }
 }

@@ -26,6 +26,7 @@ import type { McpServerConfig, Options, Query, SDKUserMessage } from '@anthropic
 
 import type { AnyRecord, IProviderRuntime, ProviderModelsDefinition, ProviderPermissionDecision, ProviderRuntimeContext, ProviderRuntimeWriter } from '@/shared/index.js';
 import { createClaudeTextStream } from '@/modules/providers/list/claude/claude-text-stream.js';
+import { createClaudeInputQueue } from '@/modules/providers/list/claude/claude-input-queue.js';
 import { createClaudeBackgroundWorkTracker } from '@/modules/providers/list/claude/claude-background-work.js';
 import {
   appendFilesInputTag,
@@ -55,6 +56,7 @@ type ActiveSession = {
   status: 'active' | 'aborted';
   writer: ProviderRuntimeWriter | null;
   releaseInput: (() => void) | null;
+  enqueue?: (command: string, options: AnyRecord) => Promise<boolean>;
 };
 type ApprovalDecision = Partial<ProviderPermissionDecision> & { cancelled?: boolean };
 type ApprovalMetadata = {
@@ -73,35 +75,17 @@ type RuntimeDependencies = {
 };
 
 const activeSessions = new Map<string, ActiveSession>();
+const startingSessions = new Set<string>();
 const pendingToolApprovals = new Map<string, ApprovalResolver>();
 // Sessions cancelled via abort-session. The abort handler already sent the
 // terminal `complete` (aborted: true) to the client, so the run loop must not
 // emit a second one when its generator winds down.
 const abortedSessionIds = new Set<string>();
-// Query instances interrupted because a newer run took over their session id
-// (see addSession). Their run loops must stay silent on wind-down: the map
-// entry, the abort flag, and all client-facing events belong to the new run.
-const supersededInstances = new WeakSet<Query>();
-
 const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS || '', 10) || 55000;
 
-// How long background work is allowed to keep running after a turn ends. This drives
-// two halves of the same behaviour:
-//
-//  1. Passed to the spawned CLI as CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS, which is how
-//     long it waits for still-running background *agents* before killing them.
-//  2. A backstop on how long we hold the SDK's stdin open after a turn's `result`.
-//     The SDK closes stdin as soon as a turn ends, and the CLI reads that EOF as
-//     "print wind-down" — killing background *shells* after a short grace period,
-//     which the ceiling above does not cover. Holding stdin open also lets the CLI
-//     push follow-up turns (background-task completions, Monitor notifications,
-//     scheduled wake-ups).
-//
-// The hold normally ends long before this: a turn with nothing outstanding closes
-// stdin immediately, background work releases it as soon as it reports back, and a
-// new turn supersedes the previous hold. This ceiling only catches background work
-// that never reports at all, so an abandoned session cannot leak a CLI process
-// forever. The timer resets on every message, so it measures silence, not total time.
+// Grace period for legacy background tools without explicit task lifetimes.
+// A known Workflow keeps stdin open until native completion or the user's explicit stop.
+// The native CLI also receives this ceiling for its own post-EOF agent cleanup.
 const BG_WAIT_CEILING_MS = 30 * 60 * 1000;
 
 const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion', 'ExitPlanMode']);
@@ -221,6 +205,7 @@ export function mapCliOptionsToSDK(options: AnyRecord = {}): Options {
 
   const sdkOptions: Options = {};
   sdkOptions.includePartialMessages = true;
+  sdkOptions.forwardSubagentText = true;
   sdkOptions.enableFileCheckpointing = true;
   sdkOptions.extraArgs = { 'replay-user-messages': null };
 
@@ -297,33 +282,18 @@ export function mapCliOptionsToSDK(options: AnyRecord = {}): Options {
  */
 function addSession(sessionId: string, queryInstance: Query, writer: ProviderRuntimeWriter | null = null, releaseInput: (() => void) | null = null) {
   const existing = activeSessions.get(sessionId);
-  // A different live instance under the same key means an earlier run was
-  // superseded without being stopped (e.g. an abort that raced run setup and
-  // found nothing to interrupt). Overwriting it here would strand its
-  // generator forever — this map entry is the only handle for interrupting
-  // it. Stop it directly rather than via abortClaudeSDKSession, whose
-  // session-keyed abortedSessionIds flag would be consumed by the new run
-  // and suppress its terminal `complete`.
-  const superseding = Boolean(
-    existing && existing.status === 'active' && existing.instance && existing.instance !== queryInstance
-  );
-  if (superseding && existing) {
-    supersededInstances.add(existing.instance);
-    Promise.resolve()
-      .then(() => existing.instance.interrupt())
-      .catch((error) => {
-        console.error(`Error interrupting superseded run for session ${sessionId}:`, error?.message || error);
-      });
-    existing.releaseInput?.();
+  if (existing?.status === 'active' && existing.instance !== queryInstance) {
+    throw new Error('Claude already owns this session. Its running process must not be replaced.');
   }
-  const carried = superseding ? null : existing;
+  const carried = existing;
   activeSessions.set(sessionId, {
     instance: queryInstance,
     startTime: carried?.startTime || Date.now(),
     status: 'active',
     writer,
     // Re-registered mid-run once the provider session id lands; keep the closer.
-    releaseInput: releaseInput || carried?.releaseInput || null
+    releaseInput: releaseInput || carried?.releaseInput || null,
+    enqueue: carried?.enqueue
   });
 }
 
@@ -540,32 +510,6 @@ async function buildPromptMessages(command: string, images: unknown, files: unkn
 }
 
 /**
- * Wraps prompt messages in an async iterable that yields them and then parks.
- *
- * The SDK closes the CLI's stdin as soon as its input iterable is exhausted (and
- * immediately on `result` for string prompts). The CLI reads that EOF as the end
- * of the run and kills anything still going in the background, so the iterable
- * has to stay pending until we actually want the process gone.
- *
- * @param {Array<Object>} messages - SDKUserMessage records to send
- * @returns {{ stream: AsyncIterable, release: () => void }} Stream plus its closer
- */
-function createHeldPromptStream(messages: SDKUserMessage[]) {
-  let release!: () => void;
-  const held = new Promise<void>((resolve) => { release = resolve; });
-
-  const stream = (async function* () {
-    for (const message of messages) {
-      yield message;
-    }
-    // Keeps stdin open — the CLI stays alive until release() is called.
-    await held;
-  })();
-
-  return { stream, release };
-}
-
-/**
  * Loads MCP server configurations from ~/.claude.json
  * @param {string} cwd - Current working directory for project-specific configs
  * @returns {Object|null} MCP servers object or null if none found
@@ -633,6 +577,7 @@ async function loadMcpConfig(cwd?: string): Promise<Record<string, McpServerConf
 async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderRuntimeWriter, context: ProviderRuntimeContext, dependencies: RuntimeDependencies) {
   const { sessionId, sessionSummary } = options;
   const executionId = options.executionId || crypto.randomUUID();
+  const initialMessageId = options.clientMessageId || crypto.randomUUID();
   let usageRun: Awaited<ReturnType<typeof claudeUsageService.beginRun>> | null = null;
   const publishUsage = (snapshot: unknown) => {
     if (snapshot) ws.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: snapshot, sessionId: sessionId || capturedSessionId || null, provider: 'claude' }));
@@ -659,21 +604,47 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
   // stream exists; the finally block calls it no matter how the run ends.
   let releasePromptStream = () => {};
   let idleReleaseTimer: ReturnType<typeof setTimeout> | null = null;
-  // Legacy background tools retain their early UI completion. Workflows keep
-  // the current run active through the workflow's final follow-up result.
+  // Runtime completion is separate from each foreground reply.
   let turnCompleteSent = false;
   let lastResultFailed = false;
-  let holdExpired = false;
   const backgroundWork = createClaudeBackgroundWorkTracker();
   // True while the process is being held open for background work, so a later
   // `result` can be recognised as that work reporting back.
   let heldForBackgroundWork = false;
 
-  // A new turn supersedes any earlier one still holding this session's process
-  // open, so held runs cannot stack up across a conversation.
-  if (sessionKey()) {
-    getSession(sessionKey()!)?.releaseInput?.();
-  }
+  if (sessionKey() && getSession(sessionKey()!)?.status === 'active') throw new Error('Claude already owns this session. Send through its existing input stream.');
+  let foreground = true;
+  let streamStarted = false;
+  let streamGeneration = 0;
+  const pendingUsageSummaries = new Set<Promise<void>>();
+  const inputQueue = createClaudeInputQueue((entry, error) => {
+    ws.send(createNormalizedMessage({ kind: 'status', text: 'message_delivery', provider: 'claude', sessionId: sessionKey(),
+      clientMessageId: entry.id, transcriptAnchorId: entry.delivery === 'delivered' ? entry.id : undefined,
+      delivery: entry.delivery, content: entry.command, images: entry.images, files: entry.files, timestamp: entry.timestamp, executionId, ...(error ? { error } : {}) }));
+  });
+  releasePromptStream = inputQueue.release;
+  const emitRuntimeState = () => ws.send(createNormalizedMessage({ kind: 'status', text: 'claude_runtime_state', provider: 'claude', sessionId: sessionKey(),
+    phase: foreground ? 'foreground' : 'background', acceptsInput: streamStarted && inputQueue.isOpen(), backgroundTasks: backgroundWork.pendingCount(), executionId }));
+  const enqueueInput = async (command: string, next: AnyRecord): Promise<boolean> => {
+    if (!streamStarted || !inputQueue.isOpen()) return false;
+    if (next.cwd && path.resolve(next.cwd) !== path.resolve(options.cwd)) throw new Error('The queued message must use this Claude process’s project folder.');
+    if (typeof next.clientMessageId !== 'string') throw new Error('A message identifier is required for the existing input stream.');
+    const slot = inputQueue.begin(next.clientMessageId, command, false, { images: next.images, files: next.files });
+    if (!slot) return true;
+    if (idleReleaseTimer) { clearTimeout(idleReleaseTimer); idleReleaseTimer = null; }
+    try {
+      const messages = await buildPromptMessages(command, next.images, next.files, options.cwd);
+      slot.commit(messages);
+      publishUsage(usageRun?.noteUserMessage?.(next.clientMessageId));
+      emitRuntimeState();
+      return true;
+    } catch (error) { slot.fail(error instanceof Error ? error.message : String(error)); throw error; }
+  };
+  const registerInput = () => {
+    if (!sessionKey() || !queryInstance) return;
+    addSession(sessionKey()!, queryInstance, ws, releasePromptStream);
+    getSession(sessionKey()!)!.enqueue = enqueueInput;
+  };
 
   // Arms (or re-arms) the idle countdown that eventually closes stdin.
   const scheduleRelease = () => {
@@ -683,15 +654,16 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
     }
     idleReleaseTimer = setTimeout(() => {
       idleReleaseTimer = null;
-      holdExpired = backgroundWork.hasPendingWorkflow();
+      // An active Workflow or a submitted message is not an idle process. Never kill either to free the composer.
+      if (backgroundWork.hasPendingWorkflow() || inputQueue.hasPending() || foreground) return;
       releasePromptStream();
+      emitRuntimeState();
     }, dependencies.waitCeilingMs);
     // Never let the hold keep the server process alive on its own.
     idleReleaseTimer.unref?.();
   };
 
-  // Hoisted above the try so the catch's cleanup can tell whether this run
-  // still owns the activeSessions entry (or was superseded by a newer run).
+  // Cleanup removes only the entry owned by this query.
   let queryInstance: Query | null = null;
   let executionRecorded = false;
   const textStream = createClaudeTextStream((message, sid) => context.normalizeMessage(transformMessage(message as AnyRecord), sid));
@@ -708,6 +680,7 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
     }
     if (dependencies.usage && sessionId) {
       usageRun = await dependencies.usage.beginRun({ sessionId, executionId, providerSessionId: capturedSessionId || null });
+      publishUsage(usageRun.noteUserMessage?.(initialMessageId));
       publishUsage(usageRun.snapshot());
     }
     const resolvedModel = options.executionSettings?.model ?? await context.resolveResumeModel(sessionId, options.model);
@@ -730,10 +703,10 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
       sdkOptions.mcpServers = mcpServers;
     }
 
-    // Every turn uses streaming input so stdin stays open past the turn's
-    // `result`. The message list is reusable, but each query attempt needs its
-    // own stream because an async generator cannot be replayed once consumed.
+    // One continuous input stream belongs to this native process, including follow-up messages.
+    const initialSlot = inputQueue.begin(initialMessageId, command, true, { images: options.images, files: options.files })!;
     const promptMessages = await buildPromptMessages(command, options.images, options.files, options.cwd);
+    initialSlot.commit(promptMessages);
 
     sdkOptions.hooks = {
       Notification: [{
@@ -857,27 +830,10 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
       return { behavior: 'deny', message: decision.message ?? 'User denied tool use' };
     };
 
-    let heldPrompt = createHeldPromptStream(promptMessages);
-    releasePromptStream = heldPrompt.release;
-    try {
-      queryInstance = dependencies.query({
-        prompt: heldPrompt.stream,
-        options: sdkOptions
-      });
-    } catch (hookError) {
-      // Older/newer SDK versions may not accept hook shapes yet.
-      // Keep notification behavior operational via runtime events even if hook registration fails.
-      console.warn('Failed to initialize Claude query with hooks, retrying without hooks:', hookError instanceof Error ? hookError.message : String(hookError));
-      delete sdkOptions.hooks;
-      // Discard the abandoned stream and build a fresh one for the retry.
-      heldPrompt.release();
-      heldPrompt = createHeldPromptStream(promptMessages);
-      releasePromptStream = heldPrompt.release;
-      queryInstance = dependencies.query({
-        prompt: heldPrompt.stream,
-        options: sdkOptions
-      });
-    }
+    queryInstance = dependencies.query({ prompt: inputQueue.stream, options: sdkOptions });
+    streamStarted = true;
+    registerInput();
+    emitRuntimeState();
 
     // Read metadata only from the query the user already requested.
     if (typeof queryInstance.supportedModels === 'function') {
@@ -890,6 +846,7 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
       const settingsQuery = queryInstance as Query & { getSettings?: () => Promise<unknown> };
       if (!executionRecorded || typeof settingsQuery?.getSettings !== 'function') return;
       const expected = claudeExecutionRecords.get(executionId)?.observed || {};
+      const generation = streamGeneration;
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         const result = await Promise.race([
@@ -897,7 +854,7 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
           new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), 1500); timer.unref?.(); }),
         ]);
         const applied = (result as { applied?: Record<string, unknown> } | null)?.applied;
-        if (!applied) return;
+        if (!applied || streamGeneration !== generation || getSession(sessionKey()!)?.instance !== queryInstance) return;
         const observed: { effort?: string | null; ultracode?: boolean; source: string } = { source: 'runtime-applied-settings' };
         if (typeof applied.effort === 'string' || applied.effort === null) observed.effort = applied.effort;
         if (typeof applied.ultracode === 'boolean') observed.ultracode = applied.ultracode;
@@ -908,21 +865,25 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
 
     // Track the query instance for abort capability
     if (sessionKey()) {
-      addSession(sessionKey()!, queryInstance, ws, releasePromptStream);
+      registerInput();
     }
 
     // Process streaming messages
     console.log('Starting async generator loop for session:', capturedSessionId || 'NEW');
     for await (const sdkMessage of queryInstance) {
-      if (supersededInstances.has(queryInstance)) break;
       // SDK messages are validated by the SDK; its newer additive event fields
       // are intentionally accepted here while the normalizer guards their shape.
       const message: AnyRecord = sdkMessage;
+      streamGeneration++;
+      inputQueue.observe(message);
+      if (!message.parent_tool_use_id && !message.isSidechain && (message.type === 'assistant' || message.type === 'stream_event' && message.event?.type === 'message_start')) {
+        if (!foreground) { foreground = true; emitRuntimeState(); }
+      }
       // Capture session ID from first message
       if (message.session_id && !capturedSessionId) {
 
         capturedSessionId = message.session_id;
-        addSession(sessionKey()!, queryInstance, ws, releasePromptStream);
+        registerInput();
 
         // Set session ID on writer
         if (ws.setSessionId && typeof ws.setSessionId === 'function') {
@@ -943,7 +904,9 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
       const sid = capturedSessionId || sessionId || null;
 
       // Use adapter to normalize SDK events into NormalizedMessage[]
-      const normalized = textStream.normalize(message, sid);
+      // Delivery receipts already render our submitted prompt (including its attachments).
+      // Native user replay confirms delivery; forwarding it again would duplicate that bubble.
+      const normalized = inputQueue.ownsUserEcho(message) ? [] : textStream.normalize(message, sid);
       for (const msg of normalized) {
         // Preserve parentToolUseId from SDK wrapper for subagent tool grouping
         if (transformedMessage.parentToolUseId && !msg.parentToolUseId) {
@@ -965,15 +928,22 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
           claudeExecutionRecords.observe(executionId, { model, source: message.type === 'assistant' ? 'response' : 'initialization' });
         }
       }
-      if (!message.parent_tool_use_id && !message.isSidechain && ((message.type === 'system' && message.subtype === 'init') || message.type === 'result')) await refreshAppliedSettings();
+      if (!message.parent_tool_use_id && !message.isSidechain && ((message.type === 'system' && message.subtype === 'init') || message.type === 'result')) void refreshAppliedSettings();
       if (usageRun) {
         if (capturedSessionId) usageRun.bindProviderSessionId(capturedSessionId);
         publishUsage(usageRun.observe(message));
         // Explicit summary mode uses the existing process's local estimate;
         // the SDK's default full report may invoke the token-count API.
         if (message.type === 'result' && typeof queryInstance.getContextUsage === 'function') {
-          try { publishUsage(usageRun.observeContextSummary(await queryInstance.getContextUsage({ detail: 'summary' }))); }
-          catch { /* The last sampling observation remains available on older runtimes. */ }
+          const currentUsage = usageRun;
+          const revision = currentUsage.snapshot()?.revision;
+          const generation = streamGeneration;
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          // A slow optional control reply must never block subsequent text or task events.
+          const summaryRequest = Promise.race([queryInstance.getContextUsage({ detail: 'summary' }), new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), 1500); timer.unref?.(); })])
+            .then(summary => { if (summary && streamGeneration === generation && currentUsage.snapshot()?.revision === revision && getSession(sessionKey()!)?.instance === queryInstance) publishUsage(currentUsage.observeContextSummary(summary)); })
+            .catch(() => {}).finally(() => { if (timer) clearTimeout(timer); pendingUsageSummaries.delete(summaryRequest); });
+          pendingUsageSummaries.add(summaryRequest);
         }
       } else {
         // Injected transports/legacy callers can report per-request context,
@@ -984,6 +954,7 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
 
       const workflowProgress = backgroundWork.observe(message);
       if (workflowProgress) {
+        emitRuntimeState();
         ws.send(createNormalizedMessage({
           kind: 'status', provider: 'claude', sessionId: sid, workflow: true,
           canInterrupt: true, ...workflowProgress,
@@ -996,44 +967,31 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
         const abortPending = sessionKey() ? abortedSessionIds.has(sessionKey()!) : false;
         if (lastResultFailed && !abortPending) {
           const errors = Array.isArray(message.errors) ? message.errors.filter((error: unknown) => typeof error === 'string') : [];
-          const errorContent = errors.join('\n') || `Claude ended this turn with ${message.subtype || 'an error'}.`;
+          const errorContent = errors.join('\n') || (typeof message.result === 'string' ? message.result : '') || `Claude ended this turn with ${message.subtype || 'an error'}.`;
           ws.send(createNormalizedMessage({ kind: 'error', content: errorContent, sessionId: sid, provider: 'claude' }));
           notifyRunFailed({
             userId: ws.userId || null, provider: 'claude', sessionId: sessionId || capturedSessionId || null,
             sessionName: sessionSummary, error: errorContent,
           });
         }
-        if (turn.completeTurn && !turnCompleteSent && !abortPending) {
-          turnCompleteSent = true;
-          ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: lastResultFailed ? 1 : 0 }));
-          if (!lastResultFailed) notifyRunStopped({
-            userId: ws?.userId || null,
-            provider: 'claude',
-            sessionId: sessionId || capturedSessionId || null,
-            sessionName: sessionSummary,
-            stopReason: 'completed'
-          });
-        } else if (turnCompleteSent && turn.completeTurn && heldForBackgroundWork && !abortPending && !lastResultFailed) {
-          // A result after the turn already reported complete means the work we
-          // held the process open for has finished and pushed a follow-up turn.
-          notifyBackgroundWorkCompleted({
-            userId: ws?.userId || null,
-            provider: 'claude',
-            sessionId: sessionId || capturedSessionId || null,
-            sessionName: sessionSummary
+        foreground = false;
+        if (!abortPending) {
+          // A foreground result does not end the native runtime or its Workflow.
+          for (const msg of textStream.finish(sid)) ws.send(msg);
+          emitRuntimeState();
+          if (!lastResultFailed) ws.send(createNormalizedMessage({ kind: 'status', text: 'foreground_complete', provider: 'claude', sessionId: sid, executionId }));
+          if (heldForBackgroundWork && !backgroundWork.hasPendingWorkflow() && !lastResultFailed) notifyBackgroundWorkCompleted({
+            userId: ws.userId || null, provider: 'claude', sessionId: sessionKey(), sessionName: sessionSummary,
           });
         }
-        if (turn.holdInput) {
-          // Work started during this turn is still running. Hold the process
-          // open so it can finish and report back in a follow-up turn; the
-          // ceiling is only a backstop for work that never reports.
+        if (!abortPending && (backgroundWork.hasPendingWorkflow() || inputQueue.hasPending() || turn.holdInput)) {
           heldForBackgroundWork = true;
-          scheduleRelease();
+          // Workflow lifetimes are explicit; silence is not permission to stop them.
+          if (!backgroundWork.hasPendingWorkflow() && !inputQueue.hasPending()) scheduleRelease();
         } else {
-          // Either nothing was backgrounded, or the background work just
-          // reported in — let the CLI exit now, as it always has.
           heldForBackgroundWork = false;
           releasePromptStream();
+          emitRuntimeState();
         }
       } else if (idleReleaseTimer) {
         // Background activity after the turn — push the countdown back out.
@@ -1041,29 +999,25 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
       }
     }
 
-    // Clean up session on completion — only while this run still owns the map
-    // entry. A superseding run may have replaced it, and deleting here would
-    // strand that run.
+    releasePromptStream();
+    emitRuntimeState();
+    // Finalize bounded metadata requests after all stream events have been forwarded.
+    await Promise.allSettled(pendingUsageSummaries);
+
+    // Remove only the process entry owned by this execution.
     if (sessionKey() && getSession(sessionKey()!)?.instance === queryInstance) {
       removeSession(sessionKey()!);
     }
 
-    // A superseded run winds down silently: the map entry, the abort flag,
-    // and all client-facing events belong to the run that replaced it.
-    const superseded = supersededInstances.has(queryInstance);
-
-    // Send the terminal completion event — skipped for aborted runs, whose
-    // terminal `complete` (aborted: true) was already sent by abort-session, and
-    // for runs that already reported completion when their `result` arrived.
-    const wasAborted = !superseded && sessionKey() ? abortedSessionIds.delete(sessionKey()!) : false;
-    if (!turnCompleteSent && !superseded) {
+    // Abort owns its terminal event; a normal native exit completes this runtime once.
+    const wasAborted = sessionKey() ? abortedSessionIds.delete(sessionKey()!) : false;
+    if (!turnCompleteSent) {
       turnCompleteSent = true;
       const workflowInterrupted = !lastResultFailed && backgroundWork.hasPendingWorkflow();
       if (!wasAborted) {
         for (const msg of textStream.finish(capturedSessionId || sessionId || null)) ws.send(msg);
         if (workflowInterrupted) {
-          const errorContent = holdExpired ? 'Workflow stopped reporting progress before the background wait limit.'
-            : 'Claude ended before the Workflow reported completion. Resume the conversation to inspect its state.';
+          const errorContent = 'Claude ended before the Workflow reported completion. Resume the conversation to inspect its state.';
           ws.send(createNormalizedMessage({
             kind: 'error', provider: 'claude', sessionId: capturedSessionId || sessionId || null,
             content: errorContent,
@@ -1087,18 +1041,13 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
 
   } catch (error) {
     lastResultFailed = true;
+    releasePromptStream();
+    emitRuntimeState();
     console.error('SDK query error:', error);
 
-    // Clean up session on error — only while this run still owns the map entry
-    // (a superseding run may have replaced it).
+    // An error must not remove an entry owned by another execution.
     if (sessionKey() && getSession(sessionKey()!)?.instance === queryInstance) {
       removeSession(sessionKey()!);
-    }
-
-    if (queryInstance && supersededInstances.has(queryInstance)) {
-      // Interrupted because a newer run took over this session id; that run
-      // owns the abort flag and all further client-facing events.
-      return;
     }
 
     const wasAborted = sessionKey() ? abortedSessionIds.delete(sessionKey()!) : false;
@@ -1212,7 +1161,16 @@ export function createClaudeRuntime(overrides: Partial<RuntimeDependencies> = {}
     // A test transport never opens an install database unless its fixture injects usage explicitly.
     usage: overrides.query ? null : claudeUsageService, ...overrides };
   return {
-    run: (command, options, writer, context) => queryClaudeSDK(command, options, writer, context, dependencies),
+    run: async (command, options, writer, context) => {
+      const key = options.sessionId || context.resolveProviderSessionId(options.sessionId);
+      if (key && (startingSessions.has(key) || activeSessions.get(key)?.status === 'active')) {
+        throw new Error('Claude already owns this session. Send through its existing input stream.');
+      }
+      if (key) startingSessions.add(key);
+      try { await queryClaudeSDK(command, options, writer, context, dependencies); }
+      finally { if (key) startingSessions.delete(key); }
+    },
+    enqueue: async (sessionId, command, options) => await getSession(sessionId)?.enqueue?.(command, options) ?? false,
     abort: abortClaudeSDKSession,
     permissions: { resolve: resolveToolApproval, listPending: getPendingApprovalsForSession },
   };
@@ -1223,5 +1181,5 @@ export const claudeRuntime = createClaudeRuntime();
 
 /** Used by session actions to reject rewinds while Claude still owns a live or background query. */
 export function isClaudeSessionActive(sessionId: string): boolean {
-  return activeSessions.get(sessionId)?.status === 'active';
+  return startingSessions.has(sessionId) || activeSessions.get(sessionId)?.status === 'active';
 }

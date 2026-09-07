@@ -67,7 +67,10 @@ export default function ActivityIndicator({ activity, onAbort, isInputFocused = 
   if (!renderedActivity) return null;
 
   const actionWords = ACTION_KEYS.map((key, i) => t(key, { defaultValue: DEFAULT_ACTION_WORDS[i] }));
-  const label = (renderedActivity.statusText || actionWords[Math.floor(elapsedSeconds / 4) % actionWords.length])
+  const isBackground = renderedActivity.phase === 'background';
+  const label = (isBackground
+    ? t('claudeStatus.background', { count: renderedActivity.backgroundTasks ?? 0, defaultValue: '{{count}} background tasks' })
+    : renderedActivity.statusText || actionWords[Math.floor(elapsedSeconds / 4) % actionWords.length])
     .replace(/\.+$/, '');
 
   const minutes = Math.floor(elapsedSeconds / 60);
@@ -89,17 +92,17 @@ export default function ActivityIndicator({ activity, onAbort, isInputFocused = 
       }`}
     >
       <div className="flex items-end justify-between gap-2">
-        <div className={`${tabSurfaceClassName} gap-2`}>
+        <div className={`${tabSurfaceClassName} min-w-0 gap-2`} title={isBackground && renderedActivity.acceptsInput ? t('claudeStatus.acceptingInput', { defaultValue: 'You can send another message' }) : undefined}>
           <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-primary" aria-hidden />
-          <Shimmer className="font-medium">{`${label}…`}</Shimmer>
-          <span className="tabular-nums text-muted-foreground/60">{elapsedLabel}</span>
+          {isBackground ? <span className="truncate font-medium">{label}</span> : <Shimmer className="font-medium">{`${label}…`}</Shimmer>}
+          <span className="shrink-0 tabular-nums text-muted-foreground/60">{elapsedLabel}</span>
         </div>
 
         {renderedActivity.canInterrupt && onAbort && (
           <button
             type="button"
             onClick={onAbort}
-            className={`${tabSurfaceClassName} pointer-events-auto gap-1.5 text-muted-foreground hover:bg-card hover:text-destructive`}
+            className={`${tabSurfaceClassName} pointer-events-auto shrink-0 gap-1.5 text-muted-foreground hover:bg-card hover:text-destructive`}
             aria-label={t('claudeStatus.stop', { defaultValue: 'Stop' })}
           >
             <svg className="h-2.5 w-2.5 fill-current" viewBox="0 0 24 24" aria-hidden>

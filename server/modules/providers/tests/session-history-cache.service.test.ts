@@ -111,6 +111,44 @@ test('concurrent misses share a single load', async () => {
   });
 });
 
+test('a changed transcript does not reuse an in-flight old snapshot or let its late result replace the new cache', async () => {
+  await withTranscriptFile(async (transcriptPath) => {
+    const cache = createSessionHistoryCache();
+    let releaseOld!: (value: FetchHistoryResult) => void;
+    let oldStarted!: () => void;
+    const started = new Promise<void>(resolve => { oldStarted = resolve; });
+    const oldRead = cache.getFullHistory({ sessionId: 's1', transcriptPath, loadFull: () => {
+      oldStarted();
+      return new Promise(resolve => { releaseOld = resolve; });
+    } });
+    await started;
+    await appendFile(transcriptPath, '{"type":"assistant"}\n', 'utf8');
+    const current = await cache.getFullHistory({ sessionId: 's1', transcriptPath, loadFull: async () => historyResult('new') });
+    assert.equal(current?.messages[0].id, 'new');
+    releaseOld(historyResult('old')); await oldRead;
+    const cached = await cache.getFullHistory({ sessionId: 's1', transcriptPath, loadFull: async () => assert.fail('Newest snapshot should stay cached') });
+    assert.equal(cached, current);
+  });
+});
+
+test('a remapped native transcript never shares the old provider path pending load', async () => {
+  await withTranscriptFile(async (transcriptPath) => {
+    const newPath = path.join(path.dirname(transcriptPath), 'rewound.jsonl');
+    await writeFile(newPath, '{"type":"user"}\n', 'utf8');
+    const cache = createSessionHistoryCache();
+    let releaseOld!: (value: FetchHistoryResult) => void;
+    let oldStarted!: () => void;
+    const started = new Promise<void>(resolve => { oldStarted = resolve; });
+    const oldRead = cache.getFullHistory({ sessionId: 's1', transcriptPath, loadFull: () => {
+      oldStarted(); return new Promise(resolve => { releaseOld = resolve; });
+    } });
+    await started;
+    const current = await cache.getFullHistory({ sessionId: 's1', transcriptPath: newPath, loadFull: async () => historyResult('new-native') });
+    assert.equal(current?.messages[0].id, 'new-native');
+    releaseOld(historyResult('old-native')); await oldRead;
+  });
+});
+
 test('the oldest entries are evicted over budget, but the newest survives alone', async () => {
   const tempDirectory = await mkdtemp(path.join(os.tmpdir(), 'session-history-cache-evict-'));
   try {

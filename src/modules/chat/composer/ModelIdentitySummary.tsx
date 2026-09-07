@@ -8,11 +8,12 @@ import type { LLMProvider } from '@/shared/types';
 type Report = { reportedModel?: string | null; reportedSource?: 'response' | 'initialization' | 'unknown'; reportedAt?: string | null };
 
 /** Used inside the model menu to show evidence from this remote's existing transcript on demand. */
-export default function ModelIdentitySummary({ provider, sessionId, selectedModel, revision }: {
+export default function ModelIdentitySummary({ provider, sessionId, selectedModel, revision, continuesExecution = false }: {
   provider: LLMProvider;
   sessionId: string | null;
   selectedModel: string;
   revision: string;
+  continuesExecution?: boolean;
 }) {
   const { t } = useTranslation('chat');
   // The reported model is independent of the pending user selection and scoped to its session.
@@ -43,6 +44,7 @@ export default function ModelIdentitySummary({ provider, sessionId, selectedMode
   return (
     <>
     <div className="space-y-1 px-2.5 py-2 text-[11px] leading-relaxed text-muted-foreground" data-testid="model-identity-summary">
+      {continuesExecution && <p>{t('modelIdentity.continuesExecution', { defaultValue: 'Messages use the running process’s applied settings. Changes apply when the next execution starts.' })}</p>}
       <span className="block min-w-0 break-all">{t('modelIdentity.selected', { defaultValue: 'Selected' })}: <code>{selectedModel}</code></span>
       <span className="block min-w-0 break-all" title={current?.reportedAt || undefined}>{label}: <code>{reportedModel}</code></span>
     </div>

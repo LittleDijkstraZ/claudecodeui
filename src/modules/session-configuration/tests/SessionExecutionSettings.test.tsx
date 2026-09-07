@@ -38,10 +38,11 @@ describe('shared execution configuration', () => {
   it('keeps evidence inside the model menu without duplicating next-setting controls', async () => {
     render(<SessionExecutionSettings provider="claude" sessionId="app-fixture" surface="chat" presentation="menu" />);
     await waitFor(() => expect(screen.getByText(/^下次启动：/)).toBeTruthy());
-    expect(screen.getByText('本次执行与下轮设置')).toBeTruthy();
+    expect(screen.getByText('本次执行与下次启动设置')).toBeTruthy();
+    expect(screen.getByText(/向当前运行中的对话追加消息不会应用新设置/)).toBeTruthy();
     expect(screen.queryByLabelText('Next execution model')).toBeNull();
     expect(screen.queryByLabelText('Next execution effort')).toBeNull();
-    fireEvent.click(screen.getByText('本次执行与下轮设置'));
+    fireEvent.click(screen.getByText('本次执行与下次启动设置'));
     await waitFor(() => expect(screen.getByTestId('session-execution-settings').getAttribute('open')).not.toBeNull());
     expect(api.providers.models).not.toHaveBeenCalled();
     expect(screen.getByText(/^实际报告：/).textContent).toContain('Ultracode 未确认');

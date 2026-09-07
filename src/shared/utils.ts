@@ -1,7 +1,7 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
-import type { ChatMessage, Project, ProjectSession, SubagentInfo } from '@/shared/types';
+import type { ChatMessage, Project, ProjectSession, SessionRuntimeState, SubagentInfo } from '@/shared/types';
 
 //----------------- DEPLOYMENT MODE ------------
 
@@ -236,4 +236,18 @@ export const remoteStorageKey = (remoteId: string, key: string) => `cloudcli:rem
 /** Uses the provider lifecycle when reported, with tool-result fallback for older normalized agent records. */
 export function getSubagentStatus(message: ChatMessage): SubagentInfo['status'] {
   return message.subagent?.status ?? (message.toolResult ? (message.toolResult.isError ? 'failed' : 'completed') : 'running');
+}
+
+// ---------------------------
+
+//----------------- SESSION INPUT CAPABILITY ------------
+
+/** Reads only validated runtime fields from websocket/poll snapshots; missing fields never grant live input capability. */
+export function readSessionRuntimeState(value: Record<string, unknown>): SessionRuntimeState {
+  return {
+    ...(value.phase === 'foreground' || value.phase === 'background' ? { phase: value.phase } : {}),
+    ...(typeof value.acceptsInput === 'boolean' ? { acceptsInput: value.acceptsInput } : {}),
+    ...(typeof value.backgroundTasks === 'number' && Number.isSafeInteger(value.backgroundTasks) && value.backgroundTasks >= 0 ? { backgroundTasks: value.backgroundTasks } : {}),
+    ...(typeof value.executionId === 'string' && value.executionId ? { executionId: value.executionId } : {}),
+  };
 }

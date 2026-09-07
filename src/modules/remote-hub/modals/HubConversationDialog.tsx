@@ -1,10 +1,8 @@
 import { useState } from 'react';
 
 import { hubApi } from '@/shared/api';
-import type { HubConversation } from '@/shared/types';
+import type { HubConversation, HubConversationAction } from '@/shared/types';
 import { Button, Dialog, DialogContent, DialogTitle, Input } from '@/shared/ui';
-
-export type HubConversationAction = { kind: 'fork' | 'delete' | 'rename'; member: HubConversation; groupId?: string };
 
 /** Conversation mutations always target the selected row's machine, regardless of the open pane. */
 export function HubConversationDialog({ action, machine, busySession, onDone, close }: {

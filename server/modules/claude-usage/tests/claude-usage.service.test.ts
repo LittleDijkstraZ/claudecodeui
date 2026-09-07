@@ -237,3 +237,30 @@ test('forking an active saved prefix flushes throttled request ownership before 
   assert.equal((await service.getSnapshot('app-one')).session.tokens.cacheReadTokens, 300);
   run.finish();
 }));
+
+test('retained query input count and aggregate warning survive durable ledger reload without multiplying cost', async () => fixture(async ({ make }) => {
+  const service = make();
+  const run = await service.beginRun({ sessionId: 'app-one', providerSessionId: 'native-one', executionId: 'multi-input-execution' });
+  assert.equal(run.noteUserMessage('input-one')?.turn?.userMessageCount, 1);
+  run.observe(result('first-result', 100, .2));
+  const second = run.noteUserMessage('input-two')!;
+  assert.equal(second.turn?.userMessageCount, 2);
+  assert.equal(second.session.warnings.filter(warning => warning === 'multiple-messages-share-execution-usage').length, 1);
+  const revision = second.revision;
+  assert.equal(run.noteUserMessage('input-two'), null);
+  assert.equal((await service.getSnapshot('app-one')).revision, revision);
+  run.observe(result('second-result', 250, .5));
+  const settled = run.finish()!;
+  assert.equal(settled.turn?.userMessageCount, 2);
+  assert.equal(settled.turn?.models['main-explicit'].cacheReadTokens, 250);
+  assert.equal(settled.turn?.estimatedCostUsd, .5);
+  assert.equal(settled.session.tokens.cacheReadTokens, 250);
+  const raw = claudeUsageDb.executions('app-one').find(row => row.execution_id === 'multi-input-execution');
+  assert.deepEqual(JSON.parse(raw!.state_json).userMessageIds, ['input-one', 'input-two']);
+  closeConnection(); await initializeDatabase();
+  const restored = await make().getSnapshot('app-one');
+  assert.equal(restored.turn?.userMessageCount, 2);
+  assert.equal(restored.turn?.estimatedCostUsd, .5);
+  assert.equal(restored.session.warnings.filter(warning => warning === 'multiple-messages-share-execution-usage').length, 1);
+  assert.deepEqual(restored.session.tokens, settled.session.tokens);
+}));

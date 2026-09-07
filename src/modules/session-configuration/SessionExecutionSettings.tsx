@@ -114,7 +114,7 @@ export function SessionExecutionSettings({ sessionId, provider, surface, executi
 
   return <details open={open} onToggle={(event) => setOpen(event.currentTarget.open)} className={presentation === 'menu' ? 'px-2.5 pb-2 text-xs' : 'border-t border-border/50 px-3 py-1.5 text-xs'} data-testid="session-execution-settings">
     <summary className="cursor-pointer select-none break-words text-muted-foreground">
-      {presentation === 'menu' ? '本次执行与下轮设置' : <>执行配置 · {observed?.model || '实际模型未确认'}</>}{differs ? ' · 下次启动有新设置' : ''}
+      {presentation === 'menu' ? '本次执行与下次启动设置' : <>执行配置 · {observed?.model || '实际模型未确认'}</>}{differs ? ' · 下次启动有新设置' : ''}
     </summary>
     <div className="mt-2 min-w-0 space-y-2 break-words">
       <div className="break-all text-muted-foreground">当前机器上的会话：{sessionId}<br />Claude ID：{current?.providerSessionId || '尚未建立'}</div>
@@ -141,7 +141,7 @@ export function SessionExecutionSettings({ sessionId, provider, surface, executi
           <label className="flex items-center gap-1"><input type="checkbox" checked={next.ultracode} onChange={(event) => void save({ ultracode: event.target.checked, ...(event.target.checked ? { effort: 'xhigh' } : {}) })} />Ultracode</label>
         </div>
       </fieldset>}
-      <p className="text-muted-foreground">{surface === 'shell' ? '仅沿用已保存的权限；一次允许不会自动保留。已运行终端需重新启动才使用新设置。' : '设置用于下一轮 Chat；当前执行保持原配置。'} 终端内的 /model、/effort 是该进程的操作；实际报告以该次执行的观测为准。xhigh 本身不证明 Ultracode 已开启。</p>
+      <p className="text-muted-foreground">{surface === 'shell' ? '仅沿用已保存的权限；一次允许不会自动保留。已运行终端需重新启动才使用新设置。' : '当前进程沿用已生效配置；更改将在下一次启动会话执行时生效，向当前运行中的对话追加消息不会应用新设置。'} 终端内的 /model、/effort 是该进程的操作；实际报告以该次执行的观测为准。xhigh 本身不证明 Ultracode 已开启。</p>
       {error && <p role="alert" className="text-red-500">{presentation === 'menu' && !current ? '此远端暂时无法读取完整执行配置；上方仍显示可读取的模型记录。' : error}</p>}
     </div>
   </details>;

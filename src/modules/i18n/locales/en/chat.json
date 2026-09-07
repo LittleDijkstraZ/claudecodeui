@@ -123,7 +123,8 @@
       "ctrlEnter": "Ctrl+Enter to send • Shift+Enter for new line • Tab to change modes • / for slash commands",
       "enter": "Enter to send • Shift+Enter for new line • Tab to change modes • / for slash commands",
       "queue": "Enter to queue your next message",
-      "updateQueued": "Enter to update queued message"
+      "updateQueued": "Enter to update queued message",
+      "liveQueue": "Enter to send to this conversation"
     },
     "clickToChangeMode": "Click to change permission mode (or press Tab in input)",
     "showAllCommands": "Show all commands",
@@ -254,7 +255,9 @@
     },
     "providers": {
       "assistant": "Assistant"
-    }
+    },
+    "background": "{{count}} background tasks",
+    "acceptingInput": "You can send another message"
   },
   "projectSelection": {
     "startChatWithProvider": "Select a project to start chatting with {{provider}}"
@@ -264,7 +267,12 @@
   },
   "message": {
     "editAndResend": "Edit and resend",
-    "forkFromHere": "Fork from here"
+    "forkFromHere": "Fork from here",
+    "delivery": {
+      "queued": "Waiting to be processed",
+      "delivered": "Delivered",
+      "failed": "Delivery unconfirmed"
+    }
   },
   "export": {
     "trigger": "Export conversation",
@@ -429,7 +437,8 @@
     "unconfirmed": "Unconfirmed",
     "selected": "Selected",
     "followRemote": "Follow remote configuration",
-    "reasoning": "Reasoning effort"
+    "reasoning": "Reasoning effort",
+    "continuesExecution": "Messages use the running process’s applied settings. Changes apply when the next execution starts."
   },
   "sessionActions": {
     "menu": "Message actions",
@@ -508,6 +517,7 @@
     "legacyExplanation": "This connection has not supplied verified Claude accounting. The legacy value may mix individual request usage with multiple requests, so it cannot confirm current context, turn consumption or conversation totals.",
     "awaitingExplanation": "No verified usage has been received for this conversation yet. Missing statistics do not mean zero consumption.",
     "unverifiedValue": "Unverified reported value (reference only)",
-    "legacyRefresh": "After this machine’s CloudCLI update finishes, refresh the page. Verified statistics show current context, the current turn and whole conversation separately; incomplete history remains labelled."
+    "legacyRefresh": "After this machine’s CloudCLI update finishes, refresh the page. Verified statistics show current context, the current turn and whole conversation separately; incomplete history remains labelled.",
+    "sharedExecution": "{{count}} messages share this execution total. The SDK cannot fully attribute background work to individual messages."
   }
 }

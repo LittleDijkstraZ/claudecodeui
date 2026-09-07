@@ -134,3 +134,46 @@ test('main-only fallback reports consumed tokens without pretending to know cont
   assert.equal(run.snapshot().models['<unattributed-main>'].cacheReadTokens, 8_000_000);
   assert.equal(run.snapshot().turn?.coverage, 'observed-requests');
 });
+
+test('retained input UUIDs are counted once without changing consumed tokens or pricing', () => {
+  const run = new ClaudeUsageAccumulator('shared-query', undefined, now);
+  assert.equal(run.noteUserMessage('first-input'), true);
+  run.observe(assistant()); run.observe(result('result-one'));
+  const before = run.snapshot(); const persisted = run.serialize();
+  assert.equal(run.noteUserMessage('first-input'), false);
+  assert.deepEqual(run.serialize(), persisted);
+  assert.equal(run.snapshot().userMessageCount, 1);
+  assert.equal(run.snapshot().warnings.includes('multiple-messages-share-execution-usage'), false);
+  assert.equal(run.noteUserMessage('second-input'), true);
+  assert.equal(run.noteUserMessage('second-input'), false);
+  assert.equal(run.noteUserMessage('third-input'), true);
+  const after = run.snapshot();
+  assert.equal(after.userMessageCount, 3);
+  assert.equal(after.warnings.filter(item => item === 'multiple-messages-share-execution-usage').length, 1);
+  assert.deepEqual(after.models, before.models); assert.equal(after.estimatedCostUsd, before.estimatedCostUsd);
+});
+
+test('multiple input warning and count persist across restart while cumulative results remain one shared bill', () => {
+  const run = new ClaudeUsageAccumulator('shared-query', undefined, now);
+  run.noteUserMessage('first-input'); run.observe(result('result-one'));
+  run.noteUserMessage('second-input'); run.observe(result('result-two', { 'opus-explicit': model(40, 250, 60, .5) }, .5));
+  run.finish();
+  const restored = new ClaudeUsageAccumulator('shared-query', JSON.parse(JSON.stringify(run.serialize())), now);
+  assert.deepEqual(restored.snapshot(), run.snapshot());
+  assert.equal(restored.noteUserMessage('second-input'), false);
+  assert.equal(restored.snapshot().userMessageCount, 2);
+  assert.deepEqual(restored.snapshot().warnings, ['multiple-messages-share-execution-usage']);
+  assert.equal(restored.snapshot().models['opus-explicit'].inputTokens, 40);
+  assert.equal(restored.snapshot().models['opus-explicit'].cacheReadTokens, 250);
+  assert.equal(restored.snapshot().estimatedCostUsd, .5);
+});
+
+test('older persisted accounting without input IDs retains single-input compatibility', () => {
+  const run = new ClaudeUsageAccumulator('legacy-query', undefined, now);
+  run.observe(result('legacy-result'));
+  const saved = JSON.parse(JSON.stringify(run.serialize())); delete saved.userMessageIds;
+  const restored = new ClaudeUsageAccumulator('legacy-query', saved, now);
+  assert.equal(restored.snapshot().userMessageCount, 1);
+  assert.equal(restored.snapshot().warnings.includes('multiple-messages-share-execution-usage'), false);
+  assert.equal(restored.snapshot().estimatedCostUsd, .2);
+});

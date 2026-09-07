@@ -1,4 +1,4 @@
-import type { HubRemote, HubGroupState, ClaudeSessionCapabilities, ClaudeSessionSettings, ForkedClaudeSession, RewindMode, RewindPreview, RewindResult,LLMProvider,ConversationGroup,ConversationGroupsSnapshot,CreatedGroupConversation,GroupConversationsPage } from '@/shared/types';
+import type { HubDirectoryListing, HubRemote, HubGroupState, ClaudeSessionCapabilities, ClaudeSessionSettings, ForkedClaudeSession, RewindMode, RewindPreview, RewindResult,LLMProvider,ConversationGroup,ConversationGroupsSnapshot,CreatedGroupConversation,GroupConversationsPage } from '@/shared/types';
 import { isValidRefreshedToken } from '@/shared/authToken';
 import { remoteStorageKey } from '@/shared/utils';
 import {
@@ -698,6 +698,7 @@ async function remoteRequest(remoteId: string, path: string, options: RequestIni
   const token = remoteToken(remoteId);
   const response = await fetch(`/remote/${encodeURIComponent(remoteId)}${path}`, {
     ...options,
+    redirect: 'error',
     signal: options.signal ?? AbortSignal.timeout(options.method && options.method !== 'GET' ? 60_000 : 12_000),
     headers: {
       ...(token ? {
@@ -752,6 +753,13 @@ export const hubApi = {
   config: async (): Promise<{ remotes: HubRemote[] }> => { const response = await fetch('/hub-api/config'); if (!response.ok) throw new Error('无法读取连接配置'); return response.json(); },
   health: (remoteId: string) => remoteRequest(remoteId, '/health', { signal: AbortSignal.timeout(3500) }),
   projects: (remoteId: string) => remoteRequest(remoteId, '/api/projects'),
+  // The user-supplied path remains a query value; it can never become a proxy destination.
+  browseDirectories: async (remoteId: string, path: string, options: { signal?: AbortSignal } = {}): Promise<HubDirectoryListing> => {
+    const result = await remoteRequest(remoteId, `/api/file-tree/browse-filesystem?path=${encodeURIComponent(path)}`, options);
+    if (typeof result?.path !== 'string' || !result.path || !Array.isArray(result.suggestions)) throw new Error('远端未返回有效的文件夹列表');
+    return { path: result.path, suggestions: result.suggestions.filter((item: unknown) => item && typeof item === 'object' && 'path' in item && typeof item.path === 'string' && 'name' in item && typeof item.name === 'string') };
+  },
+  registerProject: (remoteId: string, path: string) => remoteRequest(remoteId, '/api/projects/create-project', { method: 'POST', body: JSON.stringify({ path }) }),
   recent: (remoteId: string, offset = 0) => remoteRequest(remoteId, `/api/providers/sessions/recent?limit=100&offset=${offset}`),
   running: (remoteId: string) => remoteRequest(remoteId, '/api/providers/sessions/running'),
   user: (remoteId: string) => remoteRequest(remoteId, '/api/auth/user'),

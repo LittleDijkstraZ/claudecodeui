@@ -34,6 +34,8 @@ export interface IProviderRuntime {
     writer: ProviderRuntimeWriter,
     context: ProviderRuntimeContext,
   ): Promise<unknown>;
+  /** Adds input to an already owned process; false means no such input stream, never permission to spawn one. */
+  enqueue?(sessionId: string, command: string, options: AnyRecord): Promise<boolean>;
   abort(sessionId: string): boolean | Promise<boolean>;
   permissions?: ProviderRuntimePermissionGateway;
 }

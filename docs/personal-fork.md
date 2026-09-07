@@ -29,7 +29,25 @@ Dynamic workflows can produce a result for the launch turn and another result
 after completing in the background. Their task events must keep the request
 alive until the workflow finishes and Claude delivers the follow-up result.
 Permission denial, launch failure, cancellation, and multiple workflows need
-their own coverage. Existing background Bash and monitor behavior is preserved.
+their own coverage. Foreground reply completion is distinct from native-process
+completion: background work does not disable the composer. A single pushable
+SDK input stream owns the process, preserves FIFO ordering through attachment
+preparation, and accepts follow-up messages without stopping or replacing it.
+Client UUIDs deduplicate retries; only a native replay or correlated reply
+confirms delivery. Unconfirmed input stays visible across stream replay.
+Explicit task lifetimes have no UI silence timeout. Settings changed while this
+process is running apply when the next execution starts, not to appended input.
+
+Live subagent text is forwarded and remains scoped to its parent tool. Optional
+settings/context control requests never block transcript streaming; delayed
+responses are checked against the owning query and its stream generation.
+Native terminal transcript writes refresh Chat while the runtime is active.
+That catch-up follows saved history (one-second filesystem polling plus debounce),
+not a second model call or a guarantee of token-by-token terminal mirroring.
+
+When several user inputs share one native execution, the usage panel labels that
+execution's aggregate and message count. It does not invent per-prompt billing
+for background work or batched native results. Session totals remain cumulative.
 
 ## Conversation change review
 
@@ -445,3 +463,13 @@ not validated context or cumulative consumption. A still-running older remote
 serves its own older frontend too; updating only the Mac Hub cannot activate the
 new remote runtime or statistics. Updates must wait for that remote's active
 work to finish.
+
+## Remote folder creation
+
+The hub's new-conversation dialog chooses a machine first, then lets the user
+browse or type a path on that remote. The remote validates and canonicalizes the
+folder before registration and conversation creation; existing workspace-root
+restrictions still apply. Each machine remembers its last folder independently.
+Changing machines invalidates in-flight directory results. A group-attachment
+retry reuses the already-created conversation instead of creating duplicates.
+The Mac hub performs no project operations and never executes local Claude.

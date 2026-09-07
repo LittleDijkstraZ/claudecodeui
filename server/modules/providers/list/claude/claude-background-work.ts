@@ -103,5 +103,5 @@ export function createClaudeBackgroundWorkTracker() {
     return { completeTurn: !workflowPending, holdInput };
   }
 
-  return { observe, hasPendingWorkflow, finishTurn };
+  return { observe, hasPendingWorkflow, finishTurn, pendingCount: () => Math.max(workflowCalls.size, workflowTasks.size) };
 }

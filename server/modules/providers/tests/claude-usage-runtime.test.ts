@@ -57,3 +57,69 @@ test('runtime uses only its existing query summary and publishes the exact durab
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test('a slow context metadata reply cannot block live text or overwrite newer sampling inside the persistence throttle', { timeout: 5000 }, async () => {
+  const previous = process.env.DATABASE_PATH;
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'usage-runtime-late-summary-'));
+  closeConnection(); process.env.DATABASE_PATH = path.join(directory, 'fixture.db');
+  await writeFile(process.env.DATABASE_PATH, ''); await initializeDatabase();
+  sessionsDb.createAppSession('late-summary-app', 'claude', directory);
+  sessionsDb.assignProviderSessionId('late-summary-app', 'late-summary-native');
+  let releaseSummary!: (value: unknown) => void;
+  const slowSummary = new Promise(resolve => { releaseSummary = resolve; });
+  let releaseScript!: () => void;
+  const scriptHeld = new Promise<void>(resolve => { releaseScript = resolve; });
+  let sawFollowingText!: () => void;
+  const followingText = new Promise<void>(resolve => { sawFollowingText = resolve; });
+  let run: Promise<unknown> | undefined;
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // All observations happen at the same clock tick: the newer sampling stays
+    // in memory until finalization and does not advance the durable revision.
+    const usage = createClaudeUsageService({ now: () => 1000,
+      history: async () => [{ id: 'late-summary-native:main', fingerprint: 'empty', events: (async function* () {})() }] });
+    const frames: AnyRecord[] = [];
+    let summaries = 0;
+    const assistant = (id: string, input: number) => ({ type: 'assistant', session_id: 'late-summary-native',
+      message: { id, model: 'fixture', usage: { input_tokens: input, output_tokens: 5 }, content: [] } });
+    const result = (id: string) => ({ type: 'result', uuid: id, session_id: 'late-summary-native', is_error: false });
+    const queryMock = (() => Object.assign((async function* () {
+      yield assistant('sampling-before', 100);
+      yield result('result-before');
+      assert.equal(summaries, 1);
+      yield assistant('sampling-after', 200);
+      yield { type: 'stream_event', session_id: 'late-summary-native', event: { type: 'message_start', message: { id: 'live-text' } } };
+      yield { type: 'stream_event', session_id: 'late-summary-native', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } };
+      yield { type: 'stream_event', session_id: 'late-summary-native', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Already streaming' } } };
+      sawFollowingText();
+      await scriptHeld;
+      yield result('result-after');
+    })(), { interrupt: async () => {}, getContextUsage: () => ++summaries === 1 ? slowSummary : Promise.resolve(null) })) as unknown as typeof query;
+    const context: ProviderRuntimeContext = {
+      resolveProviderSessionId: () => 'late-summary-native', resolveResumeModel: async () => 'fixture',
+      getProviderModels: async () => ({ DEFAULT: 'fixture', OPTIONS: [{ value: 'fixture', label: 'Fixture' }] }),
+      normalizeMessage: (raw, sessionId) => {
+        const value = raw as AnyRecord;
+        return value.type === 'content_block_delta' ? [{ id: 'live-delta', kind: 'stream_delta', provider: 'claude', sessionId: sessionId!, timestamp: '2026-09-07T00:00:00Z', content: value.delta.text }] : [];
+      }, isProviderInstalled: async () => true,
+    };
+    run = createClaudeRuntime({ query: queryMock, loadMcpConfig: async () => null, usage }).run('Fixture only',
+      { sessionId: 'late-summary-app' }, { send: frame => frames.push(frame as AnyRecord) }, context);
+    await Promise.race([followingText, new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error('Optional metadata blocked the native text stream')), 500); })]);
+    if (deadline) clearTimeout(deadline);
+    assert.ok(frames.some(frame => frame.kind === 'stream_delta' && frame.content === 'Already streaming'));
+    // Return the old estimate after a newer sampling event but before its DB flush.
+    releaseSummary({ totalTokens: 777777, rawMaxTokens: 1_000_000, model: 'fixture' });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(frames.some(frame => frame.tokenBudget?.context?.usedTokens === 777777), false);
+    releaseScript(); await run;
+    const persisted = await usage.getSnapshot('late-summary-app');
+    assert.equal(persisted.context.usedTokens, 205);
+    assert.equal(persisted.context.measurement, 'last-request');
+  } finally {
+    if (deadline) clearTimeout(deadline);
+    releaseSummary(null); releaseScript(); await run?.catch(() => {});
+    closeConnection(); if (previous === undefined) delete process.env.DATABASE_PATH; else process.env.DATABASE_PATH = previous;
+    await rm(directory, { recursive: true, force: true });
+  }
+});

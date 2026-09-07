@@ -135,7 +135,7 @@ function chatMessageToNormalized(
     : typeof msg.timestamp === 'number'
       ? new Date(msg.timestamp).toISOString()
       : String(msg.timestamp);
-  const base = { id, sessionId, timestamp: ts, provider };
+  const base = { id, sessionId, timestamp: ts, provider, clientMessageId: msg.clientMessageId, delivery: msg.delivery, deliveryError: msg.deliveryError };
 
   if (msg.isToolUse) {
     return {
@@ -342,6 +342,10 @@ export function useChatSessionState({
   // placeholder entry exists anymore.
   const sessionActivity = (activeSessionId && processingSessions?.get(activeSessionId)) || null;
   const isProcessing = sessionActivity !== null;
+  // A held Claude query can accept another prompt while its Workflow runs.
+  // Keep the full run protected; only composer admission follows this capability.
+  const isComposerBusy = isProcessing && sessionActivity.acceptsInput !== true;
+  const isForegroundBusy = isProcessing && sessionActivity.phase !== 'background';
   const canAbortSession = isProcessing && sessionActivity.canInterrupt;
 
   // Ref mirror so effects can read the latest map without re-running on
@@ -864,20 +868,20 @@ export function useChatSessionState({
 
     const reloadExternalMessages = async () => {
       try {
-        // Skip store refresh during active streaming
-        if (!isProcessing) {
-          const shouldStickToBottom = isActiveRef.current && isNearBottom();
-          const navigationGeneration = navigationGenerationRef.current;
-          await requestLatestMessages(selectedSession.id);
+        // Shell and other clients can persist new turns while this Chat run
+        // remains alive for background work. Refresh merges server history
+        // without replacing newer realtime rows; hidden views stay deferred.
+        const shouldStickToBottom = isActiveRef.current && isNearBottom();
+        const navigationGeneration = navigationGenerationRef.current;
+        await requestLatestMessages(selectedSession.id);
 
-          if (shouldStickToBottom) {
-            setTimeout(() => {
-              if (navigationGenerationRef.current === navigationGeneration
-                && activeSessionIdRef.current === selectedSession.id
-                && isActiveRef.current
-                && !isUserScrolledUpRef.current) scrollToBottom();
-            }, 200);
-          }
+        if (shouldStickToBottom) {
+          setTimeout(() => {
+            if (navigationGenerationRef.current === navigationGeneration
+              && activeSessionIdRef.current === selectedSession.id
+              && isActiveRef.current
+              && !isUserScrolledUpRef.current) scrollToBottom();
+          }, 200);
         }
       } catch (error) {
         console.error('Error reloading messages from external update:', error);
@@ -887,11 +891,11 @@ export function useChatSessionState({
     reloadExternalMessages();
   }, [
     externalMessageUpdate,
+    isNearBottom,
     requestLatestMessages,
     scrollToBottom,
     selectedProject,
     selectedSession,
-    isProcessing,
   ]);
 
   // Search navigation target
@@ -1190,6 +1194,8 @@ export function useChatSessionState({
     addMessage,
     sessionActivity,
     isProcessing,
+    isComposerBusy,
+    isForegroundBusy,
     canAbortSession,
     currentSessionId,
     setCurrentSessionId,

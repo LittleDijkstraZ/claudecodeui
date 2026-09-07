@@ -74,3 +74,11 @@ test('missing Claude statistics do not claim zero, while other providers retain 
   expect(other).toContain('506K');
   expect(other).not.toContain('Legacy stats');
 });
+
+test('messages sent to one held query are labelled as an execution aggregate, not separately attributed turns', () => {
+  const value = snapshot();
+  value.turn = { id: 'query', executionId: 'query', status: 'running', models: {}, estimatedCostUsd: null, coverage: 'sdk-query-pipeline', userMessageCount: 3 };
+  const details = renderToStaticMarkup(<I18nextProvider i18n={i18n}><ClaudeUsageDetails usage={value} /></I18nextProvider>);
+  expect(details).toContain('3 messages share this execution total');
+  expect(details).toContain('cannot fully attribute background work');
+});

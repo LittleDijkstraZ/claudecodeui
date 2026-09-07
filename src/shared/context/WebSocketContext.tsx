@@ -10,7 +10,7 @@ type ServerEventListener = (event: ServerEvent) => void;
 
 type WebSocketContextType = {
   ws: WebSocket | null;
-  sendMessage: (message: unknown) => void;
+  sendMessage: (message: unknown) => boolean;
   /**
    * Subscribes to every websocket frame. Returns an unsubscribe function.
    *
@@ -161,9 +161,15 @@ const useWebSocketProviderState = (): WebSocketContextType => {
   const sendMessage = useCallback((message: unknown) => {
     const socket = wsRef.current;
     if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify(message));
+      try {
+        socket.send(JSON.stringify(message));
+        return true;
+      } catch {
+        return false;
+      }
     } else {
       console.warn('WebSocket not connected');
+      return false;
     }
   }, []);
 

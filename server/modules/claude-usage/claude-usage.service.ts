@@ -214,7 +214,7 @@ export function createClaudeUsageService(overrides: Partial<Dependencies> = {}) 
       if (execution.execution_id === saved.latest_execution_id) turn = {
         id: execution.execution_id, executionId: execution.execution_id,
         status: value.closed ? value.turn?.status ?? 'interrupted' : 'running',
-        models: value.models, estimatedCostUsd: value.estimatedCostUsd, coverage: value.coverage,
+        models: value.models, estimatedCostUsd: value.estimatedCostUsd, coverage: value.coverage, userMessageCount: value.userMessageCount,
       };
     }
     const tokens = emptyBuckets();
@@ -258,6 +258,11 @@ export function createClaudeUsageService(overrides: Partial<Dependencies> = {}) 
         activeFlushes.set(input.sessionId, { executionId: input.executionId, flush: () => { if (dirty) persist(true); } });
         return {
           executionId: input.executionId,
+          noteUserMessage(id: string): ClaudeUsageSnapshot | null {
+            if (finished || !accumulator.noteUserMessage(id)) return null;
+            dirty = true;
+            return persist(true);
+          },
           bindProviderSessionId(id: string): void {
             if (!nativeId) { nativeId = id; dirty = true; }
             else if (nativeId !== id) throw new Error('Claude usage execution received conflicting native session identities');

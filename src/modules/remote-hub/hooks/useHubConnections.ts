@@ -20,6 +20,9 @@ export function useHubConnections(remotes: HubRemote[], onNotification: (remoteI
   latestStates.current = states;
   const activityRevision = useRef(new Map<string, number>());
   const notificationKeys = useRef(new Set<string>());
+  // Completion metadata can replay while a held query is still running.
+  // Deduplicate before marking attention so reading a reply stays effective.
+  const activityEventKeys = useRef(new Set<string>());
   const generation = useRef(0);
   const notifyRef = useRef(onNotification);
   notifyRef.current = onNotification;
@@ -104,13 +107,17 @@ export function useHubConnections(remotes: HubRemote[], onNotification: (remoteI
         socket.onmessage = event => {
           try {
             const message = JSON.parse(event.data);
-            if (message.kind === 'session_activity' && typeof message.sessionId === 'string' && ['running', 'complete', 'error', 'permission'].includes(message.status)) {
+            const activityKey = `${remote.id}:${message.sessionId}:${String(message.eventId ?? `${message.runId}:${message.status}:${message.seq}`)}`;
+            if (message.kind === 'session_activity' && typeof message.sessionId === 'string' && ['running', 'complete', 'error', 'permission', 'response_complete'].includes(message.status) && !activityEventKeys.current.has(activityKey)) {
+              activityEventKeys.current.add(activityKey);
+              if (activityEventKeys.current.size > 1000) activityEventKeys.current.delete(activityEventKeys.current.values().next().value!);
               activityRevision.current.set(remote.id, (activityRevision.current.get(remote.id) ?? 0) + 1);
               setStates(current => {
                 const previous = current[remote.id] ?? initial();
                 const running = new Set(previous.running);
                 const attention = message.status === 'running' ? previous.attention : recordHubUnread(remote.id, message.sessionId, String(message.eventId ?? `${message.runId}:${message.status}:${message.seq}`));
-                if (message.status === 'running' || message.status === 'permission') running.add(message.sessionId);
+                if (message.status === 'running' || message.status === 'permission' || message.status === 'response_complete'
+                  || (message.status === 'error' && message.isProcessing === true)) running.add(message.sessionId);
                 else running.delete(message.sessionId);
 
                 return { ...current, [remote.id]: { ...previous, running: [...running], attention } };

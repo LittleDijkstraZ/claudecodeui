@@ -26,6 +26,7 @@ type AccumulatorState = {
   unknownCost: boolean;
   turns: Turn[];
   resultIds: string[];
+  userMessageIds?: string[];
   warnings: string[];
   closed: boolean;
 };
@@ -309,6 +310,15 @@ export class ClaudeUsageAccumulator {
     this.state.closed = true;
   }
 
+  /** Retained native queries may accept several user inputs while background usage remains shared. */
+  noteUserMessage(id: string): boolean {
+    this.state.userMessageIds ??= [];
+    if (this.state.userMessageIds.includes(id)) return false;
+    this.state.userMessageIds.push(id);
+    if (this.state.userMessageIds.length > 1) this.warn('multiple-messages-share-execution-usage');
+    return true;
+  }
+
   /** Service persists only this numeric/identity state, never raw SDK content or prompts. */
   serialize(): unknown { return structuredClone(this.state); }
 
@@ -336,6 +346,7 @@ export class ClaudeUsageAccumulator {
       ? { id: `${this.state.executionId}:${this.state.turns.length + 1}`, status: 'running', models: pending, estimatedCostUsd: null, coverage: 'observed-requests' }
       : this.state.turns.at(-1) ?? null;
     return structuredClone({
+      userMessageCount: this.state.userMessageIds?.length ?? 1,
       executionId: this.state.executionId, context: this.state.context, turn,
       coverage: !hasPending && this.state.turns.length > 0 && this.state.turns.every(item => item.coverage === 'sdk-query-pipeline') ? 'sdk-query-pipeline' as const : 'observed-requests' as const,
       models, estimatedCostUsd: hasPending || this.state.unknownCost ? null : this.state.settledCost,

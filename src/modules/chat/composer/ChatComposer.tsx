@@ -251,7 +251,7 @@ export default function ChatComposer({
   const isTranscribing = voiceState === 'transcribing';
 
   // Detect if the AskUserQuestion interactive panel is active
-  const hasQuestionPanel = pendingPermissionRequests.some(
+  const hasQuestionPanel = activity?.acceptsInput !== true && pendingPermissionRequests.some(
     (r) => r.toolName === 'AskUserQuestion'
   );
 
@@ -262,14 +262,18 @@ export default function ChatComposer({
   const hasQueuedDraft = Boolean(queuedDraft);
   const canQueueDraft = isLoading && Boolean(input.trim() || attachedFiles.length > 0);
   const submitHint = canQueueDraft
-    ? hasQueuedDraft
+    ? activity?.acceptsInput === true
+      ? t('input.hintText.liveQueue', { defaultValue: 'Enter to send to this conversation' })
+      : hasQueuedDraft
       ? t('input.hintText.updateQueued', { defaultValue: 'Enter to update queued message' })
       : t('input.hintText.queue', { defaultValue: 'Enter to queue your next message' })
     : sendByCtrlEnter
       ? t('input.hintText.ctrlEnter')
       : t('input.hintText.enter');
   const submitAriaLabel = canQueueDraft
-    ? hasQueuedDraft
+    ? activity?.acceptsInput === true
+      ? t('input.send')
+      : hasQueuedDraft
       ? t('input.queue.update', { defaultValue: 'Update queued message' })
       : t('input.queue.sendNext', { defaultValue: 'Queue next message' })
     : isLoading

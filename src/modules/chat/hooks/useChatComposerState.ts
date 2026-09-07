@@ -48,7 +48,7 @@ type UseChatComposerStateArgs = {
   processingSessions?: SessionActivityMap;
   canAbortSession: boolean;
   tokenBudget: Record<string, unknown> | null;
-  sendMessage: (message: unknown) => void;
+  sendMessage: (message: unknown) => boolean | void;
   sendByCtrlEnter?: boolean;
   onSessionProcessing?: MarkSessionProcessing;
   /**
@@ -164,6 +164,7 @@ export function useChatComposerState({
   currentProviderModel,
   currentProviderEffort,
   isLoading,
+  processingSessions,
   canAbortSession,
   tokenBudget,
   sendMessage,
@@ -815,8 +816,10 @@ export function useChatComposerState({
       }
 
       const attachmentRecords = uploadedAttachments as ChatAttachment[];
+      const clientMessageId = provider === 'claude' && !editingAnchorId ? crypto.randomUUID() : undefined;
       const userMessage: ChatMessage = {
         type: 'user',
+        ...(clientMessageId ? { clientMessageId, delivery: 'queued' as const } : {}),
         content: currentInput,
         images: attachmentRecords.filter(isImageAttachment),
         files: attachmentRecords.filter((attachment) => !isImageAttachment(attachment)),
@@ -828,26 +831,19 @@ export function useChatComposerState({
       };
 
       addMessage(userMessage);
-      // Mark this request as processing in the per-session activity map (the
-      // single source of truth the indicator derives from). The id is always
-      // concrete at this point — no pending placeholder exists anymore.
-      onSessionProcessing?.(targetSessionId, {
-        statusText: null,
-        canInterrupt: true,
-      });
-
       setIsUserScrolledUp(false);
       setTimeout(() => scrollToBottom(), 100);
 
       // One message shape for every provider. The backend resolves the
       // provider, project path, and provider-native resume id from the
       // session row; `options` only carries composer-level preferences.
-      sendMessage({
+      const sent = sendMessage({
         // Replacing an already-sent message is its own frame: it changes the
         // shape of the conversation, so it gets validated separately and can
         // report why it was refused.
         type: editingAnchorId ? 'chat.edit-send' : 'chat.send',
         sessionId: targetSessionId,
+        ...(clientMessageId ? { clientMessageId } : {}),
         ...(editingAnchorId ? { anchorId: editingAnchorId } : {}),
         content: messageContent,
         options: {
@@ -855,6 +851,16 @@ export function useChatComposerState({
           attachments: uploadedAttachments,
         },
       });
+      if (sent === false && clientMessageId) {
+        addMessage({ ...userMessage, delivery: 'failed', deliveryError: 'Connection lost. Reconnect before sending again.' });
+      }
+      // A held query keeps its authoritative phase. A disconnected send must
+      // not create a phantom active run that could lock the user's composer.
+      if (sent !== false && !processingSessions?.has(targetSessionId)) {
+        onSessionProcessing?.(targetSessionId, {
+          statusText: null, canInterrupt: true, phase: 'foreground', acceptsInput: false,
+        });
+      }
       setEditingAnchorId(null);
 
       // Recorded under the (possibly just-allocated) session id, so the first
@@ -888,6 +894,7 @@ export function useChatComposerState({
       onSessionProcessing,
       onSessionEstablished,
       provider,
+      processingSessions,
       recordSentMessage,
       resetCommandMenuState,
       scrollToBottom,

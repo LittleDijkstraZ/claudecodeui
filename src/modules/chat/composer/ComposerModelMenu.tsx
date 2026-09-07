@@ -34,7 +34,7 @@ type ComposerModelMenuProps = {
 
 /**
  * Rendered by chat's ChatComposer as the popover for choosing the active
- * provider's model and reasoning effort for the next turn.
+ * provider's model and reasoning effort for the next execution.
  */
 function ComposerModelMenu({
   details,

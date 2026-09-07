@@ -22,6 +22,10 @@ const sessionActivityMapsMatch = (
       || leftActivity.statusText !== rightActivity.statusText
       || leftActivity.canInterrupt !== rightActivity.canInterrupt
       || leftActivity.startedAt !== rightActivity.startedAt
+      || leftActivity.phase !== rightActivity.phase
+      || leftActivity.acceptsInput !== rightActivity.acceptsInput
+      || leftActivity.backgroundTasks !== rightActivity.backgroundTasks
+      || leftActivity.executionId !== rightActivity.executionId
     ) {
       return false;
     }
@@ -52,17 +56,26 @@ export function useSessionProtection() {
 
     setProcessingSessions((prev) => {
       const existing = prev.get(sessionId);
+      const previous = activity?.executionId && existing?.executionId !== activity.executionId ? undefined : existing;
       const next: SessionActivity = {
+        phase: activity?.phase ?? previous?.phase,
+        acceptsInput: activity?.acceptsInput ?? previous?.acceptsInput,
+        backgroundTasks: activity?.backgroundTasks ?? previous?.backgroundTasks,
+        executionId: activity?.executionId ?? previous?.executionId,
         statusText:
-          activity?.statusText !== undefined ? activity.statusText : existing?.statusText ?? null,
-        canInterrupt: activity?.canInterrupt ?? existing?.canInterrupt ?? true,
-        startedAt: existing?.startedAt ?? Date.now(),
+          activity?.statusText !== undefined ? activity.statusText : previous?.statusText ?? null,
+        canInterrupt: activity?.canInterrupt ?? previous?.canInterrupt ?? true,
+        startedAt: previous?.startedAt ?? Date.now(),
       };
 
       if (
         existing
         && existing.statusText === next.statusText
         && existing.canInterrupt === next.canInterrupt
+        && existing.phase === next.phase
+        && existing.acceptsInput === next.acceptsInput
+        && existing.backgroundTasks === next.backgroundTasks
+        && existing.executionId === next.executionId
       ) {
         return prev;
       }
@@ -119,6 +132,10 @@ export function useSessionProtection() {
             : undefined;
 
         updated.set(sessionId, {
+          phase: snapshot.phase,
+          acceptsInput: snapshot.acceptsInput,
+          backgroundTasks: snapshot.backgroundTasks,
+          executionId: snapshot.executionId,
           statusText:
             snapshot.statusText !== undefined ? snapshot.statusText : existing?.statusText ?? null,
           canInterrupt: snapshot.canInterrupt ?? existing?.canInterrupt ?? true,
