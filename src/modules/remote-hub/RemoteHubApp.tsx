@@ -35,7 +35,7 @@ function Hub() {
   const [selection, setSelection] = useState<HubConversation | null>(null);
   // Allows login to a machine before any conversation is selected.
   const [loginRemote, setLoginRemote] = useState<string | null>(null);
-  const { chatVisibility, acceptChatVisibility, navigation, selections, acceptNavigation, selectTab, panes, navigate: navigatePane, register: registerPane, remoteForSource, markReady, acceptSelection, openSettings } = useHubPanes();
+  const { chatVisibility, acceptChatVisibility, navigation, selections, acceptNavigation, selectTab, panes, navigate: navigatePane, register: registerPane, remoteForSource, markReady, acceptSelection, openSettings, acceptSettingsOpened } = useHubPanes();
   // Retains the current group or conversation dialog operation.
   const [modal, setModal] = useState<HubDialogState | null>(null);
   // Keeps remote conversation operations separate from local group dialogs.
@@ -161,6 +161,7 @@ function Hub() {
       const remoteId = remoteForSource(event.source);
       if (!remoteId) return;
       if (event.data?.kind === 'cloudcli:ready') { markReady(remoteId); return; }
+      if (event.data?.kind === 'cloudcli:settings-opened') { if (event.data.remoteId === remoteId) acceptSettingsOpened(remoteId, event.data.requestId); return; }
       if (event.data?.kind === 'cloudcli:chat-visibility') { acceptChatVisibility(remoteId, event.data); return; }
       if (event.data?.kind === 'cloudcli:workspace-nav') { acceptNavigation(remoteId, event.data); return; }
       if (event.data?.kind !== 'cloudcli:selection' || typeof event.data.sessionId !== 'string') return;
@@ -179,7 +180,7 @@ function Hub() {
     };
     window.addEventListener('message', message);
     return () => window.removeEventListener('message', message);
-  }, [selection?.remoteId, loginRemote, remoteForSource, markReady, acceptSelection, acceptNavigation, acceptChatVisibility]);
+  }, [selection?.remoteId, loginRemote, remoteForSource, markReady, acceptSettingsOpened, acceptSelection, acceptNavigation, acceptChatVisibility]);
   // Import each remote user's existing groups once. Membership order is fetched
   // from that remote in pages, then becomes independent local hub metadata.
   useEffect(() => {
@@ -462,7 +463,7 @@ function Hub() {
         <Button variant="ghost" size="icon" aria-label="展开侧栏" className="h-8 w-8 shrink-0" onClick={() => setSidebarOpen(!sidebarOpen)}><Layers className="h-4 w-4" /></Button>
         <div className="min-w-0 flex-1 basis-28" title={`${selection?.title ?? ''} · ${selectedRemote?.name ?? ''} · ${selection?.projectPath ?? ''}`}><div className="truncate text-sm font-medium">{selection?.title ?? (loginRemote ? '连接远端' : '所有远端，一个窗口')}</div>{selectedRemote && <div className="truncate text-[10px] text-muted-foreground">{selectedRemote.name}</div>}</div>
         {selectedRemote && navigation[selectedRemote.id]?.sessionId === (selection?.sessionId ?? null) && <nav aria-label="工作区视图" className="flex min-w-0 max-w-[65%] shrink items-center gap-0.5 overflow-x-auto">{navigation[selectedRemote.id].tabs.map(tab => <button key={tab.id} type="button" aria-pressed={navigation[selectedRemote.id].activeTab === tab.id} onClick={() => selectTab(selectedRemote.id, tab.id)} className={`shrink-0 whitespace-nowrap rounded-md px-2 py-1.5 text-xs ${navigation[selectedRemote.id].activeTab === tab.id ? 'bg-accent font-medium' : 'text-muted-foreground hover:bg-accent'}`}>{tab.label}</button>)}</nav>}
-        {selectedRemote && <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" aria-label="机器设置" title="机器设置" onClick={() => openSettings(selectedRemote.id)}><Settings className="h-4 w-4" /></Button>}
+        {selectedRemote && <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" aria-label={`${selectedRemote.name} 的设置`} title={`${selectedRemote.name} 的设置`} onClick={() => openSettings(selectedRemote.id)}><Settings className="h-4 w-4" /></Button>}
       </header>
       {selectedRemote && states[selectedRemote.id]?.status === 'offline' && <div role="status" className="bg-amber-50 px-4 py-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-200">{selectedRemote.name} 连接中断，其他机器仍可使用。<button className="ml-2 underline" onClick={() => void refresh(selectedRemote.id)}>重新连接</button></div>}
       {panes.map(pane => <iframe

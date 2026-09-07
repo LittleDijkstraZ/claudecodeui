@@ -1,9 +1,8 @@
 import type { ChatMessage, ConversationChangeTurn, ConversationFileChange, ToolResult } from '@/shared/types';
-
 import { getIntrinsicMessageKey } from '@/modules/chat/utils/messageKeys';
 
 type RecordValue = Record<string, unknown>;
-type RecordedChange = Pick<ConversationFileChange, 'filePath' | 'operation' | 'oldContent' | 'newContent' | 'patch' | 'contextLabel'>;
+type RecordedChange = Pick<ConversationFileChange, 'filePath' | 'operation' | 'oldContent' | 'newContent' | 'patch' | 'contextLabel' | 'lineCountUnavailable'>;
 type ToolRecord = {
   identity: string;
   turn: ConversationChangeTurn;
@@ -136,7 +135,7 @@ function extractChanges(tool: ToolRecord): RecordedChange[] {
   if (name === 'write') {
     // Successful SDK outputs may contain user-adjusted content; those take precedence.
     const newContent = firstString(metadata.content, metadata.userModified === true ? undefined : input.content);
-    const oldContent = firstString(metadata.originalFile);
+    const oldContent = firstString(metadata.originalFile, metadata.type === 'create' ? '' : undefined);
     if (newContent === undefined && patch === undefined && metadata.userModified !== true) return [];
     if (oldContent !== undefined && oldContent === newContent) return [];
     return [{ filePath: path, operation: 'write', oldContent, newContent, patch }];
@@ -149,7 +148,7 @@ function extractChanges(tool: ToolRecord): RecordedChange[] {
       const oldContent = firstString(edit.old_string, edit.oldString);
       const newContent = firstString(edit.new_string, edit.newString);
       return oldContent !== undefined && newContent !== undefined && oldContent !== newContent
-        ? [{ filePath: path, operation: 'edit', oldContent, newContent }]
+        ? [{ filePath: path, operation: 'edit', oldContent, newContent, lineCountUnavailable: edit.replace_all === true || edit.replaceAll === true }]
         : [];
     });
   }
@@ -158,7 +157,9 @@ function extractChanges(tool: ToolRecord): RecordedChange[] {
     const newContent = firstString(metadata.newString, metadata.new_string, metadata.userModified === true ? undefined : input.new_string, metadata.userModified === true ? undefined : input.newString);
     if (oldContent !== undefined && oldContent === newContent) return [];
     if ((oldContent === undefined || newContent === undefined) && patch === undefined && metadata.userModified !== true) return [];
-    return [{ filePath: path, operation: name === 'edit' ? 'edit' : 'patch', oldContent, newContent, patch }];
+    return [{ filePath: path, operation: name === 'edit' ? 'edit' : 'patch', oldContent, newContent, patch,
+      lineCountUnavailable: input.replace_all === true || input.replaceAll === true || metadata.replaceAll === true || metadata.replace_all === true,
+    }];
   }
   return [];
 }

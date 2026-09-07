@@ -77,7 +77,7 @@ function createStore(messagesBySession: Map<string, NormalizedMessage[]>) {
   return {
     fetchFromServer: vi.fn(async (sessionId: string) => slotFor(sessionId)),
     fetchMore: vi.fn(async (sessionId: string) => ({ slot: slotFor(sessionId), prependedCount: 0 })),
-    appendRealtime: vi.fn(),
+    appendRealtime: vi.fn<(sessionId: string, message: NormalizedMessage) => void>(),
     refreshLatestFromServer: vi.fn(async (sessionId: string) => ({
       slot: slotFor(sessionId),
       applied: true,
@@ -281,4 +281,17 @@ describe('external Shell history while Chat is processing', () => {
     expect(store.refreshLatestFromServer).toHaveBeenCalledTimes(2);
     expect(hook.result.current.isProcessing).toBe(true);
   });
+});
+
+
+it('a first-send echo targets its allocated session directly without a pending single-message slot', async () => {
+  const store = createStore(new Map());
+  const hook = await renderChatSessionState({ session: { id: '' } as ProjectSession, store });
+  act(() => {
+    hook.result.current.addMessage({ type: 'user', content: 'First prompt', timestamp: 1, clientMessageId: 'fixture-input', delivery: 'queued' }, 'allocated-session', 'claude');
+    hook.result.current.addMessage({ type: 'user', content: 'First prompt', timestamp: 1, clientMessageId: 'fixture-input', delivery: 'failed' }, 'allocated-session', 'claude');
+  });
+  expect(store.appendRealtime.mock.calls.map(([id, message]) => [id, message.provider, message.clientMessageId, message.delivery])).toEqual([
+    ['allocated-session', 'claude', 'fixture-input', 'queued'], ['allocated-session', 'claude', 'fixture-input', 'failed'],
+  ]);
 });

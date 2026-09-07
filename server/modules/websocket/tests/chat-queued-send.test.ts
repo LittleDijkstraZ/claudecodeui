@@ -31,7 +31,7 @@ async function withFixture(runTest: (fixture: {
   connection: FakeConnection;
   run: NonNullable<ReturnType<typeof chatRunRegistry.startRun>>;
   enqueueCalls: Array<{ provider: LLMProvider; sessionId: string; command: string; options: AnyRecord }>;
-}) => Promise<void>, options: { userId?: string; ownerId?: string; enqueue?: () => Promise<boolean>; provider?: LLMProvider } = {}): Promise<void> {
+}) => Promise<void>, options: { userId?: string; ownerId?: string; enqueue?: () => Promise<boolean>; run?: RuntimeGateway['run']; provider?: LLMProvider } = {}): Promise<void> {
   const previous = process.env.DATABASE_PATH;
   const directory = await mkdtemp(path.join(os.tmpdir(), 'chat-queued-send-'));
   closeConnection(); process.env.DATABASE_PATH = path.join(directory, 'auth.db');
@@ -46,7 +46,7 @@ async function withFixture(runTest: (fixture: {
     const enqueueCalls: Array<{ provider: LLMProvider; sessionId: string; command: string; options: AnyRecord }> = [];
     const runtime: RuntimeGateway = {
       hasRuntime: () => true,
-      run: async () => assert.fail('A queued send must never start another runtime'),
+      run: options.run ?? (async () => assert.fail('A queued send must never start another runtime')),
       abort: async () => assert.fail('A queued send must never stop the current runtime'),
       resolveToolApproval: () => {}, getPendingApprovalsForSession: () => [],
       enqueue: async (selectedProvider, sessionId, command, runtimeOptions) => {
@@ -243,3 +243,31 @@ for (const changedAttachment of ['image', 'file', 'omitted'] as const) {
     });
   });
 }
+
+test('a launch preparation failure returns a failed receipt for the admitted prompt before completion', { concurrency: false }, async () => {
+  await withFixture(async ({ sessionId, connection, run }) => {
+    run.writer.sendComplete({ exitCode: 0 });
+    await connection.receive({ type: 'chat.send', sessionId, clientMessageId: CLIENT_ID, content: 'Keep this user prompt' });
+    const receipts = connection.frames.filter(frame => frame.text === 'message_delivery' && frame.clientMessageId === CLIENT_ID);
+    assert.deepEqual(receipts.map(frame => frame.delivery), ['queued', 'failed']);
+    assert.ok(receipts.every(frame => frame.content === 'Keep this user prompt'));
+    assert.match(String(receipts[1].error), /without confirming/);
+    assert.ok(Number(receipts[1].seq) < Number(connection.frames.find(frame => frame.kind === 'complete')?.seq));
+    assert.equal(chatRunRegistry.isProcessing(sessionId), false);
+  }, { run: async () => { throw new Error('Fixture launch preparation failed'); } });
+});
+
+test('a completed run returns final delivery receipts on subscribe without replaying old assistant content', { concurrency: false }, async () => {
+  await withFixture(async ({ sessionId, connection, run }) => {
+    run.writer.send({ kind: 'status', text: 'message_delivery', provider: 'claude', clientMessageId: CLIENT_ID, content: 'Retain me after reconnect', delivery: 'queued' });
+    run.writer.send({ kind: 'text', role: 'assistant', provider: 'claude', content: 'Already saved assistant response' });
+    run.writer.sendComplete({ exitCode: 1 });
+    await connection.receive({ type: 'chat.subscribe', sessions: [{ sessionId, lastSeq: 0 }] });
+    const ack = connection.frames.find(frame => frame.kind === 'chat_subscribed');
+    assert.equal(ack?.isProcessing, false);
+    assert.equal(ack?.messageReceipts.length, 1);
+    assert.equal(ack?.messageReceipts[0].clientMessageId, CLIENT_ID);
+    assert.equal(ack?.messageReceipts[0].delivery, 'failed');
+    assert.equal(connection.frames.some(frame => frame.role === 'assistant'), false);
+  });
+});

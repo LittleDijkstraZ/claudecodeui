@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next';
 import { ArrowDownIcon } from 'lucide-react';
 
+import { useAuth } from '@/modules/auth';
 import { useWorkspacePanelActions } from '@/modules/workspace-panels';
 import { getIntrinsicMessageKey } from '@/modules/chat/utils/messageKeys';
 import { useTasksSettings } from '@/modules/task-master';
@@ -89,7 +90,8 @@ function ChatInterface({
     markSessionIdle: onSessionIdle,
   } = useSessionProtectionActions();
 
-  const sessionStore = useSessionStore();
+  const { user } = useAuth();
+  const sessionStore = useSessionStore(user?.id);
   const chatRootRef = useRef<HTMLDivElement>(null);
   // When each session's `chat.subscribe` was last sent; idle acks older than
   // a later local request are discarded as stale.
@@ -590,6 +592,7 @@ function ChatInterface({
           // Editing replaces the turn and everything after it, so it is only
           // offered when the session is idle — a half-truncated transcript with
           // a live stream writing into it is not recoverable.
+          onDismissPendingMessage={(message) => { if (viewedSessionId && message.clientMessageId) sessionStore.dismissPendingUserMessage(viewedSessionId, message.clientMessageId); }}
           onEditMessage={supportsMessageEditing && !isProcessing ? beginEditMessage : undefined}
           onForkFromMessage={supportsSessionForking ? handleForkFromMessage : undefined}
           onLoadFullTranscript={loadFullTranscript}
@@ -626,6 +629,9 @@ function ChatInterface({
             </p>
           )}
 
+          {sessionStore.pendingMessageStorageFailed && <p role="alert" className="mx-auto mb-2 max-w-[54.25rem] px-3 text-xs text-amber-700 dark:text-amber-300">
+            {t('message.delivery.storageFailed')}
+          </p>}
           <ChatComposer
           modelDetails={<ModelIdentitySummary provider={provider} sessionId={viewedSessionId} selectedModel={currentProviderModel} revision={`${isProcessing}-${chatMessages.length}`} continuesExecution={sessionActivity?.acceptsInput === true} />}
           pendingPermissionRequests={pendingPermissionRequests}

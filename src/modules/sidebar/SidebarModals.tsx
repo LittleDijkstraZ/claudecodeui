@@ -1,20 +1,13 @@
-import { useMemo } from 'react';
 import ReactDOM from 'react-dom';
 import { AlertTriangle, EyeOff, Trash2 } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { Button } from '@/shared/ui';
-import { Settings } from '@/modules/settings';
 import { VersionUpgradeModal } from '@/modules/version-upgrade';
-import type { InstallMode, PendingSidebarDeletion, Project, ReleaseInfo, SettingsProject } from '@/shared/types';
-import { normalizeProjectForSettings } from '@/modules/sidebar/utils/sidebarProjectFormatting';
+import type { InstallMode, PendingSidebarDeletion, ReleaseInfo } from '@/shared/types';
 import { ProjectCreationWizard } from '@/modules/project-creation-wizard';
 
 type SidebarModalsProps = {
-  projects: Project[];
-  showSettings: boolean;
-  settingsInitialTab: string;
-  onCloseSettings: () => void;
   showNewProject: boolean;
   onCloseNewProject: () => void;
   onProjectCreated: () => void;
@@ -31,25 +24,8 @@ type SidebarModalsProps = {
   t: TFunction;
 };
 
-type TypedSettingsProps = {
-  isOpen: boolean;
-  onClose: () => void;
-  projects: SettingsProject[];
-  initialTab: string;
-};
-
-const SettingsComponent = Settings as (props: TypedSettingsProps) => JSX.Element;
-
-function TypedSettings(props: TypedSettingsProps) {
-  return <SettingsComponent {...props} />;
-}
-
-/** Rendered by Sidebar to host its settings, new-project, delete-confirmation and version modals in one place. */
+/** Rendered by Sidebar to host its new-project, delete-confirmation and version modals. Workspace settings are mounted independently. */
 export default function SidebarModals({
-  projects,
-  showSettings,
-  settingsInitialTab,
-  onCloseSettings,
   showNewProject,
   onCloseNewProject,
   onProjectCreated,
@@ -65,12 +41,6 @@ export default function SidebarModals({
   installMode,
   t,
 }: SidebarModalsProps) {
-  // Settings expects project identity/path fields to be present for dropdown labels and local-scope MCP config.
-  const settingsProjects = useMemo(
-    () => projects.map(normalizeProjectForSettings),
-    [projects],
-  );
-
   return (
     <>
       {showNewProject &&
@@ -78,17 +48,6 @@ export default function SidebarModals({
           <ProjectCreationWizard
             onClose={onCloseNewProject}
             onProjectCreated={onProjectCreated}
-          />,
-          document.body,
-        )}
-
-      {showSettings &&
-        ReactDOM.createPortal(
-          <TypedSettings
-            isOpen={showSettings}
-            onClose={onCloseSettings}
-            projects={settingsProjects}
-            initialTab={settingsInitialTab}
           />,
           document.body,
         )}

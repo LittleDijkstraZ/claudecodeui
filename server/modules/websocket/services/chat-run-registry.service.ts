@@ -117,6 +117,17 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
     return null;
   }
 
+  if (message.kind === 'complete') {
+    // A process may fail before the provider creates its stdin queue. Never leave
+    // admitted prompts permanently waiting or claim that unacknowledged input arrived.
+    for (const receipt of [...run.messageReceipts.values()]) {
+      if (receipt.delivery !== 'queued') continue;
+      run.writer.send({ ...receipt, delivery: 'failed',
+        error: 'Claude ended without confirming receipt. Review the transcript before retrying.',
+        timestamp: new Date().toISOString() });
+    }
+  }
+
   run.lastSeq += 1;
 
   const outbound: NormalizedMessage = {

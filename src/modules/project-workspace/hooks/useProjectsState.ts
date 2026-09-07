@@ -703,6 +703,7 @@ export function useProjectsState({
     setSettingsInitialTab(tab);
     setShowSettings(true);
   }, []);
+  const closeSettings = useCallback(() => setShowSettings(false), []);
 
   useEffect(() => {
     if (mountFetchStartedRef.current) {
@@ -1260,9 +1261,6 @@ export function useProjectsState({
       loadingProgress,
       onRefresh: handleSidebarRefresh,
       onShowSettings: () => setShowSettings(true),
-      showSettings,
-      settingsInitialTab,
-      onCloseSettings: () => setShowSettings(false),
       isMobile,
     }),
     [
@@ -1278,10 +1276,8 @@ export function useProjectsState({
       isMobile,
       loadingProgress,
       projects,
-      settingsInitialTab,
       selectedProject,
       selectedSession,
-      showSettings,
     ],
   );
 
@@ -1301,6 +1297,7 @@ export function useProjectsState({
     setSidebarOpen,
     setShowSettings,
     openSettings,
+    closeSettings,
     fetchProjects,
     refreshProjectsSilently,
     registerOptimisticSession,

@@ -1,8 +1,9 @@
+import { memo } from 'react';
+
 import { WorkspacePanelsProvider } from '@/modules/workspace-panels';
 import ProjectHubBridge from '@/modules/project-workspace/ProjectHubBridge';
-import { memo } from 'react';
 import ProjectGroupDialogs from '@/modules/project-workspace/ProjectGroupDialogs';
-
+import ProjectSettingsDialog from '@/modules/project-workspace/ProjectSettingsDialog';
 import { QuickSettingsPanel } from '@/modules/quick-settings-panel';
 import ProjectEffects from '@/modules/project-workspace/controllers/ProjectEffects';
 import type { ProjectWorkspaceShellProps } from '@/shared/types';
@@ -37,6 +38,7 @@ function ProjectWorkspaceShell({
       </div>
 
       <ProjectCommandPalette />
+      <ProjectSettingsDialog />
       <QuickSettingsPanel />
       <ProjectGroupDialogs isMobile={isMobile} navigate={navigate} />
     </div>

@@ -308,21 +308,29 @@ async function dispatchRun(
     return { started: false, error: 'A run is already in progress for this session.' };
   }
 
-  // Group-created drafts have no initial message at allocation time. Name only
-  // accepted sends so a rejected competing send cannot rename the conversation.
-  sessionsService.initializeAppSessionName(sessionId, command);
-
-  // Initialize draft choices once. Claude launches reread the canonical session
-  // selection, so a stale browser cannot overwrite a newer saved choice here.
-  if ((provider !== 'claude' || !session.model) && typeof clientOptions.model === 'string' && clientOptions.model.trim()) {
-    providerModelsService.setSessionModel(provider, sessionId, clientOptions.model);
-  }
-  if ((provider !== 'claude' || !session.effort) && typeof clientOptions.effort === 'string' && clientOptions.effort.trim()) {
-    providerModelsService.setSessionEffort(provider, sessionId, clientOptions.effort);
-  }
+  // Admission is not delivery to Claude. Record the prompt before launch preparation
+  // so a model/settings/ownership failure cannot leave an orphaned optimistic send.
+  if (provider === 'claude' && clientMessageId) run.writer.send(createNormalizedMessage({
+    kind: 'status', text: 'message_delivery', sessionId, provider, clientMessageId,
+    delivery: 'queued', content: command, images: runtimeOptions.images, files: runtimeOptions.files,
+    timestamp: new Date().toISOString(),
+  }));
 
   let failure: string | null = null;
   try {
+    // Group-created drafts have no initial message at allocation time. Name only
+    // accepted sends so a rejected competing send cannot rename the conversation.
+    sessionsService.initializeAppSessionName(sessionId, command);
+
+    // Initialize draft choices once. Claude launches reread the canonical session
+    // selection, so a stale browser cannot overwrite a newer saved choice here.
+    if ((provider !== 'claude' || !session.model) && typeof clientOptions.model === 'string' && clientOptions.model.trim()) {
+      providerModelsService.setSessionModel(provider, sessionId, clientOptions.model);
+    }
+    if ((provider !== 'claude' || !session.effort) && typeof clientOptions.effort === 'string' && clientOptions.effort.trim()) {
+      providerModelsService.setSessionEffort(provider, sessionId, clientOptions.effort);
+    }
+
     // Runs only now that the session is reserved, because an edit rewinds the
     // conversation here and a rewind for a run that was never admitted cannot
     // be taken back. Inside the try so a rewind that throws still releases the
@@ -368,7 +376,7 @@ async function handleChatEditSend(
   const { sessionId, session, provider } = resolved;
   const anchorId = typeof data.anchorId === 'string' ? data.anchorId.trim() : '';
   if (!anchorId) {
-    sendProtocolError(ws, 'ANCHOR_REQUIRED', 'chat.edit-send requires the anchorId of the message being replaced.', sessionId);
+    sendProtocolError(ws, 'ANCHOR_REQUIRED', 'chat.edit-send requires the anchorId of the message being replaced.', sessionId, data.clientMessageId);
     return;
   }
 
@@ -380,18 +388,18 @@ async function handleChatEditSend(
         ws,
         'EDIT_NOT_SUPPORTED',
         `Provider "${provider}" cannot replace an already-sent message.`,
-        sessionId
+        sessionId, data.clientMessageId
       );
       return;
     }
     if (!anchor.found) {
-      sendProtocolError(ws, 'ANCHOR_NOT_FOUND', 'That message is no longer in the transcript.', sessionId);
+      sendProtocolError(ws, 'ANCHOR_NOT_FOUND', 'That message is no longer in the transcript.', sessionId, data.clientMessageId);
       return;
     }
     resumeThroughId = anchor.resumeThroughId;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    sendProtocolError(ws, 'ANCHOR_LOOKUP_FAILED', `Could not read the transcript: ${message}`, sessionId);
+    sendProtocolError(ws, 'ANCHOR_LOOKUP_FAILED', `Could not read the transcript: ${message}`, sessionId, data.clientMessageId);
     return;
   }
 
@@ -440,7 +448,7 @@ async function handleChatEditSend(
           await sessionsService.rewindSessionForEdit(sessionId, resumeThroughId);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          sendProtocolError(ws, 'EDIT_REWIND_FAILED', `Could not rewind the conversation: ${message}`, sessionId);
+          sendProtocolError(ws, 'EDIT_REWIND_FAILED', `Could not rewind the conversation: ${message}`, sessionId, data.clientMessageId);
           // Ends the run before the provider is asked to continue a
           // conversation that was not rewound after all.
           throw error;
@@ -490,6 +498,7 @@ async function handleChatAbort(
  */
 function handleChatSubscribe(
   ws: WebSocket,
+  userId: string | number | null,
   data: AnyRecord,
   dependencies: ChatWebSocketDependencies
 ): void {
@@ -532,6 +541,7 @@ function handleChatSubscribe(
       ...(run?.runtimeState ?? {}),
       lastSeq: run?.lastSeq ?? 0,
       pendingPermissions,
+      messageReceipts: run && String(run.writer.userId) === String(userId) ? [...run.messageReceipts.values()] : [],
       timestamp: new Date().toISOString(),
     });
 
@@ -676,7 +686,7 @@ export function handleChatConnection(
           await handleChatAbort(ws, data, dependencies);
           return;
         case 'chat.subscribe':
-          handleChatSubscribe(ws, data, dependencies);
+          handleChatSubscribe(ws, userId, data, dependencies);
           return;
         case 'chat.permission-response':
           handlePermissionResponse(data, dependencies);

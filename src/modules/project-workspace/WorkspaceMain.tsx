@@ -22,6 +22,8 @@ type WorkspaceMainProps = {
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
   activeTab: AppTab;
+  /** Settings covers the conversation without stopping its execution or unmounting workspace panels. */
+  settingsOpen?: boolean;
   setActiveTab: Dispatch<SetStateAction<AppTab>>;
   ws: WebSocket | null;
   sendMessage: (message: unknown) => void;
@@ -41,7 +43,7 @@ type WorkspaceMainProps = {
 
 /** Used by ProjectMainRegion to keep chat primary and retain auxiliary views in a common right panel. */
 function WorkspaceMain({
-  selectedProject, selectedSession, activeTab, setActiveTab, ws, sendMessage, isMobile, onMenuClick, isLoading,
+  selectedProject, selectedSession, activeTab, settingsOpen = false, setActiveTab, ws, sendMessage, isMobile, onMenuClick, isLoading,
   onNavigateToSession, onSessionEstablished, onShowSettings, externalMessageUpdate, newSessionTrigger,
   onProjectSelect, onProjectsRefresh,
 }: WorkspaceMainProps) {
@@ -88,7 +90,7 @@ function WorkspaceMain({
     {isLoading ? <WorkspaceStateView mode="loading" isMobile={isMobile} onMenuClick={onMenuClick} />
       : !selectedProject ? <WorkspaceStateView mode="empty" isMobile={isMobile} onMenuClick={onMenuClick} />
         : <WorkspaceErrorBoundary showDetails><ChatInterface
-          isActive
+          isActive={!settingsOpen}
           selectedProject={selectedProject} selectedSession={selectedSession} ws={ws} sendMessage={sendMessage}
           onFileOpen={handleFileOpen} onNavigateToSession={onNavigateToSession} onSessionEstablished={onSessionEstablished}
           onShowSettings={onShowSettings} showRawParameters={showRawParameters} showThinking={showThinking}
@@ -102,7 +104,7 @@ function WorkspaceMain({
       selectedProject={selectedProject} selectedSession={selectedSession} shouldShowTasksTab={shouldShowTasksTab}
       shouldShowBrowserTab={shouldShowBrowserTab} isMobile={isMobile} onMenuClick={onMenuClick} onShowSettings={() => onShowSettings()}
     />}
-    <WorkspacePanelLayout main={main} title={title} sessionId={selectedSession?.id ?? null}>
+    <WorkspacePanelLayout main={main} mainCovered={settingsOpen} title={title} sessionId={selectedSession?.id ?? null}>
       {retained('shell') && <div className={`h-full ${visible('shell') ? 'block' : 'hidden'}`}><WorkspaceTerminals project={selectedProject} session={selectedSession} visible={visible('shell')} /></div>}
       {retained('files') && <div className={`h-full ${visible('files') ? 'block' : 'hidden'}`}><WorkspaceFilesPanel project={selectedProject} editingFile={editing?.file ?? null} editingProject={editing?.project ?? null} onFileOpen={openFile} onClose={() => setEditing(null)} /></div>}
       {retained('git') && <div className={`h-full ${visible('git') ? 'block' : 'hidden'}`}>{selectedProject && <GitPanel selectedProject={selectedProject} isMobile={isMobile} onFileOpen={handleFileOpen} onProjectSelect={onProjectSelect} onProjectsRefresh={onProjectsRefresh} />}</div>}

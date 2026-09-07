@@ -1,5 +1,6 @@
 {
   "title": "設定",
+  "close": "關閉設定",
   "tabs": {
     "account": "帳戶",
     "permissions": "權限",

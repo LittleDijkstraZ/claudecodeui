@@ -136,7 +136,12 @@
       "label": "已排队",
       "willSend": "将在当前完成后发送",
       "edit": "编辑排队消息",
-      "delete": "删除排队消息"
+      "delete": "删除排队消息",
+      "alreadyWaiting": "已有一条消息在等待当前运行结束。新写的内容已留在输入框，请先编辑或移除待发消息。",
+      "alreadyWaitingHint": "请先编辑或移除待发消息",
+      "notDelivered": "尚未送达 Claude",
+      "remoteUnsupported": "当前远端进程未报告支持持续输入。这条草稿要等整个运行结束后才会发送。",
+      "preparing": "上一条消息仍在准备发送。新草稿会留在这里，请等准备完成后再发送。"
     }
   },
   "providerSelection": {
@@ -249,7 +254,10 @@
     "delivery": {
       "queued": "等待处理",
       "delivered": "已送达",
-      "failed": "未确认送达"
+      "failed": "未确认送达",
+      "dismiss": "移除本地副本",
+      "dismissHint": "仅移除当前浏览器的副本，不取消已提交的消息，也不删除远端历史。",
+      "storageFailed": "浏览器无法保存待确认消息的副本。消息目前仍然可见，但刷新后可能无法恢复。"
     }
   },
   "export": {
@@ -288,6 +296,11 @@
   "changes": {
     "title": "会话改动",
     "review": "查看改动",
+    "lineTotals": "已记录修改：新增 {{added}} / 删除 {{removed}} 行，按每次修改累计，并非 Git 净差异。",
+    "lineTotalsIncomplete": "部分记录缺少可统计的内容，数字仅包含能够确认的修改。",
+    "lineTotalsPartial": "部分",
+    "lineTotalsUnknown": "未知",
+    "lineTotalsUnavailable": "现有记录无法确认增删行数。",
     "close": "关闭改动面板",
     "scope": "查看范围",
     "latestFiles_one": "最近一轮 · 修改了 {{count}} 个文件",

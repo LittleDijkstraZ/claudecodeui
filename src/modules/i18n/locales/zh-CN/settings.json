@@ -1,5 +1,6 @@
 {
   "title": "设置",
+  "close": "关闭设置",
   "tabs": {
     "account": "账户",
     "permissions": "权限",

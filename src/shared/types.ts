@@ -1636,6 +1636,8 @@ export type ConversationFileChange = {
   oldContent?: string;
   newContent?: string;
   patch?: string;
+  /** A replacement may have affected an unknown number of occurrences; its fragments cannot prove line totals. */
+  lineCountUnavailable?: boolean;
   sourceMessageKey: string;
   sourceToolId?: string;
   timestamp: ChatMessage['timestamp'];

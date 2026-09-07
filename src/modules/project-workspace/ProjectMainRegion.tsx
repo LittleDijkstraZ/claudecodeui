@@ -1,6 +1,6 @@
 import { memo, useCallback } from 'react';
 
-import { useProjectMainState } from '@/modules/project-workspace/context/ProjectsStateContext';
+import { useProjectMainState, useProjectSettingsState } from '@/modules/project-workspace/context/ProjectsStateContext';
 import type { SessionEstablishedContext, SessionNavigationOptions,ProjectWorkspaceShellProps } from '@/shared/types';
 import WorkspaceMain from '@/modules/project-workspace/WorkspaceMain';
 
@@ -11,6 +11,7 @@ function ProjectMainRegion({
   sendMessage,
   navigate,
 }: ProjectWorkspaceShellProps) {
+  const { showSettings } = useProjectSettingsState();
   const {
     selectedProject,
     selectedSession,
@@ -53,6 +54,7 @@ function ProjectMainRegion({
       selectedProject={selectedProject}
       selectedSession={selectedSession}
       activeTab={activeTab}
+      settingsOpen={showSettings}
       setActiveTab={setActiveTab}
       ws={ws}
       sendMessage={sendMessage}

@@ -136,7 +136,12 @@
       "label": "Queued",
       "willSend": "Will send when this finishes",
       "edit": "Edit queued message",
-      "delete": "Delete queued message"
+      "delete": "Delete queued message",
+      "alreadyWaiting": "A message is already waiting for this run to finish. Your new text remains in the input. Edit or remove the waiting message first.",
+      "alreadyWaitingHint": "Edit or remove the waiting message first",
+      "notDelivered": "Not delivered to Claude",
+      "remoteUnsupported": "This remote process does not report support for continued input. This draft waits until the entire current run finishes.",
+      "preparing": "The previous message is still preparing. Your new draft remains here; send it after preparation finishes."
     }
   },
   "composer": {
@@ -271,7 +276,10 @@
     "delivery": {
       "queued": "Waiting to be processed",
       "delivered": "Delivered",
-      "failed": "Delivery unconfirmed"
+      "failed": "Delivery unconfirmed",
+      "dismiss": "Remove local copy",
+      "dismissHint": "Removes only this browser copy. It does not cancel submitted input or delete remote history.",
+      "storageFailed": "This browser could not save pending message copies. They remain visible now, but may not survive a reload."
     }
   },
   "export": {
@@ -366,6 +374,11 @@
   "changes": {
     "title": "Conversation changes",
     "review": "Review changes",
+    "lineTotals": "Recorded edits: +{{added}} / −{{removed}} lines, accumulated across edits; not a Git net diff.",
+    "lineTotalsIncomplete": "Some edits cannot be counted from the recorded content. Numbers cover only the countable edits.",
+    "lineTotalsPartial": "partial",
+    "lineTotalsUnknown": "unknown",
+    "lineTotalsUnavailable": "Line totals are unavailable from the recorded content.",
     "close": "Close changes",
     "scope": "Changes to review",
     "latestFiles_one": "Latest turn · {{count}} file changed",

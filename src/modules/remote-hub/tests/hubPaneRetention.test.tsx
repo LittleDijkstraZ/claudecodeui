@@ -49,3 +49,38 @@ test('a retained frame supplies its own navigation and stale or unknown tab comm
   act(() => result.current.selectTab('beta', 'shell'));
   expect(postMessage.mock.calls).toHaveLength(count);
 });
+
+test('settings clicked before readiness stays bound to its machine after switching panes', () => {
+  const { result } = renderHook(useHubPanes);
+  const alpha = vi.fn(), beta = vi.fn();
+  act(() => result.current.openSettings('alpha'));
+  expect(result.current.panes[0]).toEqual({ remoteId: 'alpha', initialSessionId: null });
+  act(() => result.current.navigate('beta', 'other-session'));
+  act(() => {
+    result.current.register('alpha', { contentWindow: { postMessage: alpha } } as unknown as HTMLIFrameElement);
+    result.current.register('beta', { contentWindow: { postMessage: beta } } as unknown as HTMLIFrameElement);
+    result.current.markReady('beta');
+  });
+  expect(beta.mock.calls.some(([message]) => message.kind === 'cloudcli:settings')).toBe(false);
+  expect(alpha).not.toHaveBeenCalled();
+  act(() => result.current.markReady('alpha'));
+  expect(alpha).toHaveBeenCalledWith({ kind: 'cloudcli:settings', remoteId: 'alpha', requestId: expect.any(String) }, location.origin);
+  const requestId = alpha.mock.calls.at(-1)![0].requestId;
+  // Startup remounts can lose the first delivery; only an explicit receipt
+  // retires this request so closing it cannot cause a later replay.
+  act(() => result.current.markReady('alpha'));
+  expect(alpha).toHaveBeenLastCalledWith({ kind: 'cloudcli:settings', remoteId: 'alpha', requestId }, location.origin);
+  act(() => result.current.acceptSettingsOpened('alpha', requestId));
+  const delivered = alpha.mock.calls.length;
+  act(() => result.current.markReady('alpha'));
+  expect(alpha).toHaveBeenCalledTimes(delivered);
+  act(() => result.current.openSettings('beta'));
+  expect(beta).toHaveBeenLastCalledWith({ kind: 'cloudcli:settings', remoteId: 'beta', requestId: expect.any(String) }, location.origin);
+  expect(alpha).toHaveBeenCalledTimes(delivered);
+  act(() => result.current.openSettings('alpha'));
+  const newerId = alpha.mock.calls.at(-1)![0].requestId;
+  expect(newerId).not.toBe(requestId);
+  act(() => result.current.acceptSettingsOpened('alpha', requestId));
+  act(() => result.current.markReady('alpha'));
+  expect(alpha).toHaveBeenLastCalledWith({ kind: 'cloudcli:settings', remoteId: 'alpha', requestId: newerId }, location.origin);
+});

@@ -6,6 +6,7 @@ import { ChevronDown, ChevronRight, FileCode2, History, Loader2, MessageSquare, 
 import { Button, Dialog, DialogContent, DialogTitle, DialogTrigger } from '@/shared/ui';
 import type { ConversationChangeTurn, ConversationFileChange, DiffCalculator } from '@/shared/types';
 import { createCachedDiffCalculator } from '@/modules/chat/utils/messageTransforms';
+import { createConversationChangeStats } from '@/modules/chat/utils/conversationChangeStats';
 import ConversationChangeContent from '@/modules/chat/changes/ConversationChangeContent';
 
 type ConversationChangesBarProps = {
@@ -145,6 +146,7 @@ export default function ConversationChangesBar({
   const id = useId();
   const pendingJumpRef = useRef<number | null>(null);
   const createDiff = useMemo(() => createCachedDiffCalculator(), []);
+  const countStats = useMemo(() => createConversationChangeStats(createDiff), [createDiff]);
   const latestTurn = turns[turns.length - 1];
   const latestChangedTurn = [...turns].reverse().find((turn) => turn.changes.length > 0);
   const latestFileCount = new Set(latestTurn?.changes.map((change) => change.filePath) ?? []).size;
@@ -167,6 +169,17 @@ export default function ConversationChangesBar({
     return [...byFile.values()];
   }, [latestTurn, scope, turns]);
   const selectedEditCount = files.reduce((count, file) => count + file.records.length, 0);
+  const totals = useMemo(() => countStats(files.flatMap(file => file.records.map(record => record.change))), [countStats, files]);
+  const scopeLabel = scope === 'latest' ? t(isProcessing ? 'changes.currentTurn' : 'changes.latestTurn')
+    : scope === 'all' ? t('changes.allLoaded') : turns.find(turn => `turn:${turn.id}` === scope)?.label ?? t('changes.scope');
+  const statsDescription = `${scopeLabel} · ${totals.known > 0 ? t('changes.lineTotals', { added: totals.added, removed: totals.removed }) : t('changes.lineTotalsUnavailable')}${totals.unknown > 0 ? ` ${t('changes.lineTotalsIncomplete')}` : ''}`;
+  const lineTotals = selectedEditCount > 0 ? (
+    <span className="inline-flex shrink-0 items-center gap-1 font-mono text-[11px] font-medium tabular-nums" title={statsDescription} aria-label={statsDescription} data-testid="conversation-change-totals">
+      <span className="text-green-700 dark:text-green-400" aria-hidden="true">+{totals.known > 0 ? totals.added.toLocaleString(i18n.resolvedLanguage) : '?'}</span>
+      <span className="text-red-700 dark:text-red-400" aria-hidden="true">−{totals.known > 0 ? totals.removed.toLocaleString(i18n.resolvedLanguage) : '?'}</span>
+      {totals.unknown > 0 && <span className="font-sans font-normal text-muted-foreground" aria-hidden="true">{t(totals.known > 0 ? 'changes.lineTotalsPartial' : 'changes.lineTotalsUnknown')}</span>}
+    </span>
+  ) : null;
 
   useEffect(() => () => {
     if (pendingJumpRef.current !== null) cancelAnimationFrame(pendingJumpRef.current);
@@ -190,7 +203,8 @@ export default function ConversationChangesBar({
         <DialogTrigger asChild>
           <Button type="button" variant="ghost" size="sm" className="h-6 max-w-full gap-1.5 px-2 text-[11px] text-muted-foreground" title={t('changes.review')}>
             <FileCode2 className="h-3 w-3 shrink-0" />
-            <span className="truncate">{t('changes.review')}{latestFileCount > 0 ? ` · ${t('changes.latestFiles', { count: latestFileCount })}` : allEditCount > 0 ? ` · ${t('changes.earlierEdits', { count: allEditCount })}` : ''}</span>
+            <span className="truncate">{t('changes.review')}{scope !== 'latest' ? ` · ${scopeLabel} · ${t('changes.fileCount', { count: files.length })}` : latestFileCount > 0 ? ` · ${t('changes.latestFiles', { count: latestFileCount })}` : allEditCount > 0 ? ` · ${t('changes.earlierEdits', { count: allEditCount })}` : ''}</span>
+            {lineTotals}
             {isProcessing && <Loader2 className="h-3 w-3 shrink-0 animate-spin" aria-label={t('changes.processing')} />}
           </Button>
         </DialogTrigger>
@@ -220,7 +234,7 @@ export default function ConversationChangesBar({
                 ))}
               </select>
             </div>
-            <p className="text-xs text-muted-foreground" role="status">{t('changes.fileCount', { count: files.length })} · {t('changes.editCount', { count: selectedEditCount })}</p>
+            <p className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" role="status"><span>{t('changes.fileCount', { count: files.length })} · {t('changes.editCount', { count: selectedEditCount })}</span>{lineTotals}</p>
           </div>
         </div>
 

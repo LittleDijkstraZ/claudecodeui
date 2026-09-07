@@ -117,6 +117,31 @@ export function useChatRealtimeHandlers({
   }, [pendingPermissionRequests]);
 
   useEffect(() => {
+    const applyMessageReceipt = (msg: ServerEvent, sid: string) => {
+      if (typeof msg.clientMessageId !== 'string'
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(msg.clientMessageId)
+        || !['queued', 'delivered', 'failed'].includes(String(msg.delivery))) return;
+      const delivery = msg.delivery as 'queued' | 'delivered' | 'failed';
+      // Receipts carry the user text so a reconnect can reconstruct a
+      // pending prompt that has not reached the native transcript yet.
+      if (typeof msg.content === 'string') {
+        sessionStore.appendRealtime(sid, {
+          id: `client_${msg.clientMessageId}`,
+          sessionId: sid,
+          provider: msg.provider === 'claude' ? 'claude' : provider,
+          kind: 'text', role: 'user',
+          timestamp: typeof msg.timestamp === 'string' ? msg.timestamp : new Date().toISOString(),
+          clientMessageId: msg.clientMessageId,
+          transcriptAnchorId: typeof msg.transcriptAnchorId === 'string' ? msg.transcriptAnchorId : undefined,
+          content: msg.content,
+          images: Array.isArray(msg.images) ? msg.images as NormalizedMessage['images'] : undefined,
+          files: Array.isArray(msg.files) ? msg.files as NormalizedMessage['files'] : undefined,
+          delivery,
+          deliveryError: typeof msg.error === 'string' ? msg.error : undefined,
+        });
+      }
+      sessionStore.updateMessageDelivery(sid, msg.clientMessageId, delivery, typeof msg.error === 'string' ? msg.error : undefined);
+    };
     const handleEvent = (msg: ServerEvent) => {
       if (!msg.kind) {
         return;
@@ -152,6 +177,15 @@ export function useChatRealtimeHandlers({
           // Ack for chat.subscribe: authoritative processing state plus any
           // pending tool-permission prompts for the run.
           if (!sid) return;
+          // The server retains the latest delivery receipt even for a completed
+          // run. Consume only receipt-shaped entries for this exact session.
+          if (Array.isArray(msg.messageReceipts)) {
+            for (const candidate of msg.messageReceipts) {
+              if (!candidate || typeof candidate !== 'object') continue;
+              const receipt = candidate as ServerEvent;
+              if (receipt.kind === 'status' && receipt.text === 'message_delivery' && receipt.sessionId === sid) applyMessageReceipt(receipt, sid);
+            }
+          }
 
           if (msg.isProcessing) {
             onSessionProcessing?.(sid, readSessionRuntimeState(msg));
@@ -327,28 +361,7 @@ export function useChatRealtimeHandlers({
             if (foregroundCompletionKeys.current.size > 1000) foregroundCompletionKeys.current.delete(foregroundCompletionKeys.current.values().next().value!);
             if (sid === activeViewSessionId) void requestLatestMessages(sid, isActiveRef.current);
           } else if (msg.text === 'message_delivery') {
-            if (!sid || typeof msg.clientMessageId !== 'string'
-              || !['queued', 'delivered', 'failed'].includes(String(msg.delivery))) break;
-            const delivery = msg.delivery as 'queued' | 'delivered' | 'failed';
-            // Receipts carry the user text so a reconnect can reconstruct a
-            // pending prompt that has not reached the native transcript yet.
-            if (typeof msg.content === 'string') {
-              sessionStore.appendRealtime(sid, {
-                id: `client_${msg.clientMessageId}`,
-                sessionId: sid,
-                provider,
-                kind: 'text', role: 'user',
-                timestamp: typeof msg.timestamp === 'string' ? msg.timestamp : new Date().toISOString(),
-                clientMessageId: msg.clientMessageId,
-                transcriptAnchorId: typeof msg.transcriptAnchorId === 'string' ? msg.transcriptAnchorId : undefined,
-                content: msg.content,
-                images: Array.isArray(msg.images) ? msg.images as NormalizedMessage['images'] : undefined,
-                files: Array.isArray(msg.files) ? msg.files as NormalizedMessage['files'] : undefined,
-                delivery,
-                deliveryError: typeof msg.error === 'string' ? msg.error : undefined,
-              });
-            }
-            sessionStore.updateMessageDelivery(sid, msg.clientMessageId, delivery, typeof msg.error === 'string' ? msg.error : undefined);
+            if (sid) applyMessageReceipt(msg, sid);
           } else if (msg.text === 'claude_runtime_state') {
             if (sid) onSessionProcessing?.(sid, { ...readSessionRuntimeState(msg), statusText: null });
           } else if (msg.text === 'token_budget' && msg.tokenBudget) {

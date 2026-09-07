@@ -4,7 +4,7 @@
  * Holds per-session state in a Map keyed by sessionId.
  * Session switch = change activeSessionId pointer. No clearing. Old data stays.
  * WebSocket handler = store.appendRealtime(msg.sessionId, msg). One line.
- * No localStorage for messages. Backend JSONL is the source of truth.
+ * Backend JSONL owns confirmed history; only unconfirmed user copies survive browser reloads.
  */
 
 import { useCallback, useMemo, useRef, useState } from 'react';
@@ -12,6 +12,7 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { acceptClaudeUsageSnapshot, isClaudeUsageSnapshot } from '@/modules/chat/utils/claudeUsageSnapshot';
 import { api } from '@/shared/api';
 import type { ChatMessageDelivery, LLMProvider, NormalizedMessage } from '@/shared/types';
+import { createPendingUserMessages } from '@/modules/chat/utils/pendingUserMessages';
 import { removeOptimisticUserEchoes } from '@/modules/chat/utils/sessionMessageReconciliation';
 import {
   hasReachedCachedTailTimeBoundary,
@@ -560,8 +561,14 @@ const MAX_REALTIME_MESSAGES = 500;
 
 // ─── Hook ────────────────────────────────────────────────────────────────────
 
-export function useSessionStore() {
-  const storeRef = useRef(new Map<string, SessionSlot>());
+export function useSessionStore(userId?: string | number | null) {
+  const scope = JSON.stringify([window.__REMOTE_ID__ || window.location.origin, userId ?? null]);
+  // A changed account owns a fresh cache; old async callbacks retain their old map.
+  const storeRef = useMemo(() => ({ scope, current: new Map<string, SessionSlot>() }), [scope]);
+  // Storage failure must be visible while the in-memory input copy stays intact.
+  const [pendingMessageStorageFailed, setPendingMessageStorageFailed] = useState(false);
+  // Unconfirmed sends survive reloads under this machine scope; they never auto-resend.
+  const pendingUsers = useMemo(() => createPendingUserMessages(scope, () => setPendingMessageStorageFailed(true)), [scope]);
   const activeSessionIdRef = useRef<string | null>(null);
   // Bump to force re-render — only when the active session's data changes.
   // Session ids are stable for the whole conversation lifetime (the backend
@@ -581,10 +588,13 @@ export function useSessionStore() {
   const getSlot = useCallback((sessionId: string): SessionSlot => {
     const store = storeRef.current;
     if (!store.has(sessionId)) {
-      store.set(sessionId, createEmptySlot());
+      const slot = createEmptySlot();
+      slot.realtimeMessages = pendingUsers.restore(sessionId);
+      recomputeMergedIfNeeded(slot);
+      store.set(sessionId, slot);
     }
     return store.get(sessionId)!;
-  }, []);
+  }, [pendingUsers, storeRef]);
 
   /**
    * Fetch messages from the provider sessions endpoint and populate serverMessages.
@@ -616,6 +626,7 @@ export function useSessionStore() {
         const realtimeAtRequestStart = new Set(slot.realtimeMessages);
         const data = await requestSessionHistoryPage(sessionId, requestOptions);
         slot.serverMessages = data.messages;
+        pendingUsers.confirm(sessionId, data.messages);
         slot.total = data.total;
         slot.hasMore = data.hasMore;
         slot.offset = (requestOptions.offset ?? 0) + data.messages.length;
@@ -640,7 +651,7 @@ export function useSessionStore() {
         return slot;
       }
     });
-  }, [getSlot, notify]);
+  }, [getSlot, notify, pendingUsers]);
 
   /**
    * Load older (paginated) messages and prepend to serverMessages.
@@ -693,6 +704,7 @@ export function useSessionStore() {
           }
 
           slot.serverMessages = olderMerge.messages;
+          pendingUsers.confirm(sessionId, data.messages);
           slot.hasMore = data.hasMore;
           slot.total = data.total;
           slot.offset = slot.serverMessages.length;
@@ -713,7 +725,7 @@ export function useSessionStore() {
         return { slot, prependedCount };
       }
     });
-  }, [getSlot, notify]);
+  }, [getSlot, notify, pendingUsers]);
 
   /**
    * Append a realtime (WebSocket) message to the correct session slot.
@@ -760,10 +772,11 @@ export function useSessionStore() {
     slot.offset = slot.serverMessages.length;
     recomputeMergedIfNeeded(slot);
     notify(sessionId);
-  }, [notify]);
+  }, [notify, storeRef]);
 
   const appendRealtime = useCallback((sessionId: string, msg: NormalizedMessage) => {
     const slot = getSlot(sessionId);
+    if (msg.clientMessageId && pendingUsers.isDismissed(sessionId, msg.clientMessageId)) return;
     const normalizedMessage =
       msg.sessionId === sessionId
         ? msg
@@ -776,21 +789,30 @@ export function useSessionStore() {
     let updated = [...slot.realtimeMessages];
     if (existingIndex >= 0) {
       const previous = updated[existingIndex];
+      const keepDelivery = previous.delivery === 'delivered' || (previous.delivery === 'failed' && normalizedMessage.delivery === 'queued');
       updated[existingIndex] = {
         ...previous, ...normalizedMessage, id: previous.id,
-        delivery: previous.delivery === 'delivered' || (previous.delivery === 'failed' && normalizedMessage.delivery === 'queued')
-          ? previous.delivery : normalizedMessage.delivery,
+        delivery: keepDelivery ? previous.delivery : normalizedMessage.delivery,
+        deliveryError: keepDelivery ? previous.deliveryError : normalizedMessage.deliveryError,
       };
     } else {
       updated.push(normalizedMessage);
     }
     if (updated.length > MAX_REALTIME_MESSAGES) {
-      updated = updated.slice(-MAX_REALTIME_MESSAGES);
+      // Long Workflow tool streams must not evict user input that history has
+      // not confirmed yet. Only replayable output participates in this cap.
+      const outputTail = new Set(updated.filter(message => !(message.kind === 'text' && message.role === 'user')).slice(-MAX_REALTIME_MESSAGES));
+      updated = updated.filter(message => message.kind === 'text' && message.role === 'user' || outputTail.has(message));
+    }
+    if (normalizedMessage.clientMessageId) {
+      const saved = updated.find(message => message.clientMessageId === normalizedMessage.clientMessageId);
+      if (saved) pendingUsers.remember(sessionId, saved);
+      pendingUsers.confirm(sessionId, slot.serverMessages);
     }
     slot.realtimeMessages = updated;
     recomputeMergedIfNeeded(slot);
     notify(sessionId);
-  }, [getSlot, notify]);
+  }, [getSlot, notify, pendingUsers]);
 
   /** Applies only server-confirmed delivery and never lets an older replay undo consumption. */
   const updateMessageDelivery = useCallback((sessionId: string, clientMessageId: string, delivery: ChatMessageDelivery, error?: string) => {
@@ -800,10 +822,20 @@ export function useSessionStore() {
       if (message.clientMessageId !== clientMessageId || message.delivery === 'delivered') return message;
       if (message.delivery === 'failed' && delivery === 'queued') return message;
       changed = true;
-      return { ...message, delivery, deliveryError: error };
+      const updated = { ...message, delivery, deliveryError: error };
+      pendingUsers.remember(sessionId, updated);
+      return updated;
     });
-    if (changed) { recomputeMergedIfNeeded(slot); notify(sessionId); }
-  }, [getSlot, notify]);
+    if (changed) { pendingUsers.confirm(sessionId, slot.serverMessages); recomputeMergedIfNeeded(slot); notify(sessionId); }
+  }, [getSlot, notify, pendingUsers]);
+
+  /** Removes only this browser's retained copy, never the provider transcript or execution. */
+  const dismissPendingUserMessage = useCallback((sessionId: string, clientMessageId: string) => {
+    pendingUsers.dismiss(sessionId, clientMessageId);
+    const slot = getSlot(sessionId);
+    slot.realtimeMessages = slot.realtimeMessages.filter(message => message.clientMessageId !== clientMessageId);
+    recomputeMergedIfNeeded(slot); notify(sessionId);
+  }, [getSlot, notify, pendingUsers]);
 
   /**
    * Refreshes only the persisted tail and stitches it onto the contiguous
@@ -827,6 +859,7 @@ export function useSessionStore() {
           opts.limit ?? SESSION_MESSAGES_PAGE_SIZE,
           opts.canRequest,
         );
+        if (result.applied) pendingUsers.confirm(sessionId, slot.serverMessages);
         if (result.changed) notify(sessionId);
         return { slot, ...result };
       } catch (error) {
@@ -834,7 +867,7 @@ export function useSessionStore() {
         return { slot, applied: false, changed: false, deferred: false };
       }
     });
-  }, [getSlot, notify]);
+  }, [getSlot, notify, pendingUsers]);
 
   /**
    * Check if a session's data is stale (>30s old).
@@ -843,7 +876,7 @@ export function useSessionStore() {
     const slot = storeRef.current.get(sessionId);
     if (!slot) return true;
     return Date.now() - slot.fetchedAt > STALE_THRESHOLD_MS;
-  }, []);
+  }, [storeRef]);
 
   /**
    * Update or create a streaming message (accumulated text so far).
@@ -892,7 +925,7 @@ export function useSessionStore() {
       recomputeMergedIfNeeded(slot);
       notify(sessionId);
     }
-  }, [notify]);
+  }, [notify, storeRef]);
 
   /** Invalidate an old conversation chain after a server-confirmed rewind. */
   const resetHistory = useCallback(async (sessionId: string) => {
@@ -902,7 +935,7 @@ export function useSessionStore() {
       // Keep the mutation queue itself: an older in-flight page must settle
       // before this reset, and the authoritative replacement follows it.
       slot.serverMessages = [];
-      slot.realtimeMessages = [];
+      slot.realtimeMessages = pendingUsers.restore(sessionId);
       slot.offset = 0;
       slot.total = 0;
       slot.hasMore = false;
@@ -914,27 +947,29 @@ export function useSessionStore() {
       recomputeMergedIfNeeded(slot);
       notify(sessionId);
     });
-  }, [notify]);
+  }, [notify, storeRef, pendingUsers]);
 
   /**
    * Get merged messages for a session (for rendering).
    */
   const getMessages = useCallback((sessionId: string): NormalizedMessage[] => {
-    return storeRef.current.get(sessionId)?.merged ?? EMPTY;
-  }, []);
+    return getSlot(sessionId).merged;
+  }, [getSlot]);
 
   /**
    * Get session slot (for status, pagination info, etc.).
    */
   const getSessionSlot = useCallback((sessionId: string): SessionSlot | undefined => {
     return storeRef.current.get(sessionId);
-  }, []);
+  }, [storeRef]);
 
   return useMemo(() => ({
+    pendingMessageStorageFailed,
     fetchFromServer,
     fetchMore,
     appendRealtime,
     updateMessageDelivery,
+    dismissPendingUserMessage,
     truncateAt,
     refreshLatestFromServer,
     setActiveSession,
@@ -945,7 +980,7 @@ export function useSessionStore() {
     getMessages,
     getSessionSlot,
   }), [
-    fetchFromServer, fetchMore, appendRealtime, updateMessageDelivery, truncateAt, refreshLatestFromServer,
+    pendingMessageStorageFailed, fetchFromServer, fetchMore, appendRealtime, updateMessageDelivery, dismissPendingUserMessage, truncateAt, refreshLatestFromServer,
     setActiveSession, isStale, updateStreaming, finalizeStreaming,
     resetHistory, getMessages, getSessionSlot,
   ]);

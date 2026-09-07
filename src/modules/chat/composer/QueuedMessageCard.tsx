@@ -4,6 +4,8 @@ import { PencilIcon, XIcon } from 'lucide-react';
 type QueuedMessageCardProps = {
   content: string;
   attachmentCount?: number;
+  /** A busy remote lacking live input must not present this draft as delivered. */
+  waitingForRemoteRun?: boolean;
   onEdit: () => void;
   onDelete: () => void;
 };
@@ -15,6 +17,7 @@ type QueuedMessageCardProps = {
 export default function QueuedMessageCard({
   content,
   attachmentCount = 0,
+  waitingForRemoteRun = false,
   onEdit,
   onDelete,
 }: QueuedMessageCardProps) {
@@ -29,9 +32,10 @@ export default function QueuedMessageCard({
           <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-primary/70">
             <span>{t('input.queue.label', { defaultValue: 'Queued' })}</span>
             <span className="normal-case text-muted-foreground/60">
-              · {t('input.queue.willSend', { defaultValue: 'Will send when this finishes' })}
+              · {waitingForRemoteRun ? t('input.queue.notDelivered') : t('input.queue.willSend', { defaultValue: 'Will send when this finishes' })}
             </span>
           </div>
+          {waitingForRemoteRun && <p className="mt-1 text-xs text-muted-foreground">{t('input.queue.remoteUnsupported')}</p>}
           <p className="mt-0.5 line-clamp-2 break-words text-sm text-foreground/90">{content}</p>
           {attachmentCount > 0 && (
             <p className="mt-0.5 text-xs text-muted-foreground">

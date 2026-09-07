@@ -6,7 +6,6 @@ import type {
   ProjectSession,
   ProjectSortOrder,
   SessionWithProvider,
-  SettingsProject,
 } from '@/shared/types';
 
 // Presentation data the sidebar derives from a session before rendering its row.
@@ -182,28 +181,4 @@ export const getTaskIndicatorStatus = (
   }
 
   return 'not-configured';
-};
-
-export const normalizeProjectForSettings = (project: Project): SettingsProject => {
-  const fallbackPath =
-    typeof project.fullPath === 'string' && project.fullPath.length > 0
-      ? project.fullPath
-      : typeof project.path === 'string'
-        ? project.path
-        : '';
-
-  // Legacy SettingsProject still expects a `name` field; use the projectId so
-  // downstream consumers that rely on a stable identifier continue to work.
-  return {
-    name: project.projectId,
-    displayName:
-      typeof project.displayName === 'string' && project.displayName.trim().length > 0
-        ? project.displayName
-        : project.projectId,
-    fullPath: fallbackPath,
-    path:
-      typeof project.path === 'string' && project.path.length > 0
-        ? project.path
-        : fallbackPath,
-  };
 };

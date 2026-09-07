@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
+
 import type { WorkspaceNavigationState } from '@/shared/types';
 
 /** Keeps one App per visited machine so navigation preserves terminal and workspace state. */
@@ -14,6 +15,9 @@ export function useHubPanes() {
   const frames = useRef(new Map<string, HTMLIFrameElement>());
   const ready = useRef(new Set<string>());
   const pending = useRef(new Map<string, string | null>());
+  // Clicking settings during login/initial load must open on that machine once
+  // its workspace is ready, without falling through to the newly selected pane.
+  const pendingSettings = useRef(new Map<string, string>());
   const navigate = useCallback((remoteId: string, sessionId: string | null) => {
     pending.current.set(remoteId, sessionId);
     setPanes(current => current.some(pane => pane.remoteId === remoteId) ? current : [...current, { remoteId, initialSessionId: sessionId }]);
@@ -30,7 +34,10 @@ export function useHubPanes() {
   }, []);
   const markReady = useCallback((remoteId: string) => {
     ready.current.add(remoteId);
-    if (pending.current.has(remoteId)) frames.current.get(remoteId)?.contentWindow?.postMessage({ kind: 'cloudcli:navigate', sessionId: pending.current.get(remoteId) }, location.origin);
+    const targetWindow = frames.current.get(remoteId)?.contentWindow;
+    if (pending.current.has(remoteId)) targetWindow?.postMessage({ kind: 'cloudcli:navigate', sessionId: pending.current.get(remoteId) }, location.origin);
+    const settingsRequestId = pendingSettings.current.get(remoteId);
+    if (targetWindow && settingsRequestId) targetWindow.postMessage({ kind: 'cloudcli:settings', remoteId, requestId: settingsRequestId }, location.origin);
   }, []);
   const acceptSelection = useCallback((remoteId: string, sessionId: string) => {
     // A frame can report its previous selection before a requested navigation settles.
@@ -41,7 +48,19 @@ export function useHubPanes() {
     return true;
   }, []);
   const openSettings = useCallback((remoteId: string) => {
-    frames.current.get(remoteId)?.contentWindow?.postMessage({ kind: 'cloudcli:settings' }, location.origin);
+    const requestId = crypto.randomUUID();
+    pendingSettings.current.set(remoteId, requestId);
+    const frame = frames.current.get(remoteId);
+    if (ready.current.has(remoteId) && frame?.contentWindow) {
+      frame.contentWindow.postMessage({ kind: 'cloudcli:settings', remoteId, requestId }, location.origin);
+    } else {
+      setPanes(current => current.some(pane => pane.remoteId === remoteId) ? current : [...current, { remoteId, initialSessionId: null }]);
+    }
+  }, []);
+  // Retain the request through startup navigation until the target workspace
+  // confirms a rendered dialog. Late acknowledgements cannot cancel a newer click.
+  const acceptSettingsOpened = useCallback((remoteId: string, requestId: unknown) => {
+    if (typeof requestId === 'string' && pendingSettings.current.get(remoteId) === requestId) pendingSettings.current.delete(remoteId);
   }, []);
   const acceptNavigation = useCallback((remoteId: string, value: unknown) => {
     if (!value || typeof value !== 'object') return;
@@ -64,5 +83,5 @@ export function useHubPanes() {
     if ((state.sessionId !== null && typeof state.sessionId !== 'string') || typeof state.visible !== 'boolean') return;
     setChatVisibility(current => ({ ...current, [remoteId]: { sessionId: state.sessionId, visible: state.visible } }));
   }, []);
-  return { chatVisibility, acceptChatVisibility, navigation, selections, acceptNavigation, selectTab, panes, navigate, register, remoteForSource, markReady, acceptSelection, openSettings };
+  return { chatVisibility, acceptChatVisibility, navigation, selections, acceptNavigation, selectTab, panes, navigate, register, remoteForSource, markReady, acceptSelection, openSettings, acceptSettingsOpened };
 }

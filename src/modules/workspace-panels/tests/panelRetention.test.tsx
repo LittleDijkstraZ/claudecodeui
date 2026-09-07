@@ -10,9 +10,9 @@ vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string, opti
 vi.mock('@/shared/ui', () => ({ Button: ({ variant: _variant, size: _size, ...props }: Record<string, unknown>) => <button {...props} /> }));
 let measure: (() => void) | undefined;
 function Main() { const [value, setValue] = useState(''); return <input aria-label="main draft" value={value} onChange={event => setValue(event.target.value)} />; }
-function Harness({ navigate }: { navigate?: (sessionId: string) => void }) {
+function Harness({ navigate, settingsOpen = false }: { navigate?: (sessionId: string) => void; settingsOpen?: boolean }) {
   const actions = useWorkspacePanelActions(); const panel = useWorkspacePanels();
-  return <><button onClick={() => actions?.openPanel('shell')}>Shell</button><button onClick={() => actions?.openPanel('files')}>Files</button><button onClick={() => actions?.openPanel('sideChat')}>Branches</button><output>{[...(panel?.visited ?? [])].join(',')}</output><WorkspacePanelLayout sessionId="main" main={<Main />} title={panel?.tab ?? ''}><textarea aria-label="panel draft" /><SideChatPanel onNavigateToSession={navigate} /></WorkspacePanelLayout></>;
+  return <><button onClick={() => actions?.openPanel('shell')}>Shell</button><button onClick={() => actions?.openPanel('files')}>Files</button><button onClick={() => actions?.openPanel('sideChat')}>Branches</button><output>{[...(panel?.visited ?? [])].join(',')}</output><WorkspacePanelLayout sessionId="main" main={<Main />} mainCovered={settingsOpen} title={panel?.tab ?? ''}><textarea aria-label="panel draft" /><SideChatPanel onNavigateToSession={navigate} /></WorkspacePanelLayout></>;
 }
 function openBranch(sessionId: string, parentSessionId = 'main') { act(() => { window.dispatchEvent(new CustomEvent('cloudcli:side-chat-open', { detail: { sessionId, parentSessionId, sessionName: sessionId } })); }); }
 
@@ -28,6 +28,23 @@ afterEach(() => {
 });
 
 describe('retained workspace panel', () => {
+  it('does not mark replies as read while settings covers chat and retains all mounted drafts', () => {
+    const postMessage = vi.fn();
+    Object.defineProperty(window, 'parent', { configurable: true, value: { postMessage } });
+    window.__CLOUDCLI_EMBEDDED__ = true;
+    const view = render(<WorkspacePanelsProvider><Harness /></WorkspacePanelsProvider>);
+    const main = screen.getByLabelText('main draft');
+    fireEvent.change(main, { target: { value: 'retained while configuring' } });
+    fireEvent.click(screen.getByText('Shell'));
+    const terminal = screen.getByLabelText('panel draft');
+    view.rerender(<WorkspacePanelsProvider><Harness settingsOpen /></WorkspacePanelsProvider>);
+    expect(postMessage).toHaveBeenLastCalledWith({ kind: 'cloudcli:chat-visibility', sessionId: 'main', visible: false }, location.origin);
+    expect(screen.getByLabelText('main draft')).toBe(main);
+    expect(screen.getByLabelText('panel draft')).toBe(terminal);
+    view.rerender(<WorkspacePanelsProvider><Harness /></WorkspacePanelsProvider>);
+    expect(postMessage).toHaveBeenLastCalledWith({ kind: 'cloudcli:chat-visibility', sessionId: 'main', visible: true }, location.origin);
+    expect((main as HTMLInputElement).value).toBe('retained while configuring');
+  });
   it('reports actual chat visibility rather than assuming every selected panel hides chat', () => {
     const postMessage = vi.fn();
     Object.defineProperty(window, 'parent', { configurable: true, value: { postMessage } });

@@ -452,7 +452,7 @@ test('receipt replay keeps the latest delivery outside the buffer and does not d
     const replay = chatRunRegistry.replayEvents('receipt-latest', 0);
     assert.equal(run.status, 'completed');
     assert.deepEqual(replay.filter(event => event.clientMessageId === 'old-input').map(event => event.delivery), ['processed']);
-    assert.equal(replay.filter(event => event.clientMessageId === 'new-input').length, 1);
+    assert.deepEqual(replay.filter(event => event.clientMessageId === 'new-input').map(event => event.delivery), ['queued', 'failed']);
     assert.equal(replay.at(-1)?.kind, 'complete');
     assert.equal(new Set(replay.map(event => event.seq)).size, replay.length);
   });
@@ -487,5 +487,20 @@ test('starting a replacement run does not reuse a completed run receipt history'
     assert.equal(second.messageReceipts.size, 0);
     assert.deepEqual(chatRunRegistry.replayEvents('receipt-replacement', 0), []);
     assert.equal(first.messageReceipts.get('old-input')?.delivery, 'processed');
+  });
+});
+
+test('completion fails unconfirmed input while preserving delivered receipts and replay content', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('receipt-exit', 'claude', '/workspace/demo');
+    const connection = new FakeConnection();
+    const run = chatRunRegistry.startRun({ appSessionId: 'receipt-exit', provider: 'claude', providerSessionId: null, connection, userId: 'user-1' })!;
+    for (const delivery of ['queued', 'delivered'] as const) run.writer.send({ kind: 'status', text: 'message_delivery', provider: 'claude', clientMessageId: delivery, content: delivery+' prompt', delivery });
+    run.writer.sendComplete({ exitCode: 1 });
+    assert.equal(run.messageReceipts.get('queued')?.delivery, 'failed');
+    assert.equal(run.messageReceipts.get('delivered')?.delivery, 'delivered');
+    assert.equal(run.messageReceipts.get('queued')?.content, 'queued prompt');
+    assert.deepEqual(connection.frames.slice(-2).map(frame => frame.kind === 'complete' ? 'complete' : frame.delivery), ['failed', 'complete']);
+    assert.equal(chatRunRegistry.replayEvents('receipt-exit', 0).filter(frame => frame.delivery === 'failed').length, 1);
   });
 });

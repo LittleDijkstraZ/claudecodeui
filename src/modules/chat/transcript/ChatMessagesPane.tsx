@@ -72,6 +72,8 @@ type ChatMessagesPaneProps = {
   selectedProject: Project;
   /** Loads an already-sent message back into the composer; absent when the provider cannot re-run from a point. */
   onEditMessage?: (message: ChatMessage) => void;
+  /** Removes an unconfirmed local copy, never a provider message or running input. */
+  onDismissPendingMessage?: (message: ChatMessage) => void;
   /** Branches the conversation into a new session ending at a message. */
   onForkFromMessage?: (message: ChatMessage) => void;
   /** Fetches the whole transcript for an export, which otherwise only sees the loaded page. */
@@ -120,6 +122,7 @@ function ChatMessagesPane({
   showLoadAllOverlay,
   createDiff,
   onEditMessage,
+  onDismissPendingMessage,
   onForkFromMessage,
   onLoadFullTranscript,
   onFileOpen,
@@ -329,6 +332,7 @@ function ChatMessagesPane({
                     selectedProject={selectedProject}
                     provider={provider}
                     onEditMessage={onEditMessage}
+                    onDismissPendingMessage={onDismissPendingMessage}
                     onForkFromMessage={onForkFromMessage}
                   />
                 </LazyMessageRow>

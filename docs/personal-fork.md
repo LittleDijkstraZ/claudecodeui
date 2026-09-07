@@ -473,3 +473,26 @@ restrictions still apply. Each machine remembers its last folder independently.
 Changing machines invalidates in-flight directory results. A group-attachment
 retry reuses the already-created conversation instead of creating duplicates.
 The Mac hub performs no project operations and never executes local Claude.
+
+## Embedded settings and unconfirmed input
+
+Full settings are mounted once at the workspace layer, independently of the
+project sidebar, active tool panel, or selected project. The settings title
+uses the remote identity injected into that frame. Hub requests are addressed
+to one frame and held until that frame is ready; changing the selected remote
+does not retarget an already-open settings page.
+
+Unconfirmed user messages are protected from the bounded realtime output cache.
+A local pending-message copy is separate from the native transcript and never
+automatically resubmitted. Each copy has an independent browser-storage key
+scoped by remote, login identity, session and message UUID; native-history
+confirmation removes it. Removing a local copy does not cancel remote work.
+The legacy single-message queue cannot overwrite an
+existing pending message with a second send. Launch preparation failures and
+completed-run subscriptions retain message-specific delivery outcomes instead
+of leaving optimistic prompts permanently waiting.
+
+The compact change-review button reports added and removed lines from successful
+recorded edits for its selected scope. These are per-edit totals, not a Git net
+diff; missing baselines and ambiguous repeated replacements remain explicitly
+unquantified. Pending or failed tool edits do not inflate the badge.

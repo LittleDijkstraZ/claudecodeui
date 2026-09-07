@@ -1,5 +1,6 @@
 {
   "title": "Settings",
+  "close": "Close settings",
   "tabs": {
     "account": "Account",
     "permissions": "Permissions",

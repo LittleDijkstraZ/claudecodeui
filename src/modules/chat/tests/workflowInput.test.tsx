@@ -10,31 +10,33 @@ import { useSessionProtection } from '@/shared/hooks/useSessionProtection';
 import { readQueuedMessage, resetChatDrafts } from '@/shared/chatDrafts';
 import type { ChatMessage, Project, ServerEvent, SessionActivity } from '@/shared/types';
 
+const { uploadFiles, createSession } = vi.hoisted(() => ({ uploadFiles: vi.fn(), createSession: vi.fn() }));
 vi.mock('@/shared/api', () => {
   const ok = (data: unknown) => Promise.resolve({ ok: true, json: async () => data });
   return { api: {
+    assets: { uploadFiles },
     user: { drafts: () => ok({ drafts: [] }), saveDraft: () => ok({}), deleteDraft: () => ok({}), preferences: () => ok({ preferences: {} }), savePreferences: () => ok({}) },
     commands: { list: () => ok({ commands: [] }) }, files: { search: () => ok({ files: [] }) },
-    getFiles: () => ok([]), providers: { skills: () => ok({ data: { skills: [] } }) },
+    getFiles: () => ok([]), providers: { createSession, skills: () => ok({ data: { skills: [] } }) },
   } };
 });
 
 const PROJECT: Project = { projectId: 'remote-project', displayName: 'Remote project', fullPath: '/remote/work' };
 const BACKGROUND: SessionActivity = { startedAt: 100, statusText: null, canInterrupt: true, phase: 'background', acceptsInput: true, backgroundTasks: 2, executionId: 'execution-one' };
-beforeEach(() => { localStorage.clear(); resetChatDrafts(); });
+beforeEach(() => { localStorage.clear(); resetChatDrafts(); uploadFiles.mockReset(); createSession.mockReset(); });
 
-function composer(activity: SessionActivity, connected = true) {
+function composer(activity: SessionActivity, connected = true, sessionId: string | null = 'session-a') {
   const send = vi.fn<(message: unknown) => boolean>(() => connected);
   const add = vi.fn<(message: ChatMessage) => void>();
   const processing = vi.fn();
-  const view = renderHook(() => useChatComposerState({
-    selectedProject: PROJECT, selectedSession: { id: 'session-a' }, currentSessionId: 'session-a', provider: 'claude',
+  const view = renderHook(({ sessionId }: { sessionId: string | null }) => useChatComposerState({
+    selectedProject: PROJECT, selectedSession: sessionId ? { id: sessionId } : null, currentSessionId: sessionId, provider: 'claude',
     permissionMode: 'default', cyclePermissionMode: () => {}, resolvePermissionModeForProvider: () => 'default',
     currentProviderModel: 'remote-alias', currentProviderEffort: 'high',
     isLoading: activity.acceptsInput !== true, processingSessions: new Map([['session-a', activity]]),
     canAbortSession: true, tokenBudget: null, sendMessage: send, onSessionProcessing: processing,
     scrollToBottom: () => {}, addMessage: add, setIsUserScrolledUp: () => {}, setPendingPermissionRequests: () => {},
-  }));
+  }), { initialProps: { sessionId } });
   const submit = async (content: string) => {
     await act(async () => view.result.current.setInput(content));
     await act(async () => view.result.current.handleSubmit({ preventDefault() {} } as never));
@@ -90,7 +92,7 @@ function handlers() {
   return { ...view, refresh, emit: (event: ServerEvent) => act(() => listener(event)) };
 }
 
-const receipt = (delivery: string, sessionId = 'session-a'): ServerEvent => ({ kind: 'status', text: 'message_delivery', delivery, sessionId, clientMessageId: 'prompt-1', content: 'question', timestamp: '2026-09-07T00:00:00Z' });
+const receipt = (delivery: string, sessionId = 'session-a'): ServerEvent => ({ kind: 'status', text: 'message_delivery', delivery, sessionId, clientMessageId: '16dfd601-35b0-409f-aec3-f6cb10b48441', content: 'question', timestamp: '2026-09-07T00:00:00Z' });
 
 test('replayed pending input becomes delivered only on its own acknowledgement, while the Workflow remains active', () => {
   const view = handlers();
@@ -112,7 +114,7 @@ test('a rejected queued prompt cannot clear the running execution or fail a diff
   const view = handlers();
   view.emit({ kind: 'status', text: 'claude_runtime_state', sessionId: 'session-a', ...BACKGROUND });
   view.emit(receipt('queued'));
-  view.emit({ kind: 'protocol_error', sessionId: 'session-a', clientMessageId: 'prompt-1', error: 'Input stream closed', code: 'INPUT_CLOSED' });
+  view.emit({ kind: 'protocol_error', sessionId: 'session-a', clientMessageId: '16dfd601-35b0-409f-aec3-f6cb10b48441', error: 'Input stream closed', code: 'INPUT_CLOSED' });
   expect(view.result.current.store.getMessages('session-a').find(message => message.role === 'user')?.delivery).toBe('failed');
   view.emit(receipt('queued'));
   expect(view.result.current.store.getMessages('session-a').find(message => message.role === 'user')?.delivery).toBe('failed');
@@ -143,4 +145,128 @@ test('a foreground response refreshes the transcript once while keeping backgrou
   expect(view.result.current.protection.processingSessions.get('session-a')?.phase).toBe('background');
   view.emit({ ...event, seq: 24 });
   expect(view.refresh).toHaveBeenCalledTimes(2);
+});
+
+test('a second send to an older busy process never overwrites the waiting draft and stays in the input', async () => {
+  const view = composer({ startedAt: 100, statusText: null, canInterrupt: true });
+  await view.submit('First waiting message');
+  await view.submit('Second waiting message');
+  expect(readQueuedMessage('session-a')?.content).toBe('First waiting message');
+  expect(view.result.current.input).toBe('Second waiting message');
+  expect(view.send).not.toHaveBeenCalled();
+  expect(view.add.mock.calls.at(-1)?.[0].content).toMatch(/already waiting|已有一条|已有一則/);
+});
+
+test('a completed run subscription restores only matching valid delivery receipts without replaying arbitrary content', () => {
+  const view = handlers();
+  view.emit(receipt('queued'));
+  view.emit({ kind: 'chat_subscribed', sessionId: 'session-a', isProcessing: false, messageReceipts: [
+    receipt('failed'),
+    { ...receipt('delivered'), sessionId: 'session-b' },
+    { ...receipt('queued'), clientMessageId: 'malformed', content: 'Invalid receipt' },
+    { kind: 'text', role: 'assistant', sessionId: 'session-a', content: 'Must not replay' },
+  ] });
+  const messages = view.result.current.store.getMessages('session-a');
+  expect(messages).toHaveLength(1);
+  expect(messages[0].delivery).toBe('failed');
+  expect(view.result.current.store.getMessages('session-b')).toEqual([]);
+  expect(view.refresh).not.toHaveBeenCalled();
+});
+
+
+test('a slow attachment reservation cannot be overwritten and does not erase newer composer text', async () => {
+  let release!: (value: unknown) => void;
+  uploadFiles.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+  const view = composer({ startedAt: 100, statusText: null, canInterrupt: true });
+  await act(async () => { view.result.current.setInput('First with attachment'); view.result.current.setAttachedFiles([new File(['fixture'], 'fixture.txt')]); });
+  let pending!: Promise<void>;
+  await act(async () => { pending = view.result.current.handleSubmit({ preventDefault() {} } as never); await Promise.resolve(); });
+  await view.submit('New text typed during upload');
+  await act(async () => { release({ ok: true, json: async () => ({ attachments: [{ path: 'fixture.txt' }] }) }); await pending; });
+  expect(readQueuedMessage('session-a')?.content).toBe('First with attachment');
+  expect(view.result.current.input).toBe('New text typed during upload');
+  expect(uploadFiles).toHaveBeenCalledTimes(1);
+  expect(view.send).not.toHaveBeenCalled();
+});
+
+test('edit sends have a stable input UUID so disconnected edits retain a failed user copy', async () => {
+  const view = composer(BACKGROUND, false);
+  await act(async () => { view.result.current.beginEditMessage({ type: 'user', content: 'Old wording', timestamp: 1, transcriptAnchorId: 'old-anchor' }); });
+  await view.submit('Edited wording');
+  const frame = view.send.mock.calls[0][0] as Record<string, unknown>;
+  expect(frame.type).toBe('chat.edit-send');
+  expect(frame.anchorId).toBe('old-anchor');
+  expect(String(frame.clientMessageId)).toMatch(/^[0-9a-f-]{36}$/);
+  expect(view.add.mock.calls.map(([message]) => message.delivery)).toEqual(['queued', 'failed']);
+  expect(view.add.mock.calls[0][0].clientMessageId).toBe(view.add.mock.calls[1][0].clientMessageId);
+});
+
+
+test('double Enter during a normal upload sends the unchanged draft only once', async () => {
+  let release!: (value: unknown) => void;
+  uploadFiles.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+  const view = composer(BACKGROUND);
+  await act(async () => { view.result.current.setInput('One message'); view.result.current.setAttachedFiles([new File(['one'], 'one.txt')]); });
+  let pending!: Promise<void>;
+  await act(async () => { pending = view.result.current.handleSubmit({ preventDefault() {} } as never); await Promise.resolve(); });
+  await act(async () => { await view.result.current.handleSubmit({ preventDefault() {} } as never); });
+  expect(uploadFiles).toHaveBeenCalledTimes(1);
+  await act(async () => { release({ ok: true, json: async () => ({ attachments: [{ path: 'one.txt' }] }) }); await pending; });
+  expect(view.send).toHaveBeenCalledTimes(1);
+  expect(view.result.current.input).toBe('');
+});
+
+test('double Enter while allocating a conversation creates one session and sends once', async () => {
+  let release!: (value: unknown) => void;
+  createSession.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+  const view = composer(BACKGROUND, true, null);
+  await act(async () => { view.result.current.setInput('First message'); });
+  let pending!: Promise<void>;
+  await act(async () => { pending = view.result.current.handleSubmit({ preventDefault() {} } as never); await Promise.resolve(); });
+  await act(async () => { await view.result.current.handleSubmit({ preventDefault() {} } as never); });
+  expect(createSession).toHaveBeenCalledTimes(1);
+  await act(async () => { release({ ok: true, json: async () => ({ data: { sessionId: 'allocated-session' } }) }); await pending; });
+  expect(view.send).toHaveBeenCalledTimes(1);
+  expect(view.send.mock.calls[0][0]).toMatchObject({ sessionId: 'allocated-session', content: 'First message' });
+});
+
+test.each([true, false])('upload completion preserves a same-text draft in another session (acceptsInput=%s)', async acceptsInput => {
+  let release!: (value: unknown) => void;
+  uploadFiles.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+  const view = composer({ ...BACKGROUND, acceptsInput });
+  await act(async () => { view.result.current.setInput('Same wording'); view.result.current.setAttachedFiles([new File(['one'], 'one.txt')]); });
+  let pending!: Promise<void>;
+  await act(async () => { pending = view.result.current.handleSubmit({ preventDefault() {} } as never); await Promise.resolve(); });
+  view.rerender({ sessionId: 'session-b' });
+  await act(async () => { view.result.current.setInput('Same wording'); });
+  await act(async () => { release({ ok: true, json: async () => ({ attachments: [{ path: 'one.txt' }] }) }); await pending; });
+  expect(view.result.current.input).toBe('Same wording');
+  if (acceptsInput) expect(view.send.mock.calls[0][0]).toMatchObject({ sessionId: 'session-a' });
+  else expect(readQueuedMessage('session-a')?.content).toBe('Same wording');
+});
+
+test.each([true, false])('upload completion preserves attachments added without changing the text (acceptsInput=%s)', async acceptsInput => {
+  let release!: (value: unknown) => void;
+  uploadFiles.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+  const first = new File(['one'], 'one.txt');
+  const second = new File(['two'], 'two.txt');
+  const view = composer({ ...BACKGROUND, acceptsInput });
+  await act(async () => { view.result.current.setInput('Same wording'); view.result.current.setAttachedFiles([first]); });
+  let pending!: Promise<void>;
+  await act(async () => { pending = view.result.current.handleSubmit({ preventDefault() {} } as never); await Promise.resolve(); });
+  await act(async () => { view.result.current.setAttachedFiles([first, second]); });
+  await act(async () => { release({ ok: true, json: async () => ({ attachments: [{ path: 'one.txt' }] }) }); await pending; });
+  expect(view.result.current.input).toBe('Same wording');
+  expect(view.result.current.attachedFiles).toEqual([first, second]);
+});
+
+test('an editing anchor cannot carry into another conversation', async () => {
+  const view = composer(BACKGROUND);
+  await act(async () => { view.result.current.beginEditMessage({ type: 'user', content: 'Edit A', timestamp: 1, transcriptAnchorId: 'anchor-a' }); });
+  expect(view.result.current.editingAnchorId).toBe('anchor-a');
+  view.rerender({ sessionId: 'session-b' });
+  expect(view.result.current.editingAnchorId).toBeNull();
+  await view.submit('New message B');
+  expect(view.send.mock.calls[0][0]).toMatchObject({ type: 'chat.send', sessionId: 'session-b' });
+  expect(view.send.mock.calls[0][0]).not.toHaveProperty('anchorId');
 });

@@ -467,16 +467,17 @@ export function useChatSessionState({
   /*  addMessage                                                       */
   /* ---------------------------------------------------------------- */
 
-  const addMessage = useCallback((msg: ChatMessage) => {
-    if (!activeSessionId) {
+  const addMessage = useCallback((msg: ChatMessage, messageSessionId?: string, messageProvider?: LLMProvider) => {
+    const targetSessionId = messageSessionId || activeSessionId;
+    if (!targetSessionId) {
       // No session yet — show as pending until the backend creates one
       setPendingUserMessage(msg);
       return;
     }
-    const prov = readSelectedProvider();
-    const normalized = chatMessageToNormalized(msg, activeSessionId, prov);
+    const prov = messageProvider || readSelectedProvider();
+    const normalized = chatMessageToNormalized(msg, targetSessionId, prov);
     if (normalized) {
-      sessionStore.appendRealtime(activeSessionId, normalized);
+      sessionStore.appendRealtime(targetSessionId, normalized);
     }
   }, [activeSessionId, sessionStore]);
 

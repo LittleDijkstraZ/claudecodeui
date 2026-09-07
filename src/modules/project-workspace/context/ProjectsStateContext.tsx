@@ -12,6 +12,8 @@ type ProjectSidebarState = Pick<
   'sidebarOpen' | 'setSidebarOpen' | 'sidebarSharedProps'
 >;
 
+type ProjectSettingsState = Pick<ProjectsState, 'projects' | 'showSettings' | 'settingsInitialTab' | 'closeSettings'>;
+
 type ProjectMainState = Pick<
   ProjectsState,
   | 'selectedProject'
@@ -52,6 +54,7 @@ type ProjectsStateProviderProps = {
 };
 
 const ProjectSidebarContext = createContext<ProjectSidebarState | null>(null);
+const ProjectSettingsContext = createContext<ProjectSettingsState | null>(null);
 const ProjectMainContext = createContext<ProjectMainState | null>(null);
 const ProjectCommandContext = createContext<ProjectCommandState | null>(null);
 const ProjectEffectsContext = createContext<ProjectEffectsState | null>(null);
@@ -82,6 +85,13 @@ export function ProjectsStateProvider({
     }),
     [state.sidebarOpen, state.setSidebarOpen, state.sidebarSharedProps],
   );
+
+  const settingsState = useMemo<ProjectSettingsState>(() => ({
+    projects: state.projects,
+    showSettings: state.showSettings,
+    settingsInitialTab: state.settingsInitialTab,
+    closeSettings: state.closeSettings,
+  }), [state.projects, state.showSettings, state.settingsInitialTab, state.closeSettings]);
 
   const mainState = useMemo<ProjectMainState>(
     () => ({
@@ -150,7 +160,7 @@ export function ProjectsStateProvider({
         <ProjectMainContext.Provider value={mainState}>
           <ProjectSidebarContext.Provider value={sidebarState}>
             <ProjectActiveSessionContext.Provider value={activeSessionState}>
-              {children}
+              <ProjectSettingsContext.Provider value={settingsState}>{children}</ProjectSettingsContext.Provider>
             </ProjectActiveSessionContext.Provider>
           </ProjectSidebarContext.Provider>
         </ProjectMainContext.Provider>
@@ -168,6 +178,10 @@ function useRequiredProjectContext<T>(value: T | null, hookName: string): T {
 
 export function useProjectSidebarState(): ProjectSidebarState {
   return useRequiredProjectContext(useContext(ProjectSidebarContext), 'useProjectSidebarState');
+}
+
+export function useProjectSettingsState(): ProjectSettingsState {
+  return useRequiredProjectContext(useContext(ProjectSettingsContext), 'useProjectSettingsState');
 }
 
 export function useProjectMainState(): ProjectMainState {

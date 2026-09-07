@@ -260,12 +260,13 @@ export default function ChatComposer({
   const hasActivityIndicator = Boolean(activity && !hasPendingPermissions);
 
   const hasQueuedDraft = Boolean(queuedDraft);
+  const legacyClaudeQueue = provider === 'claude' && Boolean(activity) && activity?.acceptsInput !== true;
   const canQueueDraft = isLoading && Boolean(input.trim() || attachedFiles.length > 0);
   const submitHint = canQueueDraft
     ? activity?.acceptsInput === true
       ? t('input.hintText.liveQueue', { defaultValue: 'Enter to send to this conversation' })
       : hasQueuedDraft
-      ? t('input.hintText.updateQueued', { defaultValue: 'Enter to update queued message' })
+      ? legacyClaudeQueue ? t('input.queue.alreadyWaitingHint') : t('input.hintText.updateQueued', { defaultValue: 'Enter to update queued message' })
       : t('input.hintText.queue', { defaultValue: 'Enter to queue your next message' })
     : sendByCtrlEnter
       ? t('input.hintText.ctrlEnter')
@@ -274,7 +275,7 @@ export default function ChatComposer({
     ? activity?.acceptsInput === true
       ? t('input.send')
       : hasQueuedDraft
-      ? t('input.queue.update', { defaultValue: 'Update queued message' })
+      ? legacyClaudeQueue ? t('input.queue.alreadyWaitingHint') : t('input.queue.update', { defaultValue: 'Update queued message' })
       : t('input.queue.sendNext', { defaultValue: 'Queue next message' })
     : isLoading
       ? t('input.stop')
@@ -324,6 +325,7 @@ export default function ChatComposer({
       {queuedDraft && (
         <QueuedMessageCard
           content={queuedDraft.content}
+          waitingForRemoteRun={legacyClaudeQueue}
           attachmentCount={
             queuedDraft.uploadedAttachments?.length ?? queuedDraft.attachments.length
           }

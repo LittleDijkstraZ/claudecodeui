@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type {
   ChangeEvent,
   ClipboardEvent,
@@ -9,6 +9,7 @@ import type {
   SetStateAction,
   TouchEvent,
 } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useDropzone } from 'react-dropzone';
 
 import { api } from '@/shared/api';
@@ -62,7 +63,7 @@ type UseChatComposerStateArgs = {
   onFileOpen?: (filePath: string, diffInfo?: unknown) => void;
   onShowSettings?: () => void;
   scrollToBottom: () => void;
-  addMessage: (msg: ChatMessage) => void;
+  addMessage: (msg: ChatMessage, sessionId?: string, provider?: LLMProvider) => void;
   setIsUserScrolledUp: (isScrolledUp: boolean) => void;
   setPendingPermissionRequests: Dispatch<SetStateAction<PendingPermissionRequest[]>>;
 };
@@ -195,7 +196,7 @@ export function useChatComposerState({
    * needs and it keeps a stale message object from being captured while the
    * transcript refreshes underneath the composer.
    */
-  const [editingAnchorId, setEditingAnchorId] = useState<string | null>(null);
+  const [editingTarget, setEditingTarget] = useState<{ scope: string | null; anchorId: string } | null>(null);
 
   const [inputState, setInputState] = useState<{ scope: string | null; value: string }>(() => {
     if (typeof window === 'undefined') {
@@ -236,6 +237,14 @@ export function useChatComposerState({
   const draftScope = sessionKey ?? (selectedProjectId ? `project:${selectedProjectId}` : null);
   const draftScopeRef = useRef(draftScope);
   draftScopeRef.current = draftScope;
+  if (editingTarget && editingTarget.scope !== draftScope) setEditingTarget(null);
+  const editingAnchorId = editingTarget?.scope === draftScope ? editingTarget.anchorId : null;
+  const composerDraftRef = useRef({ scope: draftScope, sessionKey, provider, attachedFiles });
+  useLayoutEffect(() => {
+    composerDraftRef.current = { scope: draftScope, sessionKey, provider, attachedFiles };
+  }, [draftScope, sessionKey, provider, attachedFiles]);
+  // One preparation per draft scope prevents double Enter from uploading or allocating twice.
+  const preparingSends = useRef(new Set<string>());
   const setInput = useCallback<Dispatch<SetStateAction<string>>>((next) => {
     setInputState((previous) => ({
       scope: draftScopeRef.current,
@@ -258,6 +267,9 @@ export function useChatComposerState({
     scope: draftScope,
   });
 
+  const { t } = useTranslation('chat');
+  // Reserve the single legacy draft slot across async uploads, preventing later sends from replacing it.
+  const legacyQueueReservations = useRef(new Set<string>());
   const [queuedDraft, setQueuedDraft] = useState<QueuedDraft | null>(() => {
     if (typeof window === 'undefined' || !sessionKey) {
       return null;
@@ -632,6 +644,17 @@ export function useChatComposerState({
         return;
       }
 
+      const submittedDraft = composerDraftRef.current;
+      const draftStillMatches = () => {
+        const current = composerDraftRef.current;
+        return !queuedSubmission
+          && current.scope === submittedDraft.scope
+          && current.sessionKey === submittedDraft.sessionKey
+          && current.provider === submittedDraft.provider
+          && current.attachedFiles === currentAttachments
+          && inputValueRef.current === currentInput;
+      };
+
       // A turn is already in flight: stash this message instead of sending it.
       // Upload attached files now so the queued record contains durable image
       // descriptors that can be sent even if another session is open later.
@@ -645,65 +668,76 @@ export function useChatComposerState({
           return;
         }
 
-        const queuedOptions = buildSendOptions(currentInput);
-        const queuedSessionKey = sessionKey;
-        let uploadedAttachments: unknown[] = [];
+        const legacyQueueKey = sessionKey || 'new-session';
+        if (provider === 'claude' && (legacyQueueReservations.current.has(legacyQueueKey) || (sessionKey && readQueuedMessage(sessionKey)))) {
+          addMessage({ type: 'error', content: t('input.queue.alreadyWaiting', { defaultValue: 'A message is already waiting. Your new text remains in the input. Edit or remove the waiting message first.' }), timestamp: new Date() });
+          return;
+        }
+        if (provider === 'claude') legacyQueueReservations.current.add(legacyQueueKey);
         try {
-          uploadedAttachments = await uploadAttachmentFiles(currentAttachments);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'Unknown error';
-          console.error('Queued file upload failed:', error);
-          addMessage({
-            type: 'error',
-            content: `Failed to upload files: ${message}`,
-            timestamp: new Date(),
-          });
+          const queuedOptions = buildSendOptions(currentInput);
+          const queuedSessionKey = sessionKey;
+          let uploadedAttachments: unknown[] = [];
+          try {
+            uploadedAttachments = await uploadAttachmentFiles(currentAttachments);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : 'Unknown error';
+            console.error('Queued file upload failed:', error);
+            addMessage({
+              type: 'error',
+              content: `Failed to upload files: ${message}`,
+              timestamp: new Date(),
+            });
+            return;
+          }
+
+          const durableDraft: QueuedDraft = {
+            content: currentInput,
+            attachments: currentAttachments,
+            uploadedAttachments,
+            options: queuedOptions,
+          };
+          if (queuedSessionKey) {
+            // Write the claim ticket synchronously after upload; this closes the
+            // gap before React's persistence effect runs.
+            writeQueuedMessage(queuedSessionKey, {
+              content: durableDraft.content,
+              options: durableDraft.options,
+              attachments: durableDraft.uploadedAttachments,
+            });
+          }
+
+          // Recorded under the session the message was queued FOR, and before
+          // the session-switch return below — the queued text must be
+          // recallable even when it dispatches without this composer.
+          recordSentMessage(currentInput, queuedSessionKey);
+
+          // The server owns dispatch after persistence. If the user changed
+          // sessions during upload, the durable record is already enough; do
+          // not attach its UI card to the newly opened composer.
+          if (composerDraftRef.current.scope !== submittedDraft.scope || sessionKeyRef.current !== queuedSessionKey) {
+            return;
+          }
+
+          queuedDraftSessionRef.current = queuedSessionKey;
+          setQueuedDraft(durableDraft);
+          // An upload must not clear another scope or an edited text/attachment draft.
+          if (draftStillMatches()) {
+            setInput('');
+            inputValueRef.current = '';
+            setAttachedFiles([]);
+            setFileErrors(new Map());
+            resetCommandMenuState();
+            setIsTextareaExpanded(false);
+            if (textareaRef.current) {
+              textareaRef.current.style.height = 'auto';
+            }
+            if (submittedDraft.scope) {
+              writeDraftText(submittedDraft.scope, '');
+            }
+          }
           return;
-        }
-
-        const durableDraft: QueuedDraft = {
-          content: currentInput,
-          attachments: currentAttachments,
-          uploadedAttachments,
-          options: queuedOptions,
-        };
-        if (queuedSessionKey) {
-          // Write the claim ticket synchronously after upload; this closes the
-          // gap before React's persistence effect runs.
-          writeQueuedMessage(queuedSessionKey, {
-            content: durableDraft.content,
-            options: durableDraft.options,
-            attachments: durableDraft.uploadedAttachments,
-          });
-        }
-
-        // Recorded under the session the message was queued FOR, and before
-        // the session-switch return below — the queued text must be
-        // recallable even when it dispatches without this composer.
-        recordSentMessage(currentInput, queuedSessionKey);
-
-        // The server owns dispatch after persistence. If the user changed
-        // sessions during upload, the durable record is already enough; do
-        // not attach its UI card to the newly opened composer.
-        if (queuedSessionKey && sessionKeyRef.current !== queuedSessionKey) {
-          return;
-        }
-
-        queuedDraftSessionRef.current = queuedSessionKey;
-        setQueuedDraft(durableDraft);
-        setInput('');
-        inputValueRef.current = '';
-        setAttachedFiles([]);
-        setFileErrors(new Map());
-        resetCommandMenuState();
-        setIsTextareaExpanded(false);
-        if (textareaRef.current) {
-          textareaRef.current.style.height = 'auto';
-        }
-        if (draftScopeRef.current) {
-          writeDraftText(draftScopeRef.current, '');
-        }
-        return;
+        } finally { legacyQueueReservations.current.delete(legacyQueueKey); }
       }
 
       // Intercept slash commands only when "/" is the first input character.
@@ -741,150 +775,165 @@ export function useChatComposerState({
         }
       }
 
-      const messageContent = currentInput;
-
-      let uploadedAttachments = previouslyUploadedAttachments;
-      if (uploadedAttachments.length === 0 && currentAttachments.length > 0) {
-        try {
-          uploadedAttachments = await uploadAttachmentFiles(currentAttachments);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'Unknown error';
-          console.error('File upload failed:', error);
-          addMessage({
-            type: 'error',
-            content: `Failed to upload files: ${message}`,
-            timestamp: new Date(),
-          });
-          return;
-        }
+      const preparationKey = `${provider}:${submittedDraft.scope || 'new-session'}`;
+      if (preparingSends.current.has(preparationKey)) {
+        addMessage({ type: 'error', content: t('input.queue.preparing', { defaultValue: 'The previous message is still preparing. Your new draft remains here; send it after preparation finishes.' }), timestamp: new Date() });
+        return;
       }
+      preparingSends.current.add(preparationKey);
+      try {
+        const messageContent = currentInput;
 
-      const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
-      const sessionSummary = getNotificationSessionSummary(selectedSession, currentInput);
-
-      // The conversation always has a stable backend-allocated session id
-      // BEFORE the first websocket send: brand-new chats allocate one here
-      // via the session gateway. There is no client-visible session-id
-      // handoff later — this id stays valid for the conversation's lifetime.
-      let targetSessionId = selectedSession?.id || currentSessionId || null;
-      if (!targetSessionId) {
-        let createdSessionName = sessionSummary;
-        try {
-          const response = await api.providers.createSession({
-            provider,
-            projectPath: resolvedProjectPath,
-            initialMessage: messageContent,
-          });
-          if (!response.ok) {
-            throw new Error(`Failed to create session (${response.status})`);
+        let uploadedAttachments = previouslyUploadedAttachments;
+        if (uploadedAttachments.length === 0 && currentAttachments.length > 0) {
+          try {
+            uploadedAttachments = await uploadAttachmentFiles(currentAttachments);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : 'Unknown error';
+            console.error('File upload failed:', error);
+            addMessage({
+              type: 'error',
+              content: `Failed to upload files: ${message}`,
+              timestamp: new Date(),
+            });
+            return;
           }
-          const body = await response.json();
-          targetSessionId = body?.data?.sessionId || null;
-          // A blank server name would leave the session unlabeled, so the local
-          // summary stays the fallback unless a real name comes back.
-          const returnedSessionName = typeof body?.data?.sessionName === 'string'
-            ? body.data.sessionName.trim()
-            : '';
-          if (returnedSessionName) {
-            createdSessionName = returnedSessionName;
-          }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'Unknown error';
-          console.error('Session creation failed:', error);
-          addMessage({
-            type: 'error',
-            content: `Failed to start a new session: ${message}`,
-            timestamp: new Date(),
-          });
-          return;
         }
 
+        const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
+        const sessionSummary = getNotificationSessionSummary(selectedSession, currentInput);
+
+        // The conversation always has a stable backend-allocated session id
+        // BEFORE the first websocket send: brand-new chats allocate one here
+        // via the session gateway. There is no client-visible session-id
+        // handoff later — this id stays valid for the conversation's lifetime.
+        let targetSessionId = selectedSession?.id || currentSessionId || null;
         if (!targetSessionId) {
-          addMessage({
-            type: 'error',
-            content: 'Failed to start a new session: no session id returned.',
-            timestamp: new Date(),
+          let createdSessionName = sessionSummary;
+          try {
+            const response = await api.providers.createSession({
+              provider,
+              projectPath: resolvedProjectPath,
+              initialMessage: messageContent,
+            });
+            if (!response.ok) {
+              throw new Error(`Failed to create session (${response.status})`);
+            }
+            const body = await response.json();
+            targetSessionId = body?.data?.sessionId || null;
+            // A blank server name would leave the session unlabeled, so the local
+            // summary stays the fallback unless a real name comes back.
+            const returnedSessionName = typeof body?.data?.sessionName === 'string'
+              ? body.data.sessionName.trim()
+              : '';
+            if (returnedSessionName) {
+              createdSessionName = returnedSessionName;
+            }
+          } catch (error) {
+            const message = error instanceof Error ? error.message : 'Unknown error';
+            console.error('Session creation failed:', error);
+            addMessage({
+              type: 'error',
+              content: `Failed to start a new session: ${message}`,
+              timestamp: new Date(),
+            });
+            return;
+          }
+
+          if (!targetSessionId) {
+            addMessage({
+              type: 'error',
+              content: 'Failed to start a new session: no session id returned.',
+              timestamp: new Date(),
+            });
+            return;
+          }
+
+          onSessionEstablished?.(targetSessionId, {
+            provider,
+            project: selectedProject,
+            summary: createdSessionName,
           });
-          return;
         }
 
-        onSessionEstablished?.(targetSessionId, {
-          provider,
-          project: selectedProject,
-          summary: createdSessionName,
+        const attachmentRecords = uploadedAttachments as ChatAttachment[];
+        const clientMessageId = provider === 'claude' ? crypto.randomUUID() : undefined;
+        const userMessage: ChatMessage = {
+          type: 'user',
+          ...(clientMessageId ? { clientMessageId, delivery: 'queued' as const } : {}),
+          content: currentInput,
+          images: attachmentRecords.filter(isImageAttachment),
+          files: attachmentRecords.filter((attachment) => !isImageAttachment(attachment)),
+          timestamp: new Date(),
+          // Tags this echo as the replacement, so the truncation the server
+          // broadcasts a moment later cuts the turns being replaced without
+          // taking the message the user just sent with them.
+          ...(editingAnchorId ? { replacesAnchorId: editingAnchorId } : {}),
+        };
+
+        addMessage(userMessage, targetSessionId, provider);
+        setIsUserScrolledUp(false);
+        setTimeout(() => scrollToBottom(), 100);
+
+        // One message shape for every provider. The backend resolves the
+        // provider, project path, and provider-native resume id from the
+        // session row; `options` only carries composer-level preferences.
+        const sent = sendMessage({
+          // Replacing an already-sent message is its own frame: it changes the
+          // shape of the conversation, so it gets validated separately and can
+          // report why it was refused.
+          type: editingAnchorId ? 'chat.edit-send' : 'chat.send',
+          sessionId: targetSessionId,
+          ...(clientMessageId ? { clientMessageId } : {}),
+          ...(editingAnchorId ? { anchorId: editingAnchorId } : {}),
+          content: messageContent,
+          options: {
+            ...(queuedSubmission?.options ?? buildSendOptions(messageContent)),
+            attachments: uploadedAttachments,
+          },
         });
-      }
+        if (sent === false && clientMessageId) {
+          addMessage({ ...userMessage, delivery: 'failed', deliveryError: 'Connection lost. Reconnect before sending again.' }, targetSessionId, provider);
+        }
+        // A held query keeps its authoritative phase. A disconnected send must
+        // not create a phantom active run that could lock the user's composer.
+        if (sent !== false && !processingSessions?.has(targetSessionId)) {
+          onSessionProcessing?.(targetSessionId, {
+            statusText: null, canInterrupt: true, phase: 'foreground', acceptsInput: false,
+          });
+        }
+        setEditingTarget(previous => previous?.scope === submittedDraft.scope && previous.anchorId === editingAnchorId ? null : previous);
 
-      const attachmentRecords = uploadedAttachments as ChatAttachment[];
-      const clientMessageId = provider === 'claude' && !editingAnchorId ? crypto.randomUUID() : undefined;
-      const userMessage: ChatMessage = {
-        type: 'user',
-        ...(clientMessageId ? { clientMessageId, delivery: 'queued' as const } : {}),
-        content: currentInput,
-        images: attachmentRecords.filter(isImageAttachment),
-        files: attachmentRecords.filter((attachment) => !isImageAttachment(attachment)),
-        timestamp: new Date(),
-        // Tags this echo as the replacement, so the truncation the server
-        // broadcasts a moment later cuts the turns being replaced without
-        // taking the message the user just sent with them.
-        ...(editingAnchorId ? { replacesAnchorId: editingAnchorId } : {}),
-      };
+        // Recorded under the (possibly just-allocated) session id, so the first
+        // message of a new chat lands in the history of the session the user is
+        // navigated to. Queued drafts were recorded when they were queued; the
+        // consecutive-duplicate check keeps this second call a no-op.
+        recordSentMessage(currentInput, targetSessionId);
+        // Uploading or session allocation must not erase text typed while this send was preparing.
+        if (draftStillMatches()) {
+          setInput('');
+          inputValueRef.current = '';
+          resetCommandMenuState();
+          setAttachedFiles([]);
+          setFileErrors(new Map());
+          setIsTextareaExpanded(false);
 
-      addMessage(userMessage);
-      setIsUserScrolledUp(false);
-      setTimeout(() => scrollToBottom(), 100);
+          if (textareaRef.current) {
+            textareaRef.current.style.height = 'auto';
+          }
 
-      // One message shape for every provider. The backend resolves the
-      // provider, project path, and provider-native resume id from the
-      // session row; `options` only carries composer-level preferences.
-      const sent = sendMessage({
-        // Replacing an already-sent message is its own frame: it changes the
-        // shape of the conversation, so it gets validated separately and can
-        // report why it was refused.
-        type: editingAnchorId ? 'chat.edit-send' : 'chat.send',
-        sessionId: targetSessionId,
-        ...(clientMessageId ? { clientMessageId } : {}),
-        ...(editingAnchorId ? { anchorId: editingAnchorId } : {}),
-        content: messageContent,
-        options: {
-          ...(queuedSubmission?.options ?? buildSendOptions(messageContent)),
-          attachments: uploadedAttachments,
-        },
-      });
-      if (sent === false && clientMessageId) {
-        addMessage({ ...userMessage, delivery: 'failed', deliveryError: 'Connection lost. Reconnect before sending again.' });
-      }
-      // A held query keeps its authoritative phase. A disconnected send must
-      // not create a phantom active run that could lock the user's composer.
-      if (sent !== false && !processingSessions?.has(targetSessionId)) {
-        onSessionProcessing?.(targetSessionId, {
-          statusText: null, canInterrupt: true, phase: 'foreground', acceptsInput: false,
-        });
-      }
-      setEditingAnchorId(null);
-
-      // Recorded under the (possibly just-allocated) session id, so the first
-      // message of a new chat lands in the history of the session the user is
-      // navigated to. Queued drafts were recorded when they were queued; the
-      // consecutive-duplicate check keeps this second call a no-op.
-      recordSentMessage(currentInput, targetSessionId);
-      setInput('');
-      inputValueRef.current = '';
-      resetCommandMenuState();
-      setAttachedFiles([]);
-      setFileErrors(new Map());
-      setIsTextareaExpanded(false);
-
-      if (textareaRef.current) {
-        textareaRef.current.style.height = 'auto';
-      }
-
-      if (draftScopeRef.current) {
-        writeDraftText(draftScopeRef.current, '');
+          if (submittedDraft.scope) {
+            writeDraftText(submittedDraft.scope, '');
+          }
+        }
+      } finally {
+        preparingSends.current.delete(preparationKey);
       }
     },
     [
       selectedSession,
+      t,
+      setInput,
       attachedFiles,
       buildSendOptions,
       currentSessionId,
@@ -1213,14 +1262,14 @@ export function useChatComposerState({
   /** Loads an already-sent message back into the composer to be replaced. */
   const beginEditMessage = useCallback((message: ChatMessage) => {
     if (!message.transcriptAnchorId) return;
-    setEditingAnchorId(message.transcriptAnchorId);
+    setEditingTarget({ scope: draftScopeRef.current, anchorId: message.transcriptAnchorId });
     setInput(message.content || '');
     inputValueRef.current = message.content || '';
     textareaRef.current?.focus();
   }, [setInput]);
 
   const cancelEditMessage = useCallback(() => {
-    setEditingAnchorId(null);
+    setEditingTarget(null);
     setInput('');
     inputValueRef.current = '';
   }, [setInput]);
