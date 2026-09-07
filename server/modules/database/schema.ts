@@ -256,6 +256,7 @@ CREATE TABLE IF NOT EXISTS conversation_groups (
     id TEXT PRIMARY KEY NOT NULL,
     user_id INTEGER NOT NULL,
     name TEXT NOT NULL CHECK (length(trim(name)) BETWEEN 1 AND 80),
+    is_pinned INTEGER NOT NULL DEFAULT 0 CHECK (is_pinned IN (0, 1)),
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (id, user_id),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -265,6 +266,7 @@ CREATE TABLE IF NOT EXISTS conversation_group_memberships (
     user_id INTEGER NOT NULL,
     session_id TEXT NOT NULL,
     group_id TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (user_id, session_id),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE ON UPDATE CASCADE,

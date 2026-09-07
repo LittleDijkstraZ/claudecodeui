@@ -489,6 +489,36 @@ const ensureProjectsForSessionPaths = (db: Database): void => {
   `);
 };
 
+/** Upgrade existing group membership once from recency order to persistent manual order. */
+const addConversationGroupOrdering = (db: Database): void => {
+  db.transaction(() => {
+    const groupColumns = getTableInfo(db, 'conversation_groups').map(column => column.name);
+    addColumnToTableIfNotExists(db, 'conversation_groups', groupColumns, 'is_pinned', 'INTEGER NOT NULL DEFAULT 0 CHECK (is_pinned IN (0, 1))');
+    const memberColumns = getTableInfo(db, 'conversation_group_memberships').map(column => column.name);
+    if (!memberColumns.includes('sort_order')) {
+      addColumnToTableIfNotExists(db, 'conversation_group_memberships', memberColumns, 'sort_order', 'INTEGER NOT NULL DEFAULT 0');
+      // Match the old memberPage ordering, including its deterministic tie break.
+      // Never repeat this backfill: later session activity must not move a row.
+      db.exec(`
+        WITH ranked AS (
+          SELECT m.user_id, m.session_id,
+            ROW_NUMBER() OVER (
+              PARTITION BY m.user_id, m.group_id
+              ORDER BY julianday(COALESCE(s.updated_at, s.created_at)) DESC, s.session_id ASC
+            ) - 1 AS position
+          FROM conversation_group_memberships m JOIN sessions s ON s.session_id = m.session_id
+        )
+        UPDATE conversation_group_memberships AS m
+        SET sort_order = COALESCE((
+          SELECT position FROM ranked WHERE ranked.user_id = m.user_id AND ranked.session_id = m.session_id
+        ), 0)
+      `);
+    }
+    // Creating this before adding the column would fail on an existing install.
+    db.exec('CREATE INDEX IF NOT EXISTS idx_conversation_group_member_order ON conversation_group_memberships(group_id, user_id, sort_order, session_id)');
+  })();
+};
+
 export const runMigrations = (db: Database) => {
   try {
     const usersTableInfo = db.prepare('PRAGMA table_info(users)').all() as { name: string }[];
@@ -538,6 +568,7 @@ export const runMigrations = (db: Database) => {
     // Create referencing tables only after legacy sessions/projects repairs;
     // otherwise an old sessions-table rebuild could invalidate their FKs.
     db.exec(CONVERSATION_GROUPS_SCHEMA_SQL);
+    addConversationGroupOrdering(db);
 
     db.exec('CREATE INDEX IF NOT EXISTS idx_session_ids_lookup ON sessions(session_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_provider_session_id ON sessions(provider_session_id)');

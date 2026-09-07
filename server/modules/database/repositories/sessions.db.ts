@@ -270,8 +270,8 @@ export const sessionsDb = {
         // A membership already assigned to the stable app id wins for that
         // same user; other users' memberships move before FK cascade deletion.
         db.prepare(`
-          INSERT INTO conversation_group_memberships (user_id, session_id, group_id)
-          SELECT user_id, ?, group_id FROM conversation_group_memberships
+          INSERT INTO conversation_group_memberships (user_id, session_id, group_id, sort_order)
+          SELECT user_id, ?, group_id, sort_order FROM conversation_group_memberships
           WHERE session_id = ?
           ON CONFLICT(user_id, session_id) DO NOTHING
         `).run(sessionId, duplicate.session_id);

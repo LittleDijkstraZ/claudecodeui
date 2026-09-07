@@ -3,7 +3,7 @@ import { stat } from 'node:fs/promises';
 import { conversationGroupsDb, projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { sessionsService } from '@/modules/providers/index.js';
 import { AppError, normalizeProjectPath, validateWorkspacePath } from '@/shared/index.js';
-import type { ConversationGroupPageOptions, LLMProvider } from '@/shared/index.js';
+import type { ConversationGroupMemberMove, ConversationGroupPageOptions, ConversationGroupUpdate, LLMProvider } from '@/shared/index.js';
 
 /** Cross-project member row returned by the group service, including archived conversations. */
 type GroupedConversation = {
@@ -50,11 +50,20 @@ export function createConversationGroupsService(overrides: Partial<GroupServiceD
     list: (userId: number) => dependencies.groups.list(userId),
     create: (userId: number, name: string) => dependencies.groups.create(userId, name),
 
-    rename(userId: number, id: string, name: string) {
+    update(userId: number, id: string, changes: ConversationGroupUpdate) {
       return dependencies.groups.atomic(() => {
         requireGroup(userId, id);
-        dependencies.groups.rename(userId, id, name);
+        dependencies.groups.update(userId, id, changes);
         return requireGroup(userId, id);
+      });
+    },
+
+    moveMember(userId: number, id: string, move: ConversationGroupMemberMove) {
+      dependencies.groups.atomic(() => {
+        requireGroup(userId, id);
+        if (!dependencies.groups.moveMember(userId, id, move)) {
+          throw new AppError('Conversation or target no longer belongs to this group.', { code: 'GROUP_MEMBER_NOT_FOUND', statusCode: 404 });
+        }
       });
     },
 

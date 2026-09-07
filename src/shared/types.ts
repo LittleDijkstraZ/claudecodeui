@@ -1553,6 +1553,7 @@ type TaskPriority = 'high' | 'medium' | 'low' | string;
 
 /** Personal organization metadata; a group never changes a session's working folder. */
 export type ConversationGroup = {
+  isPinned: boolean;
   id: string;
   name: string;
   sessionCount: number;
@@ -1620,3 +1621,7 @@ export type ConversationChangeTurn = {
   timestamp: ChatMessage['timestamp'];
   changes: ConversationFileChange[];
 };
+
+export type GroupDragSource = { groupId: string; sessionId: string };
+export type GroupDropTarget = GroupDragSource & { position: 'before' | 'after' };
+export type GroupDragPoint = { x: number; y: number };

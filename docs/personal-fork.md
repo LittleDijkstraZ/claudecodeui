@@ -110,6 +110,22 @@ group removes its memberships only; deleting a session cleans up memberships.
 Provider-native duplicate rows transfer their memberships before being merged
 into the stable app session, preserving that app session's choice on conflicts.
 
+The Groups view has independently expandable sections. Group header menus offer
+new conversation, pin/unpin, rename, and a final red delete action. Conversations
+use one-line rows with folder details in a tooltip and a separate membership
+menu. Drag the row (or its provider icon on touch devices) to reorder within a
+group; the menu's move-up/down actions provide a keyboard alternative. Moving
+between groups uses the membership menu.
+
+Pin state and manual member order are stored per user in SQLite. The first
+upgrade seeds existing groups from their previous recency order only once.
+New or moved-in conversations append; later activity cannot reshuffle the list.
+Reordering sends a source and relative anchor, so search-hidden or unloaded
+members retain their order. Provider-row merges preserve member position.
+Only expanded groups fetch member pages. Search temporarily opens all groups
+and restores the ordinary expansion state when cleared. Failed order saves
+keep the displayed order and offer an explicit retry.
+
 Group browsing queries the database with pagination instead of filtering the
 sidebar's partially loaded project lists. Archived members remain visible with
 an archive label. Search covers title, project path/name, provider, and session

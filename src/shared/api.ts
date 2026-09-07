@@ -669,3 +669,19 @@ export function createGroupConversation(
 ): Promise<CreatedGroupConversation> {
   return groupRequest(`/${encodeURIComponent(groupId)}/sessions`, 'POST', { provider, projectPath });
 }
+
+export async function pinConversationGroup(id: string, isPinned: boolean): Promise<ConversationGroup> {
+  const data = await groupRequest<{ group: ConversationGroup }>(`/${encodeURIComponent(id)}`, 'PATCH', { isPinned });
+  return data.group;
+}
+
+/** Move relative to a known member without replacing unloaded or filtered rows. */
+export async function moveGroupConversation(
+  groupId: string,
+  sessionId: string,
+  targetSessionId: string,
+  position: 'before' | 'after',
+): Promise<void> {
+  await groupRequest(`/${encodeURIComponent(groupId)}/sessions/reorder`, 'POST', { sessionId, targetSessionId, position });
+}
+
