@@ -112,7 +112,7 @@ createWebSocketServer(server, {
         runtime: providerRuntimeService,
     },
     shell: {
-        prepareClaudeSession: (id, provider, projectPath) => claudeSessionConfiguration.prepareShell(id, provider, projectPath),
+        prepareClaudeSession: (id, provider, projectPath, permissions) => claudeSessionConfiguration.prepareShell(id, provider, projectPath, permissions),
         beginExecution: (record) => claudeExecutionRecords.begin(record),
         finishExecution: (id, failed) => claudeExecutionRecords.finish(id, failed),
         resolveProviderSessionId: (sessionId, provider) => {

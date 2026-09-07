@@ -1,3 +1,4 @@
+import type { ClaudeShellPermissionSelection } from '@/shared/types';
 import { IS_PLATFORM } from '@/shared/utils';
 import { getStoredAuthToken } from '@/shared/authToken';
 
@@ -14,6 +15,8 @@ type ShellInitMessage = {
   isPlainShell: boolean;
   forceRestart?: boolean;
   bypassPermissions?: boolean;
+  permissionMode?: ClaudeShellPermissionSelection['permissionMode'];
+  toolsSettings?: ClaudeShellPermissionSelection['toolsSettings'];
 };
 
 type ShellResizeMessage = {

@@ -3,7 +3,7 @@ import type { MutableRefObject, RefObject } from 'react';
 import type { FitAddon } from '@xterm/addon-fit';
 import type { Terminal } from '@xterm/xterm';
 
-import type { Project, ProjectSession, ShellExecutionBinding } from '@/shared/types';
+import type { Project, ProjectSession, ShellExecutionBinding, ClaudeShellPermissionSelection } from '@/shared/types';
 import { useShellConnection } from '@/modules/shell/hooks/useShellConnection';
 import { useShellTerminal } from '@/modules/shell/hooks/useShellTerminal';
 
@@ -14,6 +14,7 @@ type UseShellRuntimeOptions = {
   initialCommand: string | null | undefined;
   isPlainShell: boolean;
   bypassPermissions: boolean;
+  permissionSelection?: ClaudeShellPermissionSelection;
   minimal: boolean;
   autoConnect: boolean;
   isRestarting: boolean;
@@ -41,6 +42,7 @@ export function useShellRuntime({
   initialCommand,
   isPlainShell,
   bypassPermissions,
+  permissionSelection,
   minimal,
   autoConnect,
   isRestarting,
@@ -57,6 +59,7 @@ export function useShellRuntime({
   const initialCommandRef = useRef(initialCommand);
   const isPlainShellRef = useRef(isPlainShell);
   const bypassPermissionsRef = useRef(bypassPermissions);
+  const permissionSelectionRef = useRef(permissionSelection);
   const onProcessCompleteRef = useRef(onProcessComplete);
   const lastSessionIdRef = useRef<string | null>(selectedSession?.id ?? null);
 
@@ -67,8 +70,9 @@ export function useShellRuntime({
     initialCommandRef.current = initialCommand;
     isPlainShellRef.current = isPlainShell;
     bypassPermissionsRef.current = bypassPermissions;
+    permissionSelectionRef.current = permissionSelection;
     onProcessCompleteRef.current = onProcessComplete;
-  }, [selectedProject, selectedSession, initialCommand, isPlainShell, bypassPermissions, onProcessComplete]);
+  }, [selectedProject, selectedSession, initialCommand, isPlainShell, bypassPermissions, permissionSelection, onProcessComplete]);
 
   const closeSocket = useCallback(() => {
     const activeSocket = wsRef.current;
@@ -107,6 +111,7 @@ export function useShellRuntime({
     initialCommandRef,
     isPlainShellRef,
     bypassPermissionsRef,
+    permissionSelectionRef,
     onProcessCompleteRef,
     isInitialized,
     autoConnect,

@@ -5,7 +5,7 @@ import { expect, test } from 'vitest';
 
 import { acceptClaudeUsageSnapshot } from '@/modules/chat/utils/claudeUsageSnapshot';
 import TokenUsageSummary from '@/modules/chat/composer/TokenUsageSummary';
-import { ClaudeUsageDetails } from '@/modules/chat/modals/TokenUsageModal';
+import { ClaudeUsageDetails, UnverifiedClaudeUsageDetails } from '@/modules/chat/modals/TokenUsageModal';
 import { i18n as appI18n } from '@/modules/i18n';
 import type { ClaudeUsageSnapshot } from '@/shared/types';
 
@@ -50,4 +50,27 @@ test('unknown context and unknown capacity remain explicit without a guessed 160
   expect(button).toContain('Unknown'); expect(button).not.toContain('8M');
   const details = renderToStaticMarkup(<I18nextProvider i18n={i18n}><ClaudeUsageDetails usage={value} /></I18nextProvider>);
   expect(details).not.toContain('160,000'); expect(details).toContain('No reliable context observation yet');
+});
+
+test('an older Claude server is not presented as verified context or conversation totals', () => {
+  const legacy = { used: 506_123, total: 1_000_000, inputTokens: 500_000, outputTokens: 6123 };
+  const button = renderToStaticMarkup(<I18nextProvider i18n={i18n}><TokenUsageSummary usage={legacy} provider="claude" /></I18nextProvider>);
+  expect(button).toContain('Legacy stats');
+  expect(button).not.toContain('506K');
+  expect(button).not.toContain('≈');
+  const details = renderToStaticMarkup(<I18nextProvider i18n={i18n}><UnverifiedClaudeUsageDetails usage={legacy} /></I18nextProvider>);
+  expect(details).toContain('506,123');
+  expect(details).toContain('Unverified reported value (reference only)');
+  expect(details).not.toContain('1,000,000');
+  expect(details).not.toContain('Total tokens used');
+  expect(details).toContain('CloudCLI update finishes');
+});
+
+test('missing Claude statistics do not claim zero, while other providers retain their existing counters', () => {
+  const missing = renderToStaticMarkup(<I18nextProvider i18n={i18n}><TokenUsageSummary usage={null} provider="claude" /></I18nextProvider>);
+  expect(missing).toContain('No stats yet');
+  expect(missing).not.toContain('>0<');
+  const other = renderToStaticMarkup(<I18nextProvider i18n={i18n}><TokenUsageSummary usage={{ used: 506_123 }} provider="codex" /></I18nextProvider>);
+  expect(other).toContain('506K');
+  expect(other).not.toContain('Legacy stats');
 });

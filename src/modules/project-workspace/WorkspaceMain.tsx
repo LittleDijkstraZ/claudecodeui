@@ -100,9 +100,9 @@ function WorkspaceMain({
     {selectedProject && <WorkspaceHeader
       activeTab={panel?.open ? panel.tab : 'chat'} setActiveTab={selectView}
       selectedProject={selectedProject} selectedSession={selectedSession} shouldShowTasksTab={shouldShowTasksTab}
-      shouldShowBrowserTab={shouldShowBrowserTab} isMobile={isMobile} onMenuClick={onMenuClick}
+      shouldShowBrowserTab={shouldShowBrowserTab} isMobile={isMobile} onMenuClick={onMenuClick} onShowSettings={() => onShowSettings()}
     />}
-    <WorkspacePanelLayout main={main} title={title}>
+    <WorkspacePanelLayout main={main} title={title} sessionId={selectedSession?.id ?? null}>
       {retained('shell') && <div className={`h-full ${visible('shell') ? 'block' : 'hidden'}`}><WorkspaceTerminals project={selectedProject} session={selectedSession} visible={visible('shell')} /></div>}
       {retained('files') && <div className={`h-full ${visible('files') ? 'block' : 'hidden'}`}><WorkspaceFilesPanel project={selectedProject} editingFile={editing?.file ?? null} editingProject={editing?.project ?? null} onFileOpen={openFile} onClose={() => setEditing(null)} /></div>}
       {retained('git') && <div className={`h-full ${visible('git') ? 'block' : 'hidden'}`}>{selectedProject && <GitPanel selectedProject={selectedProject} isMobile={isMobile} onFileOpen={handleFileOpen} onProjectSelect={onProjectSelect} onProjectsRefresh={onProjectsRefresh} />}</div>}

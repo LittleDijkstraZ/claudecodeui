@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { hubApi, remoteToken } from '@/shared/api';
 import type { HubRemote, HubRemoteState } from '@/shared/types';
+import { getHubUnread, readHubConversation, recordHubUnread } from '@/modules/remote-hub/utils/hubUnread';
 import { normalizeConversation } from '@/modules/remote-hub/utils/hubClient';
 const initial = (): HubRemoteState => ({
   status: 'loading',
@@ -48,7 +49,7 @@ export function useHubConnections(remotes: HubRemote[], onNotification: (remoteI
           conversations: (recent.conversations ?? []).map((row: Record<string, unknown>) => normalizeConversation(remoteId, row)),
           total: recent.total ?? 0,
           running: (activityRevision.current.get(remoteId) ?? 0) !== snapshotRevision ? current[remoteId]?.running ?? [] : (running.sessions ?? []).map((s: { sessionId: string }) => s.sessionId),
-          attention: current[remoteId]?.attention ?? []
+          attention: getHubUnread(remoteId)
         }
       }));
     } catch (error) {
@@ -72,11 +73,14 @@ export function useHubConnections(remotes: HubRemote[], onNotification: (remoteI
     refreshAll();
     const timer = window.setInterval(refreshAll, 10000);
     window.addEventListener('focus', refreshAll);
+    const syncUnread = () => setStates(current => Object.fromEntries(Object.entries(current).map(([id, state]) => [id, { ...state, attention: getHubUnread(id) }])));
+    window.addEventListener('storage', syncUnread);
     window.addEventListener('storage', refreshAll);
     return () => {
       generation.current = version + 1;
       window.clearInterval(timer);
       window.removeEventListener('focus', refreshAll);
+      window.removeEventListener('storage', syncUnread);
       window.removeEventListener('storage', refreshAll);
     };
   }, [remotes, refresh]);
@@ -105,12 +109,11 @@ export function useHubConnections(remotes: HubRemote[], onNotification: (remoteI
               setStates(current => {
                 const previous = current[remote.id] ?? initial();
                 const running = new Set(previous.running);
-                const attention = new Set(previous.attention);
+                const attention = message.status === 'running' ? previous.attention : recordHubUnread(remote.id, message.sessionId, String(message.eventId ?? `${message.runId}:${message.status}:${message.seq}`));
                 if (message.status === 'running' || message.status === 'permission') running.add(message.sessionId);
                 else running.delete(message.sessionId);
-                if (message.status === 'running') attention.delete(message.sessionId);
-                else attention.add(message.sessionId);
-                return { ...current, [remote.id]: { ...previous, running: [...running], attention: [...attention] } };
+
+                return { ...current, [remote.id]: { ...previous, running: [...running], attention } };
               });
             }
             if (['session_upserted', 'session_activity', 'session_context_reset', 'session_deleted', 'projects_updated'].includes(message.kind)) void refresh(remote.id);
@@ -144,7 +147,12 @@ export function useHubConnections(remotes: HubRemote[], onNotification: (remoteI
       for (const socket of sockets) socket.close();
     };
   }, [remotes, refresh, tokenSignature]);
+  const markRead = useCallback((remoteId: string, sessionId: string) => {
+    readHubConversation(remoteId, sessionId);
+    setStates(current => current[remoteId]?.attention.includes(sessionId) ? { ...current, [remoteId]: { ...current[remoteId], attention: current[remoteId].attention.filter(id => id !== sessionId) } } : current);
+  }, []);
   return {
+    markRead,
     states,
     refresh,
     setStates

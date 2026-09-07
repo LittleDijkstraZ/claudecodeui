@@ -37,3 +37,5 @@ export type { ClaudeUsageBuckets, ClaudeUsageModelCounters, ClaudeUsageContext, 
 export { parseIncomingJsonObject } from './utils.js';
 
 export { addClaudeUsageModels } from './utils.js';
+
+export { resolveClaudePermissionSelection } from './utils.js';

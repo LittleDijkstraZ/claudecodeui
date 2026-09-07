@@ -182,23 +182,17 @@ export default function ConversationChangesBar({
     });
   };
 
-  if (turns.length === 0 && !hasEarlierMessages && !isProcessing) return null;
+  if (allEditCount === 0 && !hasEarlierMessages) return null;
 
   return (
     <Dialog open={isOpen} onOpenChange={setIsOpen}>
-      <div className="mx-auto mb-2 flex w-[calc(100%_-_1rem)] max-w-[54.25rem] flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-lg border border-border/60 bg-muted/25 px-3 py-1.5 sm:w-[calc(100%_-_2rem)]" data-testid="conversation-changes-bar">
-        <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-          <FileCode2 className="h-3.5 w-3.5 shrink-0" />
-          <span className="min-w-0">
-            {latestFileCount > 0
-              ? t('changes.latestFiles', { count: latestFileCount })
-              : t(isProcessing ? 'changes.currentEmpty' : 'changes.latestEmpty')}
-            {latestFileCount === 0 && allEditCount > 0 && <span className="ml-1.5">{t('changes.earlierEdits', { count: allEditCount })}</span>}
-          </span>
-          {isProcessing && <Loader2 className="h-3 w-3 shrink-0 animate-spin" aria-label={t('changes.processing')} />}
-        </div>
+      <div className="mx-auto mb-1 flex w-[calc(100%_-_1rem)] max-w-[54.25rem] justify-end sm:w-[calc(100%_-_2rem)]" data-testid="conversation-changes-bar">
         <DialogTrigger asChild>
-          <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs">{t('changes.review')}</Button>
+          <Button type="button" variant="ghost" size="sm" className="h-6 max-w-full gap-1.5 px-2 text-[11px] text-muted-foreground" title={t('changes.review')}>
+            <FileCode2 className="h-3 w-3 shrink-0" />
+            <span className="truncate">{t('changes.review')}{latestFileCount > 0 ? ` · ${t('changes.latestFiles', { count: latestFileCount })}` : allEditCount > 0 ? ` · ${t('changes.earlierEdits', { count: allEditCount })}` : ''}</span>
+            {isProcessing && <Loader2 className="h-3 w-3 shrink-0 animate-spin" aria-label={t('changes.processing')} />}
+          </Button>
         </DialogTrigger>
       </div>
 

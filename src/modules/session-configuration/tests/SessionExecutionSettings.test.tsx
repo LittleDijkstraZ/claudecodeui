@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SessionExecutionSettings } from '@/modules/session-configuration';
-import { claudeExecutionSettingsApi } from '@/shared/api';
+import { api, claudeExecutionSettingsApi } from '@/shared/api';
 import type { ClaudeSessionExecutionSnapshot } from '@/shared/types';
 
 vi.mock('@/shared/api', () => ({
@@ -25,6 +25,7 @@ const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = n
 
 describe('shared execution configuration', () => {
   beforeEach(() => {
+    vi.mocked(api.providers.models).mockClear();
     vi.mocked(claudeExecutionSettingsApi.read).mockReset().mockResolvedValue(response(snapshot));
     vi.mocked(claudeExecutionSettingsApi.update).mockReset();
   });
@@ -33,6 +34,27 @@ describe('shared execution configuration', () => {
     await waitFor(() => expect(screen.getByText(/启动时请求/)).toBeTruthy());
     expect(screen.getByText(/^实际报告：/).textContent).toContain('模型 未确认；effort 未确认；Ultracode 未确认');
     expect(claudeExecutionSettingsApi.read).toHaveBeenCalledWith('app-fixture', 'run-fixture', expect.any(Object));
+  });
+  it('keeps evidence inside the model menu without duplicating next-setting controls', async () => {
+    render(<SessionExecutionSettings provider="claude" sessionId="app-fixture" surface="chat" presentation="menu" />);
+    await waitFor(() => expect(screen.getByText(/^下次启动：/)).toBeTruthy());
+    expect(screen.getByText('本次执行与下轮设置')).toBeTruthy();
+    expect(screen.queryByLabelText('Next execution model')).toBeNull();
+    expect(screen.queryByLabelText('Next execution effort')).toBeNull();
+    fireEvent.click(screen.getByText('本次执行与下轮设置'));
+    await waitFor(() => expect(screen.getByTestId('session-execution-settings').getAttribute('open')).not.toBeNull());
+    expect(api.providers.models).not.toHaveBeenCalled();
+    expect(screen.getByText(/^实际报告：/).textContent).toContain('Ultracode 未确认');
+  });
+  it('distinguishes saved launch permissions from the observed runtime permission mode', async () => {
+    const withPermissions = { ...snapshot, execution: { ...snapshot.execution!,
+      permissionRequest: { mode: 'acceptEdits', allowedRuleCount: 2, deniedRuleCount: 1 }, observed: { permissionMode: 'default' },
+    } };
+    vi.mocked(claudeExecutionSettingsApi.read).mockResolvedValue(response(withPermissions));
+    render(<SessionExecutionSettings provider="claude" sessionId="app-fixture" surface="shell" />);
+    await waitFor(() => expect(screen.getByText('启动权限：acceptEdits；请求允许/拒绝规则 2/1')).toBeTruthy());
+    expect(screen.getByText('实际权限模式：default')).toBeTruthy();
+    expect(screen.getByText(/仅沿用已保存的权限；一次允许不会自动保留/)).toBeTruthy();
   });
   it('updates next-launch settings and preserves the existing execution snapshot', async () => {
     const updated = { ...snapshot, next: { ...snapshot.next, effort: 'high', ultracode: false, revision: 'revision-2' } };

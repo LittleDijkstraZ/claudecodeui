@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { NavigateFunction } from 'react-router-dom';
 
 import { api } from '@/shared/api';
@@ -9,6 +9,7 @@ import type { ServerEvent,
   Project,
   ProjectSession,IsSessionProcessing } from '@/shared/types';
 import { mergeProjectSelectionMetadata } from '@/modules/project-workspace/utils/projectSelectionMetadata';
+import { isConversationDocumentVisible, observeConversationVisibility } from '@/modules/project-workspace/utils/conversationVisibility';
 import { readSelectedProvider } from '@/shared/selectedProvider';
 
 type UseProjectsStateArgs = {
@@ -244,6 +245,22 @@ const getSessionAliasIds = (event: SessionUpsertedEvent): Set<string> => {
   return ids;
 };
 
+const sessionMessagesAdvanced = (previous: ProjectSession | undefined, next: ProjectSession): boolean => {
+  // The first observation establishes a baseline. A renamed conversation
+  // discovered outside the loaded page must not announce old messages as new.
+  if (!previous) return false;
+  const previousCount = previous.messageCount;
+  const nextCount = next.messageCount;
+  if (typeof previousCount === 'number' && typeof nextCount === 'number') {
+    if (nextCount > previousCount) return true;
+    if (nextCount < previousCount) return false;
+  }
+  if (next.lastMessage == null || next.lastMessage === '' || serialize(next.lastMessage) === serialize(previous.lastMessage)) return false;
+  const previousTime = Date.parse(previous.lastActivity ?? '');
+  const nextTime = Date.parse(next.lastActivity ?? '');
+  return !Number.isFinite(previousTime) || !Number.isFinite(nextTime) || nextTime >= previousTime;
+};
+
 /**
  * Upserts one session into a project's normalized session list.
  *
@@ -438,6 +455,16 @@ export function useProjectsState({
   selectedProjectRef.current = selectedProject;
   const projectsRef = useRef(projects);
   projectsRef.current = projects;
+  // Back-to-back websocket deltas can arrive before React commits the project
+  // list. Keep their latest message baseline to deduplicate that whole batch.
+  const sessionUpsertBaselinesRef = useRef(new Map<string, ProjectSession>());
+  // A reconnect may replay a completion after it was read. Deduplicate frames
+  // with stable event IDs without retaining their message contents.
+  const seenAttentionEventsRef = useRef(new Set<string>());
+  // The stable socket handler needs the current view, without resubscribing
+  // every time a workspace panel or the settings dialog is opened.
+  const isReadingChatRef = useRef(activeTab === 'chat' && !showSettings);
+  useLayoutEffect(() => { isReadingChatRef.current = activeTab === 'chat' && !showSettings; }, [activeTab, showSettings]);
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
   /** URL session id whose backend lookup already ran (or is in flight) — one attempt per id. */
@@ -462,7 +489,7 @@ export function useProjectsState({
     }
 
     const viewedSessionId = selectedSessionRef.current?.id ?? sessionId ?? null;
-    if (targetSessionId === viewedSessionId) {
+    if (targetSessionId === viewedSessionId && isReadingChatRef.current && isConversationDocumentVisible()) {
       return;
     }
 
@@ -738,14 +765,12 @@ export function useProjectsState({
       const eventSessionId = typeof event.sessionId === 'string' && event.sessionId
         ? event.sessionId
         : null;
-      const viewedSessionId = selectedSessionRef.current?.id ?? sessionId ?? null;
-
       if (
         eventSessionId
-        && eventSessionId !== viewedSessionId
         && event.kind !== 'chat_subscribed'
         && event.kind !== 'loading_progress'
         && event.kind !== 'session_upserted'
+        && event.kind !== 'session_context_reset'
         && event.kind !== 'status'
         && event.kind !== 'stream_end'
         && event.kind !== 'permission_resolved'
@@ -753,7 +778,14 @@ export function useProjectsState({
         && event.kind !== 'websocket_reconnected'
         && !(event.kind === 'session_activity' && event.status === 'running')
       ) {
-        markSessionAttention(eventSessionId);
+        const eventKey = typeof event.eventId === 'string' ? `${eventSessionId}:${event.eventId}` : null;
+        if (!eventKey || !seenAttentionEventsRef.current.has(eventKey)) {
+          if (eventKey) {
+            seenAttentionEventsRef.current.add(eventKey);
+            if (seenAttentionEventsRef.current.size > 1000) seenAttentionEventsRef.current.delete(seenAttentionEventsRef.current.values().next().value!);
+          }
+          markSessionAttention(eventSessionId);
+        }
       }
 
       if (event.kind !== 'session_upserted') {
@@ -769,13 +801,30 @@ export function useProjectsState({
       // no run is active here (e.g. edited from another client or the CLI):
       // signal the chat view to reload its messages.
       const currentSelectedSession = selectedSessionRef.current;
+      const aliasIds = getSessionAliasIds(upsert);
+      const eventBaseline = sessionUpsertBaselinesRef.current.get(upsert.sessionId);
+      const loadedSession = projectsRef.current.flatMap(project => project.sessions ?? []).find(session => aliasIds.has(session.id))
+        ?? (currentSelectedSession && aliasIds.has(currentSelectedSession.id) ? currentSelectedSession : undefined);
+      // A REST refresh may already have advanced beyond our last event. Its
+      // newer count is the baseline, rather than announcing the refresh twice.
+      const previousSession = loadedSession && (loadedSession.messageCount ?? 0) > (eventBaseline?.messageCount ?? 0)
+        ? loadedSession : eventBaseline ?? loadedSession;
+      const messagesAdvanced = sessionMessagesAdvanced(previousSession, upsert.session);
+      sessionUpsertBaselinesRef.current.set(upsert.sessionId, {
+        ...previousSession,
+        ...upsert.session,
+        // Old metadata-only broadcasts carry a placeholder zero. A rename or
+        // late duplicate must not reset the watermark and make old messages new.
+        messageCount: Math.max(previousSession?.messageCount ?? 0, upsert.session.messageCount ?? 0),
+      });
       if (
         currentSelectedSession
         && upsert.sessionId === currentSelectedSession.id
         && !isSessionProcessing(upsert.sessionId)
       ) {
         setExternalMessageUpdate((prev) => prev + 1);
-      } else {
+      }
+      if (messagesAdvanced) {
         markSessionAttention(upsert.sessionId);
       }
 
@@ -872,8 +921,12 @@ export function useProjectsState({
   }, []);
 
   useEffect(() => {
-    clearSessionAttention(selectedSession?.id ?? sessionId ?? null);
-  }, [clearSessionAttention, selectedSession?.id, sessionId]);
+    const clearIfVisible = () => {
+      if (activeTab === 'chat' && !showSettings && isConversationDocumentVisible()) clearSessionAttention(selectedSession?.id ?? sessionId ?? null);
+    };
+    clearIfVisible();
+    return observeConversationVisibility(clearIfVisible);
+  }, [activeTab, clearSessionAttention, selectedSession?.id, sessionId, showSettings]);
 
   useEffect(() => {
     if (!sessionId) {
@@ -1027,7 +1080,7 @@ export function useProjectsState({
 
   const handleSessionSelect = useCallback(
     (session: ProjectSession) => {
-      clearSessionAttention(session.id);
+      if (isConversationDocumentVisible() && isReadingChatRef.current) clearSessionAttention(session.id);
       setSelectedSession(session);
 
       if (activeTab === 'tasks' || activeTab === 'browser') {

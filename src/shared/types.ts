@@ -1823,7 +1823,7 @@ export type ShellExecutionBinding = { executionId: string; appSessionId: string;
 /** Requested versus reported settings from one execution, independent of next-launch choices. */
 export type ClaudeSessionExecutionSnapshot = {
   sessionId: string; providerSessionId: string | null; projectPath: string; next: ClaudeSessionSettings;
-  execution: null | { executionId: string; appSessionId: string; providerSessionId: string | null; surface: 'chat'|'shell'; isLive?: boolean; requested: ClaudeSessionSettings; status: string; startedAt: string; endedAt: string | null; observed: { model?: string; effort?: string | null; ultracode?: boolean; source?: string; observedAt?: string } };
+  execution: null | { executionId: string; appSessionId: string; providerSessionId: string | null; surface: 'chat'|'shell'; isLive?: boolean; requested: ClaudeSessionSettings; permissionRequest?: { mode: string; allowedRuleCount: number; deniedRuleCount: number }; status: string; startedAt: string; endedAt: string | null; observed: { model?: string; effort?: string | null; ultracode?: boolean; permissionMode?: string; source?: string; observedAt?: string } };
 };
 // ---------------------------
 
@@ -1831,3 +1831,24 @@ export type ClaudeSessionExecutionSnapshot = {
 
 /** Registers an explicit PTY termination action with the owning retained workspace terminal. */
 export type ShellTerminationRegistrar = (terminate: (() => Promise<boolean>) | null) => void;
+
+// ---------------------------
+
+//----------------- EMBEDDED WORKSPACE NAVIGATION ------------
+
+/** Actual views available in one remote app, mirrored by its owning Hub header for this selected session. */
+export type WorkspaceNavigationState = {
+  sessionId: string | null;
+  activeTab: AppTab | WorkspacePanelTab;
+  tabs: Array<{ id: AppTab | WorkspacePanelTab; label: string }>;
+};
+
+
+//----------------- CLAUDE TERMINAL PERMISSIONS ------------
+/** Explicit saved Chat permission selection to carry into one native terminal launch.
+ * One-time approval answers are deliberately absent and never reused. */
+export type ClaudeShellPermissionSelection = {
+  permissionMode: PermissionMode;
+  toolsSettings: Pick<ClaudeSettings, 'allowedTools' | 'disallowedTools' | 'skipPermissions'>;
+};
+// ---------------------------

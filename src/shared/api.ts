@@ -759,6 +759,10 @@ export const hubApi = {
   groupConversations: (remoteId: string, groupId: string, offset: number) => remoteRequest(remoteId, `/api/conversation-groups/${encodeURIComponent(groupId)}/sessions?limit=100&offset=${offset}`),
   projectSessions: (remoteId: string, projectId: string, offset: number) => remoteRequest(remoteId, `/api/projects/${encodeURIComponent(projectId)}/sessions?limit=100&offset=${offset}`),
   createSession: (remoteId: string, payload: { provider: string; projectPath: string }) => remoteRequest(remoteId, '/api/providers/sessions', { method: 'POST', body: JSON.stringify(payload) }),
+  // Claude uses the fork endpoint already available on older personal-fork servers.
+  forkSession: (remoteId: string, sessionId: string, provider: string) => remoteRequest(remoteId, provider === 'claude' ? `/api/claude-sessions/${encodeURIComponent(sessionId)}/fork` : `/api/providers/sessions/${encodeURIComponent(sessionId)}/fork`, { method: 'POST', body: '{}' }),
+  deleteSession: (remoteId: string, sessionId: string, permanent: boolean) => remoteRequest(remoteId, `/api/providers/sessions/${encodeURIComponent(sessionId)}?force=${permanent}`, { method: 'DELETE' }),
+  renameSession: (remoteId: string, sessionId: string, summary: string) => remoteRequest(remoteId, `/api/providers/sessions/${encodeURIComponent(sessionId)}`, { method: 'PUT', body: JSON.stringify({ summary }) }),
   socketUrl: (remoteId: string, token: string) => `${window.location.origin.replace(/^http/, 'ws')}/remote/${encodeURIComponent(remoteId)}/ws?token=${encodeURIComponent(token)}`,
 };
 

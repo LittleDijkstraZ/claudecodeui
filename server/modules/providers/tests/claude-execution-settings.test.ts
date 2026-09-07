@@ -11,7 +11,8 @@ import { claudeSessionConfiguration } from '@/modules/providers/services/claude-
 import { claudeExecutionRecords } from '@/modules/providers/services/claude-execution-records.js';
 import { providerModelsService } from '@/modules/providers/services/provider-models.service.js';
 import { closeConnection, getConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
-import { createClaudeRuntime } from '@/modules/providers/list/claude/claude-runtime.provider.js';
+import { resolveClaudePermissionSelection } from '@/shared/index.js';
+import { createClaudeRuntime, mapCliOptionsToSDK } from '@/modules/providers/list/claude/claude-runtime.provider.js';
 import type { Query, query } from '@anthropic-ai/claude-agent-sdk';
 import type { AnyRecord, ProviderModelsDefinition, ProviderRuntimeContext } from '@/shared/types.js';
 
@@ -31,8 +32,22 @@ test('one canonical selection separates Ultracode from effort and refuses unsupp
   assert.throws(() => resolveClaudeExecutionSettings({ effort: 'invented' }, catalog), /Invalid/);
 });
 
+test('explicit permission rules remain narrow; once-only approval never becomes bypass or a directory grant', () => {
+  const permissions = resolveClaudePermissionSelection({ permissionMode: 'default', toolsSettings: {
+    allowedTools: ['Read(//tmp/turn_00.txt)'], disallowedTools: ['Bash(rm *)'], skipPermissions: false,
+  } });
+  assert.deepEqual(permissions, { mode: 'default', allowedTools: ['Read(//tmp/turn_00.txt)'], disallowedTools: ['Bash(rm *)'] });
+  assert.deepEqual(resolveClaudePermissionSelection(), { mode: 'default', allowedTools: [], disallowedTools: [] });
+  assert.equal(resolveClaudePermissionSelection({ permissionMode: 'plan', toolsSettings: { skipPermissions: true } }).mode, 'plan');
+  assert.equal(resolveClaudePermissionSelection({ permissionMode: 'default', toolsSettings: { skipPermissions: true } }).mode, 'bypassPermissions');
+  assert.throws(() => resolveClaudePermissionSelection({ permissionMode: 'plan', bypassPermissions: true }), /Conflicting/);
+  assert.throws(() => resolveClaudePermissionSelection({ toolsSettings: { disallowedTools: [42] } }), /Invalid/);
+  assert.throws(() => resolveClaudePermissionSelection({ permissionMode: 'invented' }), /Unsupported/);
+});
+
 test('Shell observations exclude sidechains, never infer Ultracode, and retain real downgrade evidence', () => {
   assert.equal(shellConfigurationObservation({ agent_id: 'child', model: 'other' }), null);
+  assert.equal(shellConfigurationObservation({ hook_event_name: 'Stop', permission_mode: 'acceptEdits' })?.permissionMode, 'acceptEdits');
   assert.equal(shellConfigurationObservation({ hook_event_name: 'Stop', effort: { level: 'xhigh' } })?.ultracode, undefined);
   assert.equal(shellConfigurationObservation({ hook_event_name: 'Stop', effort: { level: 'high' } })?.effort, 'high');
   assert.equal(shellConfigurationObservation({ hook_event_name: 'PostModelSwitch', requested_model: 'opus', to_model: 'explicit-response' })?.model, 'explicit-response');
@@ -55,14 +70,36 @@ test('Chat/Shell share selected settings while execution evidence stays frozen a
     getConnection().prepare('UPDATE sessions SET session_id = ? WHERE session_id = ?').run('app-fixture', 'native-fixture');
     sessionsDb.setSessionModel('app-fixture', 'fixture-exact');
     sessionsDb.setSessionEffort('app-fixture', 'ultracode');
-    const launch = await claudeSessionConfiguration.prepareShell('app-fixture', 'claude', project);
+    const savedPermissions = { permissionMode: 'acceptEdits', toolsSettings: {
+      allowedTools: ['Read(//tmp/turn_00.txt)', 'Bash(git diff *)'],
+      disallowedTools: ['Bash(rm *)'], skipPermissions: false,
+    } };
+    const permissions = resolveClaudePermissionSelection(savedPermissions);
+    const launch = await claudeSessionConfiguration.prepareShell('app-fixture', 'claude', project, permissions);
+    const sdkPermissions = mapCliOptionsToSDK(savedPermissions);
+    assert.equal(sdkPermissions.permissionMode, 'acceptEdits');
+    assert.equal(launch.args[launch.args.indexOf('--permission-mode') + 1], sdkPermissions.permissionMode);
+    assert.equal(launch.args.includes('--dangerously-skip-permissions'), false);
+    assert.deepEqual(launch.args.slice(launch.args.indexOf('--disallowedTools') + 1, launch.args.indexOf('--settings')), ['Bash(rm *)']);
+    await assert.rejects(claudeSessionConfiguration.prepareShell('app-fixture', 'claude', project, {
+      ...permissions, disallowedTools: ['Bash(echo (hello) world)'],
+    }), /cannot be passed intact/);
     assert.equal(launch.executable, '/fixture/remote-claude');
     assert.deepEqual(launch.args.slice(0, 6), ['--resume', 'native-fixture', '--model', 'fixture-exact', '--effort', 'xhigh']);
     assert.equal(launch.args.includes('||'), false);
     const inlineSettings = JSON.parse(launch.args[launch.args.indexOf('--settings') + 1]);
     assert.equal(inlineSettings.enableWorkflows, true);
     assert.equal(inlineSettings.ultracode, true);
+    assert.deepEqual(inlineSettings.permissions, { allow: sdkPermissions.allowedTools, deny: sdkPermissions.disallowedTools });
+    assert.equal(inlineSettings.permissions.additionalDirectories, undefined);
+    assert.deepEqual(launch.record.permissionRequest, { mode: 'acceptEdits', allowedRuleCount: 2, deniedRuleCount: 1 });
     claudeExecutionRecords.begin(launch.record);
+    claudeExecutionRecords.observe(launch.record.executionId, { model: 'before-switch', effort: 'xhigh', ultracode: true });
+    const beforeSwitch = claudeExecutionRecords.get(launch.record.executionId)!.observed;
+    claudeExecutionRecords.observe(launch.record.executionId, { model: 'after-switch' });
+    assert.equal(claudeExecutionRecords.get(launch.record.executionId)?.observed.ultracode, undefined);
+    claudeExecutionRecords.observe(launch.record.executionId, { ultracode: true }, beforeSwitch);
+    assert.equal(claudeExecutionRecords.get(launch.record.executionId)?.observed.ultracode, undefined);
     claudeExecutionRecords.observe(launch.record.executionId, { model: 'actual-fixture', effort: 'high', source: 'chat-hook' });
     assert.throws(() => claudeExecutionRecords.bind(launch.record.executionId, 'another-native'), /different session/);
     const initial = await claudeSessionConfiguration.read('app-fixture');

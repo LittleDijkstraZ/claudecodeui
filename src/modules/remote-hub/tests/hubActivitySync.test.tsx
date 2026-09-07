@@ -16,7 +16,7 @@ class FakeSocket {
   emit(status: string) { this.onmessage?.({ data: JSON.stringify({ kind: 'session_activity', sessionId: 'same-session', status, eventId: `run:${status}`, runId: 'run', seq: 1 }) }); }
 }
 const remotes: HubRemote[] = [{ id: 'alpha', name: 'Alpha', port: 43118 }, { id: 'beta', name: 'Beta', port: 43119 }];
-beforeEach(() => { FakeSocket.instances = []; mocks.health.mockReset().mockResolvedValue({}); mocks.running.mockReset().mockResolvedValue({ sessions: [] }); vi.stubGlobal('WebSocket', FakeSocket); });
+beforeEach(() => { localStorage.clear(); FakeSocket.instances = []; mocks.health.mockReset().mockResolvedValue({}); mocks.running.mockReset().mockResolvedValue({ sessions: [] }); vi.stubGlobal('WebSocket', FakeSocket); });
 afterEach(() => vi.unstubAllGlobals());
 
 test('identical session IDs are isolated per machine and late polling cannot resurrect a completed run', async () => {
@@ -43,4 +43,17 @@ test('identical session IDs are isolated per machine and late polling cannot res
   await act(async () => { await result.current.refresh('alpha'); });
   expect(result.current.states.alpha.status).toBe('offline');
   expect(result.current.states.beta.status).toBe('online');
+});
+
+
+test('starting another run does not clear an unread reply; only reading does', async () => {
+  const { result } = renderHook(() => useHubConnections(remotes, vi.fn()));
+  await act(async () => {});
+  const alpha = FakeSocket.instances.find(socket => socket.url.endsWith('/alpha'))!;
+  act(() => alpha.emit('complete'));
+  act(() => alpha.emit('running'));
+  expect(result.current.states.alpha.attention).toEqual(['same-session']);
+  act(() => result.current.markRead('alpha', 'same-session'));
+  expect(result.current.states.alpha.attention).toEqual([]);
+  expect(result.current.states.alpha.running).toEqual(['same-session']);
 });

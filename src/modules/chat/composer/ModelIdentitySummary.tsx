@@ -7,7 +7,7 @@ import type { LLMProvider } from '@/shared/types';
 
 type Report = { reportedModel?: string | null; reportedSource?: 'response' | 'initialization' | 'unknown'; reportedAt?: string | null };
 
-/** Used by the chat composer to show evidence from this remote's existing transcript. */
+/** Used inside the model menu to show evidence from this remote's existing transcript on demand. */
 export default function ModelIdentitySummary({ provider, sessionId, selectedModel, revision }: {
   provider: LLMProvider;
   sessionId: string | null;
@@ -42,11 +42,11 @@ export default function ModelIdentitySummary({ provider, sessionId, selectedMode
   const reportedModel = current?.reportedModel || t('modelIdentity.unconfirmed', { defaultValue: 'Unconfirmed' });
   return (
     <>
-    <div className="mx-auto flex w-full max-w-[54.25rem] flex-wrap gap-x-3 gap-y-1 px-4 py-1 text-[11px] text-muted-foreground" data-testid="model-identity-summary">
-      <span className="min-w-0 break-all">{t('modelIdentity.selected', { defaultValue: 'Selected' })}: <code>{selectedModel}</code></span>
-      <span className="min-w-0 break-all" title={current?.reportedAt || undefined}>{label}: <code>{reportedModel}</code></span>
+    <div className="space-y-1 px-2.5 py-2 text-[11px] leading-relaxed text-muted-foreground" data-testid="model-identity-summary">
+      <span className="block min-w-0 break-all">{t('modelIdentity.selected', { defaultValue: 'Selected' })}: <code>{selectedModel}</code></span>
+      <span className="block min-w-0 break-all" title={current?.reportedAt || undefined}>{label}: <code>{reportedModel}</code></span>
     </div>
-    <SessionExecutionSettings provider={provider} sessionId={sessionId} surface="chat" />
+    <SessionExecutionSettings provider={provider} sessionId={sessionId} surface="chat" presentation="menu" />
     </>
   );
 }

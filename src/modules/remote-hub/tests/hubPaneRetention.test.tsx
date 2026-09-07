@@ -27,8 +27,25 @@ describe('machine pane lifetime', () => {
     const { result } = renderHook(useHubPanes);
     act(() => result.current.navigate('alpha', 'new'));
     expect(result.current.acceptSelection('alpha', 'old')).toBe(false);
-    expect(result.current.acceptSelection('alpha', 'new')).toBe(true);
+    act(() => { expect(result.current.acceptSelection('alpha', 'new')).toBe(true); });
     // After requested navigation settles, a sidechat/rewind/new-session action may navigate normally.
-    expect(result.current.acceptSelection('alpha', 'created-in-app')).toBe(true);
+    act(() => { expect(result.current.acceptSelection('alpha', 'created-in-app')).toBe(true); });
   });
+});
+
+
+test('a retained frame supplies its own navigation and stale or unknown tab commands are ignored', () => {
+  const { result } = renderHook(useHubPanes);
+  const postMessage = vi.fn();
+  act(() => { result.current.register('alpha', { contentWindow: { postMessage } } as unknown as HTMLIFrameElement); result.current.navigate('alpha', 'new'); });
+  act(() => result.current.acceptNavigation('alpha', { sessionId: 'old', activeTab: 'chat', tabs: [{ id: 'chat', label: 'Chat' }] }));
+  expect(result.current.navigation.alpha).toBeUndefined();
+  act(() => result.current.acceptNavigation('alpha', { sessionId: 'new', activeTab: 'chat', tabs: [{ id: 'chat', label: 'Chat' }, { id: 'shell', label: 'Shell' }] }));
+  expect(postMessage).toHaveBeenLastCalledWith({ kind: 'cloudcli:workspace-nav-ready', sessionId: 'new' }, location.origin);
+  act(() => result.current.selectTab('alpha', 'shell'));
+  expect(postMessage).toHaveBeenLastCalledWith({ kind: 'cloudcli:workspace-tab', tab: 'shell', sessionId: 'new' }, location.origin);
+  const count = postMessage.mock.calls.length;
+  act(() => result.current.selectTab('alpha', 'plugin:unavailable'));
+  act(() => result.current.selectTab('beta', 'shell'));
+  expect(postMessage.mock.calls).toHaveLength(count);
 });

@@ -3,7 +3,7 @@ import type { MutableRefObject } from 'react';
 import type { FitAddon } from '@xterm/addon-fit';
 import type { Terminal } from '@xterm/xterm';
 
-import type { Project, ProjectSession, ShellExecutionBinding } from '@/shared/types';
+import type { Project, ProjectSession, ShellExecutionBinding, ClaudeShellPermissionSelection } from '@/shared/types';
 import { TERMINAL_INIT_DELAY_MS } from '@/shared/constants';
 import { getShellWebSocketUrl, parseShellMessage, sendSocketMessage } from '@/modules/shell/utils/socket';
 import { readSelectedProvider } from '@/shared/selectedProvider';
@@ -22,6 +22,7 @@ type UseShellConnectionOptions = {
   initialCommandRef: MutableRefObject<string | null | undefined>;
   isPlainShellRef: MutableRefObject<boolean>;
   bypassPermissionsRef: MutableRefObject<boolean>;
+  permissionSelectionRef?: MutableRefObject<ClaudeShellPermissionSelection | undefined>;
   onProcessCompleteRef: MutableRefObject<((exitCode: number) => void) | null | undefined>;
   isInitialized: boolean;
   autoConnect: boolean;
@@ -50,6 +51,7 @@ export function useShellConnection({
   initialCommandRef,
   isPlainShellRef,
   bypassPermissionsRef,
+  permissionSelectionRef,
   onProcessCompleteRef,
   isInitialized,
   autoConnect,
@@ -200,6 +202,7 @@ export function useShellConnection({
               // Launch-time flag: bypass mode can only join the CLI's
               // shift+tab cycle when claude starts with it.
               bypassPermissions: bypassPermissionsRef.current,
+              ...(!isPlainShellRef.current ? permissionSelectionRef?.current : {}),
             });
           }, TERMINAL_INIT_DELAY_MS);
         };
@@ -236,6 +239,7 @@ export function useShellConnection({
     [
       terminalInstanceId,
       bypassPermissionsRef,
+      permissionSelectionRef,
       clearTerminalScreen,
       fitAddonRef,
       finishTermination,

@@ -10,11 +10,12 @@ export function shellConfigurationObservation(input: Record<string, unknown>): C
   const observation: ClaudeExecutionRecord['observed'] = { source: 'shell-hook' };
   const model = input.hook_event_name === 'PostModelSwitch' ? input.to_model : input.model;
   if (typeof model === 'string' && model && model !== '<synthetic>') observation.model = model;
+  if (typeof input.permission_mode === 'string') observation.permissionMode = input.permission_mode;
   const effort = input.effort as { level?: unknown } | undefined;
   if (effort && typeof effort.level === 'string') observation.effort = effort.level;
   if (typeof input.prompt_id === 'string') observation.promptId = input.prompt_id;
   // xhigh never proves Ultracode; native hooks do not currently report that flag.
-  return observation.model || observation.effort ? observation : null;
+  return observation.model || observation.effort || observation.permissionMode ? observation : null;
 }
 
 // This entry is launched only by an explicitly opened remote Claude terminal.

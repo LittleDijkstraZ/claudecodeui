@@ -107,7 +107,7 @@ export default function SidebarRecentConversations({
         {conversations.map((conversation) => {
           const isSelected = String(selectedSession?.id ?? '') === conversation.sessionId;
           const isProcessing = activeSessions.has(conversation.sessionId);
-          const needsAttention = attentionSessionIds.has(conversation.sessionId) && !isSelected;
+          const needsAttention = attentionSessionIds.has(conversation.sessionId);
           const age = formatCompactAge(conversation.lastActivity, currentTime);
 
           const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
@@ -124,7 +124,7 @@ export default function SidebarRecentConversations({
 
           return (
             <div key={conversation.sessionId} className="group relative flex min-w-0 items-center">
-            <SessionAttentionIndicator needsAttention={needsAttention} isRecent={!isProcessing && !needsAttention && Boolean(conversation.lastActivity && currentTime.getTime() - Date.parse(conversation.lastActivity) < 10 * 60_000)} className="absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2" />
+            <SessionAttentionIndicator needsAttention={needsAttention} className="absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2" />
             <a
               href={`/session/${conversation.sessionId}`}
               onClick={handleClick}

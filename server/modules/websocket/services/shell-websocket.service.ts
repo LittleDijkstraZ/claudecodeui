@@ -5,8 +5,8 @@ import path from 'node:path';
 import pty, { type IPty } from 'node-pty';
 import { WebSocket, type RawData } from 'ws';
 
-import { parseIncomingJsonObject } from '@/shared/index.js';
-import type { ClaudeExecutionRecord } from '@/shared/types.js';
+import { parseIncomingJsonObject, resolveClaudePermissionSelection } from '@/shared/index.js';
+import type { ClaudeExecutionRecord, ClaudePermissionSelection } from '@/shared/types.js';
 
 type ShellIncomingMessage = {
   type?: string;
@@ -21,6 +21,8 @@ type ShellIncomingMessage = {
   isPlainShell?: boolean;
   forceRestart?: boolean;
   bypassPermissions?: boolean;
+  permissionMode?: string;
+  toolsSettings?: unknown;
   terminalInstanceId?: string;
 };
 
@@ -112,7 +114,7 @@ type ShellWebSocketDependencies = {
     provider: string,
   ) => string | null | undefined;
   spawnPty?: typeof pty.spawn;
-  prepareClaudeSession?: (sessionId: string, provider: string, projectPath: string) => Promise<{ executable: string; args: string[]; record: ClaudeExecutionRecord }>;
+  prepareClaudeSession?: (sessionId: string, provider: string, projectPath: string, permissions: ClaudePermissionSelection) => Promise<{ executable: string; args: string[]; record: ClaudeExecutionRecord }>;
   beginExecution?: (record: ClaudeExecutionRecord) => void;
   finishExecution?: (executionId: string, failed?: boolean) => void;
 };
@@ -437,8 +439,9 @@ export function handleShellConnection(
         if (pendingPtyKeys.has(ptySessionKey)) throw new Error('This terminal is still starting. Reconnect after it starts.');
         reservedPtyKey = ptySessionKey;
         pendingPtyKeys.add(reservedPtyKey);
-        const prepared = !isPlainShell && provider === 'claude'
-          ? await dependencies.prepareClaudeSession?.(sessionId!, provider, resolvedProjectPath)
+        const requestedPermissions = !isPlainShell && provider === 'claude' ? resolveClaudePermissionSelection(data) : null;
+        const prepared = requestedPermissions
+          ? await dependencies.prepareClaudeSession?.(sessionId!, provider, resolvedProjectPath, requestedPermissions)
           : null;
         if (!isPlainShell && provider === 'claude' && !prepared) throw new Error('Session-bound Claude launch is unavailable.');
         if (terminated || ws.readyState !== WebSocket.OPEN) { initializing = false; pendingPtyKeys.delete(reservedPtyKey); reservedPtyKey = null; return; }
@@ -448,7 +451,7 @@ export function handleShellConnection(
         const shellArgs = prepared?.args || (isPlainShell && !shellCommand.trim()
           ? (os.platform() === 'win32' ? ['-NoExit'] : ['-i'])
           : (os.platform() === 'win32' ? ['-Command', shellCommand] : ['-c', shellCommand]));
-        if (prepared && readBoolean(data.bypassPermissions)) shellArgs.push('--dangerously-skip-permissions');
+        if (prepared && requestedPermissions?.mode === 'bypassPermissions') shellArgs.push('--dangerously-skip-permissions');
         if (prepared) {
           dependencies.beginExecution?.(prepared.record);
           launchingExecutionId = prepared.record.executionId;

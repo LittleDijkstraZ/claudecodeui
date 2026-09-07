@@ -1,6 +1,7 @@
 import { useTranslation } from 'react-i18next';
 
 import { Dialog, DialogContent, DialogTitle } from '@/shared/ui';
+import { isClaudeUsageSnapshot } from '@/modules/chat/utils/claudeUsageSnapshot';
 import type { ClaudeUsageBuckets, ClaudeUsageModelCounters, ClaudeUsageSnapshot } from '@/shared/types';
 
 const tokens = (value: number | null): string => value === null ? '—' : value.toLocaleString();
@@ -58,11 +59,27 @@ export function ClaudeUsageDetails({ usage }: { usage: ClaudeUsageSnapshot }) {
   </div>;
 }
 
+/** Used by the composer and /cost when an older server has not supplied distinct accounting quantities. */
+export function UnverifiedClaudeUsageDetails({ usage }: { usage: Record<string, unknown> | null }) {
+  const { t } = useTranslation('chat');
+  // A legacy counter can switch between per-request and per-run usage. Preserve
+  // it only as a labelled raw observation, never as context, capacity or a bill.
+  const reported = typeof usage?.used === 'number' && Number.isFinite(usage.used) && usage.used >= 0 ? usage.used : null;
+  return <div className="space-y-4">
+    <section className="rounded-xl border border-border p-4">
+      <h3 className="font-semibold">{t(usage ? 'usage.legacy' : 'usage.awaiting')}</h3>
+      <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{t(usage ? 'usage.legacyExplanation' : 'usage.awaitingExplanation')}</p>
+      {reported !== null && <dl className="mt-3 text-sm"><dt className="text-muted-foreground">{t('usage.unverifiedValue')}</dt><dd className="tabular-nums">{tokens(reported)}</dd></dl>}
+    </section>
+    {usage && <p className="text-xs leading-relaxed text-muted-foreground">{t('usage.legacyRefresh')}</p>}
+  </div>;
+}
+
 /** The composer opens this live view; receiving a newer snapshot updates an already-open dialog. */
-export default function TokenUsageModal({ usage, onClose }: { usage: ClaudeUsageSnapshot; onClose: () => void }) {
+export default function TokenUsageModal({ usage, onClose }: { usage: Record<string, unknown> | null; onClose: () => void }) {
   const { t } = useTranslation('chat');
   return <Dialog open onOpenChange={open => { if (!open) onClose(); }}><DialogContent className="max-h-[88vh] max-w-3xl overflow-y-auto">
     <DialogTitle>{t('usage.title')}</DialogTitle>
-    <ClaudeUsageDetails usage={usage} />
+    {isClaudeUsageSnapshot(usage) ? <ClaudeUsageDetails usage={usage} /> : <UnverifiedClaudeUsageDetails usage={usage} />}
   </DialogContent></Dialog>;
 }

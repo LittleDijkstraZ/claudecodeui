@@ -11,11 +11,11 @@ import type {
   TouchEvent,
 } from 'react';
 import { PaperclipIcon, MessageSquareIcon, XIcon, Loader2, ArrowUpIcon, PencilIcon } from 'lucide-react';
-import { AgentsStatus } from '@/modules/workspace-panels';
 
+import { AgentsStatus } from '@/modules/workspace-panels';
 import { useVoiceInput } from '@/modules/chat/hooks/useVoiceInput';
 import { useVoiceAvailable } from '@/modules/chat/hooks/useVoiceAvailable';
-import type { QueuedDraft, ScheduledMessage, SlashCommand,SessionActivity,PendingPermissionRequest,PermissionMode,ProviderModelOption } from '@/shared/types';
+import type { LLMProvider, QueuedDraft, ScheduledMessage, SlashCommand,SessionActivity,PendingPermissionRequest,PermissionMode,ProviderModelOption } from '@/shared/types';
 import {
   PromptInput,
   PromptInputHeader,
@@ -57,10 +57,13 @@ type ChatComposerProps = {
   availablePermissionModes: PermissionMode[];
   onSelectPermissionMode: (mode: PermissionMode) => void;
   providerLabel: string;
+  provider?: LLMProvider;
   effort: string;
   availableEffortOptions: NonNullable<ProviderModelOption['effort']>['values'];
   onSelectEffort: (effort: string) => void;
   model: string;
+  /** Model evidence is mounted only inside the model menu, keeping the transcript clear. */
+  modelDetails?: ReactNode;
   availableModelOptions: ProviderModelOption[];
   onSelectModel: (model: string) => void;
   modelsLoading: boolean;
@@ -133,10 +136,12 @@ export default function ChatComposer({
   availablePermissionModes,
   onSelectPermissionMode,
   providerLabel,
+  provider,
   effort,
   availableEffortOptions,
   onSelectEffort,
   model,
+  modelDetails,
   availableModelOptions,
   onSelectModel,
   modelsLoading,
@@ -273,7 +278,6 @@ export default function ChatComposer({
 
   return (
     <div className="chat-composer-shell relative flex-shrink-0 px-2 pb-2 pt-0 sm:px-4 sm:pb-4 md:px-4 md:pb-6">
-      <div className="mx-auto max-w-[54.25rem]"><AgentsStatus /></div>
       {!hasPendingPermissions && (
         <div className="pointer-events-none relative z-10 mx-auto max-w-[54.25rem] translate-y-px bg-transparent">
           <ActivityIndicator activity={activity} onAbort={onAbortSession} isInputFocused={isInputFocused} />
@@ -448,7 +452,8 @@ export default function ChatComposer({
               <VoiceInputButton state={voiceState} onToggle={voiceToggle} errorMsg={voiceError} />
             )}
 
-            <TokenUsageSummary usage={tokenBudget} onClick={onShowTokenUsage} />
+            <TokenUsageSummary usage={tokenBudget} provider={provider} onClick={onShowTokenUsage} />
+            <AgentsStatus compact />
 
             <PromptInputButton
               tooltip={{ content: t('input.showAllCommands') }}
@@ -484,6 +489,7 @@ export default function ChatComposer({
             />
 
             <ComposerModelMenu
+              details={modelDetails}
               effort={effort}
               effortOptions={availableEffortOptions}
               onSelectEffort={onSelectEffort}
@@ -527,7 +533,7 @@ export default function ChatComposer({
                       : !input.trim() && attachedFiles.length === 0
               }
               aria-label={submitAriaLabel}
-              title={submitAriaLabel}
+              title={`${submitAriaLabel} · ${submitHint}`}
               className="h-10 w-10 sm:h-10 sm:w-10"
             >
               {isTranscribing ? (
@@ -538,14 +544,6 @@ export default function ChatComposer({
             </PromptInputSubmit>
           </div>
 
-          <div
-            data-testid="composer-shortcuts"
-            className={`cloudcli-composer-shortcuts order-last basis-full px-1 text-center text-xs leading-4 text-muted-foreground/60 transition-opacity duration-200 ${
-              input.trim() && !canQueueDraft ? 'opacity-0' : 'opacity-100'
-            }`}
-          >
-            {submitHint}
-          </div>
         </PromptInputFooter>
       </PromptInput>
       </div>}

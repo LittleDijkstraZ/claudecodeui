@@ -502,6 +502,12 @@
     "accountingPartial": "Some usage could not be fully reconciled; the displayed totals include the recorded portion.",
     "explanation": "Repeated cache reads count toward consumption each time, but occupy the context only once per sampling request. Thinking is already included in output. SDK costs are estimates, not invoices. Compaction and rewind do not erase spent tokens or cost. One turn covers one user send, including Workflow follow-ups and subagents.",
     "postCompact": "Context reported after compaction; unavailable counts remain unknown.",
-    "unknownModel": "Unattributed model"
+    "unknownModel": "Unattributed model",
+    "legacy": "Legacy stats",
+    "awaiting": "No stats yet",
+    "legacyExplanation": "This connection has not supplied verified Claude accounting. The legacy value may mix individual request usage with multiple requests, so it cannot confirm current context, turn consumption or conversation totals.",
+    "awaitingExplanation": "No verified usage has been received for this conversation yet. Missing statistics do not mean zero consumption.",
+    "unverifiedValue": "Unverified reported value (reference only)",
+    "legacyRefresh": "After this machine’s CloudCLI update finishes, refresh the page. Verified statistics show current context, the current turn and whole conversation separately; incomplete history remains labelled."
   }
 }

@@ -78,11 +78,18 @@ test('running and attention state update in place without losing the single-line
   const { container, rerender } = render(<SidebarGroupConversationRow {...base} />);
   const row = container.querySelector('[data-testid="group-conversation-row"]');
   assert.ok(container.querySelector('[data-session-status="running"]'));
-  assert.ok(container.querySelector('[data-session-status="attention"].bg-amber-500'));
+  assert.ok(container.querySelector('[data-session-status="attention"].bg-green-500'));
+  assert.ok(container.querySelector('[data-session-status="running"].text-amber-500'));
   assert.ok(container.querySelector('button[aria-haspopup="menu"]'));
-  rerender(<SidebarGroupConversationRow {...base} isProcessing={false} selected />);
+  rerender(<SidebarGroupConversationRow {...base} isProcessing={false} needsAttention={false} selected />);
   assert.equal(container.querySelector('[data-testid="group-conversation-row"]'), row);
   assert.equal(container.querySelector('[data-session-status="running"]'), null);
   assert.equal(container.querySelector('[data-session-status="attention"]'), null);
   assert.ok(container.querySelector('a[aria-current="page"]'));
+});
+
+test('recent activity alone never creates an unread indicator', () => {
+  const base = props();
+  const { container } = render(<SidebarGroupConversationRow {...base} conversation={{ ...base.conversation, lastActivity: base.currentTime.toISOString() }} selected={false} />);
+  assert.equal(container.querySelector('[data-session-status]'), null);
 });

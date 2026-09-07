@@ -1447,9 +1447,20 @@ export type ClaudeExecutionRecord = {
   surface: 'chat' | 'shell';
   projectPath: string;
   requested: ClaudeExecutionSettings;
+  permissionRequest?: { mode: string; allowedRuleCount: number; deniedRuleCount: number };
   startedAt: string;
   endedAt: string | null;
   status: 'running' | 'completed' | 'failed';
-  observed: { model?: string; effort?: string | null; ultracode?: boolean; source?: string; observedAt?: string; promptId?: string };
+  observed: { model?: string; effort?: string | null; ultracode?: boolean; permissionMode?: string; source?: string; observedAt?: string; promptId?: string };
+};
+// ---------------------------
+
+//----------------- CLAUDE PERMISSION REQUESTS ------------
+/** Explicit launch permissions shared by SDK Chat and a native session terminal.
+ * Rules are preserved verbatim; one-time approvals are never promoted into this selection. */
+export type ClaudePermissionSelection = {
+  mode: 'default' | 'acceptEdits' | 'auto' | 'bypassPermissions' | 'plan' | 'dontAsk';
+  allowedTools: string[];
+  disallowedTools: string[];
 };
 // ---------------------------

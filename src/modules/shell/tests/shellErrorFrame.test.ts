@@ -5,7 +5,7 @@ import type { Terminal } from '@xterm/xterm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useShellConnection } from '@/modules/shell/hooks/useShellConnection';
-import type { Project, ProjectSession } from '@/shared/types';
+import type { Project, ProjectSession, ClaudeShellPermissionSelection } from '@/shared/types';
 
 // Only the URL builder is stubbed: it reads a stored auth token and would bail
 // before a socket is ever constructed. `parseShellMessage` stays real, because
@@ -41,7 +41,7 @@ class FakeSocket {
 
 const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value });
 
-function renderConnection() {
+function renderConnection(permissionSelection?: ClaudeShellPermissionSelection, isPlainShell = false) {
   const write = vi.fn();
   const clearTerminalScreen = vi.fn();
   const closeSocket = vi.fn();
@@ -59,7 +59,8 @@ function renderConnection() {
       } as Project),
       selectedSessionRef: ref<ProjectSession | null | undefined>(null),
       initialCommandRef: ref<string | null | undefined>(null),
-      isPlainShellRef: ref(false),
+      isPlainShellRef: ref(isPlainShell),
+      permissionSelectionRef: ref(permissionSelection),
       bypassPermissionsRef: ref(false),
       onProcessCompleteRef: ref<((exitCode: number) => void) | null | undefined>(null),
       isInitialized: true,
@@ -175,4 +176,20 @@ describe('shell socket error frames', () => {
     expect(await view.result.current.terminateShell()).toBe(true);
     expect(socket.sent.some((frame) => JSON.parse(frame).type === 'init')).toBe(false);
   });
+  it('transmits saved permissions for the bound Claude terminal and excludes them from plain terminals', async () => {
+    vi.useFakeTimers();
+    try {
+      const selection: ClaudeShellPermissionSelection = { permissionMode: 'acceptEdits', toolsSettings: { allowedTools: ['Read(//tmp/turn_00.txt)'], disallowedTools: ['Bash(rm *)'], skipPermissions: false } };
+      const { socket: claudeSocket, view } = renderConnection(selection);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(claudeSocket.sent.map((frame) => JSON.parse(frame)).find((frame) => frame.type === 'init')).toMatchObject(selection);
+      view.unmount();
+      const { socket: plainSocket } = renderConnection(selection, true);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      const plainInit = plainSocket.sent.map((frame) => JSON.parse(frame)).find((frame) => frame.type === 'init');
+      expect(plainInit.permissionMode).toBeUndefined();
+      expect(plainInit.toolsSettings).toBeUndefined();
+    } finally { vi.useRealTimers(); }
+  });
+
 });

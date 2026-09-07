@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { WorkspacePanelsProvider, useWorkspacePanelActions, useWorkspacePanels } from '@/modules/workspace-panels/context/WorkspacePanelsContext';
 import { WorkspacePanelLayout } from '@/modules/workspace-panels/WorkspacePanelLayout';
@@ -12,7 +12,7 @@ let measure: (() => void) | undefined;
 function Main() { const [value, setValue] = useState(''); return <input aria-label="main draft" value={value} onChange={event => setValue(event.target.value)} />; }
 function Harness({ navigate }: { navigate?: (sessionId: string) => void }) {
   const actions = useWorkspacePanelActions(); const panel = useWorkspacePanels();
-  return <><button onClick={() => actions?.openPanel('shell')}>Shell</button><button onClick={() => actions?.openPanel('files')}>Files</button><button onClick={() => actions?.openPanel('sideChat')}>Branches</button><output>{[...(panel?.visited ?? [])].join(',')}</output><WorkspacePanelLayout main={<Main />} title={panel?.tab ?? ''}><textarea aria-label="panel draft" /><SideChatPanel onNavigateToSession={navigate} /></WorkspacePanelLayout></>;
+  return <><button onClick={() => actions?.openPanel('shell')}>Shell</button><button onClick={() => actions?.openPanel('files')}>Files</button><button onClick={() => actions?.openPanel('sideChat')}>Branches</button><output>{[...(panel?.visited ?? [])].join(',')}</output><WorkspacePanelLayout sessionId="main" main={<Main />} title={panel?.tab ?? ''}><textarea aria-label="panel draft" /><SideChatPanel onNavigateToSession={navigate} /></WorkspacePanelLayout></>;
 }
 function openBranch(sessionId: string, parentSessionId = 'main') { act(() => { window.dispatchEvent(new CustomEvent('cloudcli:side-chat-open', { detail: { sessionId, parentSessionId, sessionName: sessionId } })); }); }
 
@@ -21,7 +21,31 @@ beforeEach(() => {
   vi.stubGlobal('ResizeObserver', class { constructor(callback: () => void) { measure = callback; } observe() {} disconnect() {} });
 });
 
+const originalParent = window.parent;
+afterEach(() => {
+  Object.defineProperty(window, 'parent', { configurable: true, value: originalParent });
+  delete window.__CLOUDCLI_EMBEDDED__;
+});
+
 describe('retained workspace panel', () => {
+  it('reports actual chat visibility rather than assuming every selected panel hides chat', () => {
+    const postMessage = vi.fn();
+    Object.defineProperty(window, 'parent', { configurable: true, value: { postMessage } });
+    window.__CLOUDCLI_EMBEDDED__ = true;
+    render(<WorkspacePanelsProvider><Harness /></WorkspacePanelsProvider>);
+    const layout = screen.getByTestId('workspace-panel-layout');
+    Object.defineProperty(layout, 'clientWidth', { configurable: true, value: 1200 }); act(() => measure?.());
+    fireEvent.click(screen.getByText('Shell'));
+    expect(postMessage).toHaveBeenLastCalledWith({ kind: 'cloudcli:chat-visibility', sessionId: 'main', visible: true }, location.origin);
+    fireEvent.click(screen.getByLabelText('Maximize panel'));
+    expect(postMessage).toHaveBeenLastCalledWith({ kind: 'cloudcli:chat-visibility', sessionId: 'main', visible: false }, location.origin);
+    fireEvent.click(screen.getByLabelText('Restore split view'));
+    expect(postMessage).toHaveBeenLastCalledWith({ kind: 'cloudcli:chat-visibility', sessionId: 'main', visible: true }, location.origin);
+    Object.defineProperty(layout, 'clientWidth', { configurable: true, value: 390 }); act(() => measure?.());
+    expect(postMessage).toHaveBeenLastCalledWith({ kind: 'cloudcli:chat-visibility', sessionId: 'main', visible: false }, location.origin);
+    fireEvent.click(screen.getByLabelText('Collapse panel; keep work running'));
+    expect(postMessage).toHaveBeenLastCalledWith({ kind: 'cloudcli:chat-visibility', sessionId: 'main', visible: true }, location.origin);
+  });
   it('preserves main and auxiliary drafts through tab changes, collapse, maximize and resize', () => {
     render(<WorkspacePanelsProvider><Harness /></WorkspacePanelsProvider>);
     const layout = screen.getByTestId('workspace-panel-layout'); Object.defineProperty(layout, 'clientWidth', { value: 1200 }); act(() => measure?.());

@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Settings } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -17,6 +17,7 @@ type WorkspaceHeaderProps = {
   shouldShowBrowserTab: boolean;
   isMobile: boolean;
   onMenuClick: () => void;
+  onShowSettings?: () => void;
 };
 
 /** Rendered by WorkspaceMain to show the workspace title alongside the scrollable tab bar. */
@@ -29,8 +30,13 @@ export default function WorkspaceHeader({
   shouldShowBrowserTab,
   isMobile,
   onMenuClick,
+  onShowSettings,
 }: WorkspaceHeaderProps) {
   const { t } = useTranslation();
+  // Hide the inner header only after this session is acknowledged by its owning Hub.
+  const [delegatedSession, setDelegatedSession] = useState<string | null | undefined>(undefined);
+  const hubOwnsNavigation = window.__CLOUDCLI_EMBEDDED__ && !window.__CLOUDCLI_SIDE_CHAT__ && delegatedSession === (selectedSession?.id ?? null);
+  const onHubNavigationReady = useCallback((sessionId: string | null) => setDelegatedSession(sessionId), []);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
@@ -92,11 +98,12 @@ export default function WorkspaceHeader({
   };
 
   return (
-    <header className="pwa-header-safe flex-shrink-0 border-b border-border/60 bg-background/95 px-3 py-1.5 backdrop-blur-sm sm:px-4 sm:py-2">
-      <div className="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
-        <div className="flex min-w-0 items-center gap-2 sm:max-w-[min(34%,24rem)] sm:flex-[1_1_18rem]">
+    <header data-testid="workspace-header" className={cn('pwa-header-safe shrink-0 border-b border-border/60 bg-background/95 px-2 py-1 backdrop-blur-sm', hubOwnsNavigation && 'hidden')}>
+      <div className="flex min-w-0 items-center gap-2">
+        <div className={cn('flex min-w-0 basis-1/3 items-center gap-1.5 sm:max-w-96', window.__CLOUDCLI_SIDE_CHAT__ && 'hidden')}>
           {isMobile && <MobileMenuButton onMenuClick={onMenuClick} />}
           <WorkspaceTitle
+            machineLabel={window.__REMOTE_NAME__ || window.__REMOTE_ID__ || t('workspacePanel.currentRemote', { defaultValue: 'Current remote' })}
             activeTab="chat"
             selectedProject={selectedProject}
             selectedSession={selectedSession}
@@ -104,7 +111,7 @@ export default function WorkspaceHeader({
           />
         </div>
 
-        <div className="-mx-3 min-w-0 sm:mx-0 sm:flex-1">
+        <div className="min-w-0 flex-1">
           <div className="relative ml-auto w-fit max-w-full">
             {canScrollLeft && (
               <div className="pointer-events-none absolute inset-y-0 left-0 z-10 w-12 bg-gradient-to-r from-background via-background/90 to-transparent" />
@@ -113,11 +120,13 @@ export default function WorkspaceHeader({
               ref={scrollRef}
               onScroll={updateScrollState}
               className={cn(
-                'scrollbar-hide max-w-full scroll-smooth overflow-x-auto overscroll-x-contain px-3 [-webkit-overflow-scrolling:touch]',
-                hasOverflow ? 'sm:px-9' : 'sm:pl-3 sm:pr-0',
+                'scrollbar-hide max-w-full scroll-smooth overflow-x-auto overscroll-x-contain [-webkit-overflow-scrolling:touch]',
+                hasOverflow ? 'sm:px-8' : '',
               )}
             >
               <WorkspaceTabs
+                sessionId={selectedSession?.id ?? null}
+                onHubNavigationReady={onHubNavigationReady}
                 activeTab={activeTab}
                 setActiveTab={setActiveTab}
                 shouldShowTasksTab={shouldShowTasksTab}
@@ -150,6 +159,7 @@ export default function WorkspaceHeader({
             )}
           </div>
         </div>
+        {onShowSettings && <button type="button" onClick={onShowSettings} className="shrink-0 rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label={t('workspacePanel.machineSettings', { defaultValue: 'Machine settings' })} title={t('workspacePanel.machineSettings', { defaultValue: 'Machine settings' })}><Settings className="h-4 w-4" /></button>}
       </div>
     </header>
   );

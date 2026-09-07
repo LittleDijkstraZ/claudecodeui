@@ -6,10 +6,13 @@ import { useTranslation } from 'react-i18next';
 import { Tooltip, PillBar, Pill } from '@/shared/ui';
 import type { AppTab, WorkspacePanelTab } from '@/shared/types';
 import { usePlugins, PluginIcon } from '@/modules/plugins';
+import { useWorkspaceNavigationBridge } from '@/modules/project-workspace/hooks/useWorkspaceNavigationBridge';
 import { useWorkspacePanels } from '@/modules/workspace-panels';
 
 type WorkspaceTabsProps = {
   activeTab: AppTab | WorkspacePanelTab;
+  sessionId?: string | null;
+  onHubNavigationReady?: (sessionId: string | null) => void;
   setActiveTab: (tab: AppTab | WorkspacePanelTab) => void;
   shouldShowTasksTab: boolean;
   shouldShowBrowserTab: boolean;
@@ -57,6 +60,8 @@ const TASKS_TAB: BuiltInTab = {
 /** Rendered by WorkspaceHeader to show the built-in workspace tabs plus any enabled plugin tabs. */
 export default function WorkspaceTabs({
   activeTab,
+  sessionId = null,
+  onHubNavigationReady,
   setActiveTab,
   shouldShowTasksTab,
   shouldShowBrowserTab,
@@ -83,6 +88,9 @@ export default function WorkspaceTabs({
     }));
 
   const tabs: TabDefinition[] = [...builtInTabs, ...pluginTabs];
+
+  const navigationTabs = tabs.map(tab => ({ id: tab.id, label: tab.kind === 'builtin' ? t(tab.labelKey) : tab.label }));
+  useWorkspaceNavigationBridge({ sessionId, activeTab, tabs: navigationTabs }, setActiveTab, onHubNavigationReady);
 
   const handleTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
     const tabList = event.currentTarget.closest('[role="tablist"]');
@@ -127,7 +135,7 @@ export default function WorkspaceTabs({
                 isActive={isActive}
                 onClick={() => setActiveTab(tab.id)}
                 onKeyDown={handleTabKeyDown}
-                className="h-8 max-w-44 px-2.5 py-[5px]"
+                className="h-7 max-w-40 px-2 py-1"
               >
                 {tab.kind === 'builtin' ? (
                   <tab.icon className="h-3.5 w-3.5 shrink-0" strokeWidth={isActive ? 2.2 : 1.8} />

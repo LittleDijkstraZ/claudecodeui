@@ -24,6 +24,7 @@ import type {
   ApiSuccessShape,
   AppErrorOptions,
   ClaudeUsageModelCounters,
+  ClaudePermissionSelection,
   NormalizedMessage,
   ProviderCurrentActiveModel,
   ProviderModelsDefinition,
@@ -1220,3 +1221,31 @@ export function addClaudeUsageModels(target: Record<string, ClaudeUsageModelCoun
     target[name] = next;
   }
 }
+
+
+//----------------- CLAUDE PERMISSION REQUESTS ------------
+/** Used by SDK options and native Shell launch to carry only explicitly saved rules and mode.
+ * A saved allow rule does not imply bypass, an extra working directory, or a permanent CLI grant. */
+export function resolveClaudePermissionSelection(input: { permissionMode?: unknown; toolsSettings?: unknown; bypassPermissions?: unknown } = {}): ClaudePermissionSelection {
+  if (input.toolsSettings != null && (typeof input.toolsSettings !== 'object' || Array.isArray(input.toolsSettings))) {
+    throw new AppError('Invalid saved Claude tool permission settings.', { code: 'INVALID_PERMISSION_RULES', statusCode: 400 });
+  }
+  const settings = input.toolsSettings as Record<string, unknown> || {};
+  const requested = input.permissionMode ?? (input.bypassPermissions === true ? 'bypassPermissions' : 'default');
+  if (typeof requested !== 'string' || !['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan', 'dontAsk'].includes(requested)) {
+    throw new AppError('Unsupported Claude permission mode.', { code: 'INVALID_PERMISSION_MODE', statusCode: 400 });
+  }
+  if (input.bypassPermissions === true && requested !== 'bypassPermissions') throw new AppError('Conflicting Claude terminal permission modes.', { code: 'INVALID_PERMISSION_MODE', statusCode: 400 });
+  const rules = (value: unknown): string[] => {
+    if (value === undefined) return [];
+    if (!Array.isArray(value) || value.length > 1000 || value.some((entry) => typeof entry !== 'string' || !entry.trim() || entry.length > 4096 || /[\0\r\n]/.test(entry))) {
+      throw new AppError('Invalid saved Claude tool permission rules.', { code: 'INVALID_PERMISSION_RULES', statusCode: 400 });
+    }
+    return [...new Set(value as string[])];
+  };
+  const mode = settings.skipPermissions === true && requested !== 'plan' ? 'bypassPermissions' : requested as ClaudePermissionSelection['mode'];
+  const allowedTools = rules(settings.allowedTools);
+  if (mode === 'plan') for (const tool of ['Read', 'Task', 'exit_plan_mode', 'TodoRead', 'TodoWrite', 'WebFetch', 'WebSearch']) if (!allowedTools.includes(tool)) allowedTools.push(tool);
+  return { mode, allowedTools, disallowedTools: rules(settings.disallowedTools) };
+}
+// ---------------------------

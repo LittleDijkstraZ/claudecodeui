@@ -33,7 +33,8 @@ import {
   normalizeImageDescriptors,
   resolveClaudeCodeExecutablePath,
   createCompleteMessage,
-  createNormalizedMessage
+  createNormalizedMessage,
+  resolveClaudePermissionSelection
 } from '@/shared/index.js';
 import {
   CLAUDE_PREDEFINED_MODELS
@@ -240,39 +241,16 @@ export function mapCliOptionsToSDK(options: AnyRecord = {}): Options {
     sdkOptions.cwd = cwd;
   }
 
-  if (permissionMode && permissionMode !== 'default') {
-    sdkOptions.permissionMode = permissionMode;
-  }
-
-  const settings = toolsSettings || {
-    allowedTools: [],
-    disallowedTools: [],
-    skipPermissions: false
-  };
-
-  if (settings.skipPermissions && permissionMode !== 'plan') {
-    sdkOptions.permissionMode = 'bypassPermissions';
-  }
-
-  const allowedTools: string[] = [...(settings.allowedTools || [])];
-
-  if (permissionMode === 'plan') {
-    const planModeTools = ['Read', 'Task', 'exit_plan_mode', 'TodoRead', 'TodoWrite', 'WebFetch', 'WebSearch'];
-    for (const tool of planModeTools) {
-      if (!allowedTools.includes(tool)) {
-        allowedTools.push(tool);
-      }
-    }
-  }
-
-  sdkOptions.allowedTools = allowedTools;
+  const permissionSelection = resolveClaudePermissionSelection({ permissionMode, toolsSettings });
+  sdkOptions.permissionMode = permissionSelection.mode;
+  sdkOptions.allowedTools = permissionSelection.allowedTools;
 
   // Use the tools preset to make all default built-in tools available (including AskUserQuestion).
   // This was introduced in SDK 0.1.57. Omitting this preserves existing behavior (all tools available),
   // but being explicit ensures forward compatibility and clarity.
   sdkOptions.tools = { type: 'preset', preset: 'claude_code' };
 
-  sdkOptions.disallowedTools = settings.disallowedTools || [];
+  sdkOptions.disallowedTools = permissionSelection.disallowedTools;
 
   const requestedModel = options.model || CLAUDE_PREDEFINED_MODELS.DEFAULT;
   // Omit the override so the remote CLI can resolve its own environment/settings.
@@ -721,8 +699,10 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
   try {
     if ('expectedProviderSessionId' in options && options.expectedProviderSessionId !== providerSessionId) throw new Error('The conversation changed before Claude started. Retry using its current state.');
     if (options.executionSettings && sessionId) {
+      const permissionSelection = resolveClaudePermissionSelection(options);
       claudeExecutionRecords.begin({ executionId, appSessionId: sessionId, providerSessionId: capturedSessionId || null,
         surface: 'chat', projectPath: options.cwd, requested: options.executionSettings,
+        permissionRequest: { mode: permissionSelection.mode, allowedRuleCount: permissionSelection.allowedTools.length, deniedRuleCount: permissionSelection.disallowedTools.length },
         startedAt: new Date().toISOString(), endedAt: null, status: 'running', observed: {} });
       executionRecorded = true;
     }
@@ -904,19 +884,27 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
       void queryInstance.supportedModels().then(rememberClaudeSupportedModels).catch(() => {});
     }
 
-    // This optional method exists in the installed SDK but is not a public
-    // compatibility promise. Query only the execution already requested by the user.
-    const settingsQuery = queryInstance as Query & { getSettings?: () => Promise<unknown> };
-    if (executionRecorded && typeof settingsQuery.getSettings === 'function') {
-      void settingsQuery.getSettings().then((result) => {
+    // Metadata comes only from the query the user already requested. It does
+    // not generate a prompt. Guard its response against intervening config changes.
+    const refreshAppliedSettings = async () => {
+      const settingsQuery = queryInstance as Query & { getSettings?: () => Promise<unknown> };
+      if (!executionRecorded || typeof settingsQuery?.getSettings !== 'function') return;
+      const expected = claudeExecutionRecords.get(executionId)?.observed || {};
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const result = await Promise.race([
+          settingsQuery.getSettings(),
+          new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), 1500); timer.unref?.(); }),
+        ]);
         const applied = (result as { applied?: Record<string, unknown> } | null)?.applied;
         if (!applied) return;
         const observed: { effort?: string | null; ultracode?: boolean; source: string } = { source: 'runtime-applied-settings' };
         if (typeof applied.effort === 'string' || applied.effort === null) observed.effort = applied.effort;
         if (typeof applied.ultracode === 'boolean') observed.ultracode = applied.ultracode;
-        if ('effort' in observed || 'ultracode' in observed) claudeExecutionRecords.observe(executionId, observed);
-      }).catch(() => {});
-    }
+        if ('effort' in observed || 'ultracode' in observed) claudeExecutionRecords.observe(executionId, observed, expected);
+      } catch { /* Older hosts leave effective settings unconfirmed. */ }
+      finally { if (timer) clearTimeout(timer); }
+    };
 
     // Track the query instance for abort capability
     if (sessionKey()) {
@@ -969,11 +957,15 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
 
       if (executionRecorded && !message.parent_tool_use_id && !message.isSidechain) {
         if (message.session_id) claudeExecutionRecords.bind(executionId, message.session_id);
+        if (message.type === 'system' && message.subtype === 'init' && typeof message.permissionMode === 'string') {
+          claudeExecutionRecords.observe(executionId, { permissionMode: message.permissionMode, source: 'initialization' });
+        }
         const model = message.type === 'assistant' ? message.message?.model : message.type === 'system' && message.subtype === 'init' ? message.model : undefined;
         if (typeof model === 'string' && model && model !== '<synthetic>' && model !== 'synthetic') {
           claudeExecutionRecords.observe(executionId, { model, source: message.type === 'assistant' ? 'response' : 'initialization' });
         }
       }
+      if (!message.parent_tool_use_id && !message.isSidechain && ((message.type === 'system' && message.subtype === 'init') || message.type === 'result')) await refreshAppliedSettings();
       if (usageRun) {
         if (capturedSessionId) usageRun.bindProviderSessionId(capturedSessionId);
         publishUsage(usageRun.observe(message));

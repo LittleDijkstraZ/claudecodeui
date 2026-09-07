@@ -73,8 +73,6 @@ function SidebarSessionItem({
   const [copyState, setCopyState] = useState<CopyState>('idle');
   const [providerSessionId, setProviderSessionId] = useState<string | null>(null);
   const providerIdRequestRef = useRef(0);
-  const showAttentionIndicator = needsAttention && !isSelected;
-  const showRecentIndicator = !showAttentionIndicator && !isProcessing && sessionView.isActive;
   const providerLabel = PROVIDER_LABELS[session.__provider];
 
   // While editing, dismiss only when the user clicks outside the inline rename panel
@@ -203,7 +201,7 @@ function SidebarSessionItem({
 
   return (
     <div className="group relative">
-      <SessionAttentionIndicator needsAttention={showAttentionIndicator} isRecent={showRecentIndicator} className="absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2" />
+      <SessionAttentionIndicator needsAttention={needsAttention} className="absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2" />
 
       {isCompact && (
       <div>
@@ -213,8 +211,6 @@ function SidebarSessionItem({
             isSelected ? 'bg-primary/5 border-primary/20' : '',
             !isSelected && isProcessing
               ? 'border-border/60 bg-muted/20'
-              : !isSelected && sessionView.isActive
-              ? 'border-green-500/30 bg-green-50/5 dark:bg-green-900/5'
               : 'border-border/30',
           )}
           onClick={selectMobileSession}
@@ -425,8 +421,6 @@ function SidebarSessionItem({
             isSelected ? 'border-primary/20 bg-primary/5' : 'border-border/30',
             !isSelected && isProcessing
               ? 'border-border/60 bg-muted/20 hover:bg-muted/25'
-              : !isSelected && sessionView.isActive
-                ? 'border-green-500/30 bg-green-50/5 hover:bg-green-50/10 dark:bg-green-900/5 dark:hover:bg-green-900/10'
                 : 'hover:bg-accent/50',
           )}
           // Left-click keeps in-app navigation; Ctrl/Cmd/middle-click and the

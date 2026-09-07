@@ -360,3 +360,32 @@ test('an empty plain terminal starts an interactive shell rather than an empty c
   assert.deepEqual(launch, os.platform() === 'win32' ? { executable: 'powershell.exe', args: ['-NoExit'] } : { executable: 'bash', args: ['-i'] });
   terminal.emitExit();
 });
+
+
+test('saved permissions reach only the bound Claude launch and cannot conflict with the bypass flag', async () => {
+  const terminal = createFakePty(); let preparedPermissions: unknown;
+  const socket = createFakeSocket(); let launches = 0;
+  const sessionId = `permission-fixture-${Date.now()}`;
+  handleShellConnection(socket as never, { resolveProviderSessionId: () => 'native-permission-fixture',
+    prepareClaudeSession: async (_id, _provider, _project, permissions) => {
+      preparedPermissions = permissions;
+      return { executable: '/fixture/claude', args: ['--resume', 'native-permission-fixture'], record: {
+        executionId: sessionId, appSessionId: sessionId, providerSessionId: 'native-permission-fixture', surface: 'shell',
+        projectPath: process.cwd(), requested: { model: 'default', effort: 'default', ultracode: false, revision: 'fixture' },
+        status: 'running', startedAt: new Date().toISOString(), endedAt: null, observed: {},
+      } };
+    }, spawnPty: () => { launches++; return terminal as never; },
+  });
+  socket.emit('message', JSON.stringify({ type: 'init', projectPath: process.cwd(), sessionId, hasSession: true, provider: 'claude',
+    permissionMode: 'acceptEdits', bypassPermissions: false,
+    toolsSettings: { allowedTools: ['Read(//tmp/turn_00.txt)'], disallowedTools: ['Bash(rm *)'], skipPermissions: false },
+  }));
+  await settle();
+  assert.deepEqual(preparedPermissions, { mode: 'acceptEdits', allowedTools: ['Read(//tmp/turn_00.txt)'], disallowedTools: ['Bash(rm *)'] });
+  assert.equal(launches, 1); terminal.emitExit();
+  const conflicting = createFakeSocket();
+  handleShellConnection(conflicting as never, { resolveProviderSessionId: () => null, spawnPty: () => { assert.fail('conflicting permission settings must not launch'); } });
+  conflicting.emit('message', JSON.stringify({ type: 'init', projectPath: process.cwd(), sessionId: `${sessionId}-conflict`, hasSession: true, provider: 'claude', permissionMode: 'plan', bypassPermissions: true }));
+  await settle();
+  assert.ok(conflicting.frames.some((frame) => JSON.parse(frame).message?.includes('Conflicting')));
+});

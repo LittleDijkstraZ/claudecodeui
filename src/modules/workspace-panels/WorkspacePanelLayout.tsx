@@ -11,7 +11,7 @@ const MIN_WIDTH = 300;
 const MIN_MAIN_WIDTH = 320;
 
 /** Used by project-workspace to give every right-hand view the same retained, resizable frame. */
-export function WorkspacePanelLayout({ main, children, title }: { main: ReactNode; children: ReactNode; title: string }) {
+export function WorkspacePanelLayout({ main, children, title, sessionId = null }: { main: ReactNode; children: ReactNode; title: string; sessionId?: string | null }) {
   const { t } = useTranslation('common');
   const panel = useWorkspacePanels();
   const actions = useWorkspacePanelActions();
@@ -37,6 +37,10 @@ export function WorkspacePanelLayout({ main, children, title }: { main: ReactNod
     return () => observer.disconnect();
   }, []);
   useEffect(() => { localStorage.setItem('cloudcli.workspace-panel-width', String(width)); }, [width]);
+  useEffect(() => {
+    if (window.parent === window || !window.__CLOUDCLI_EMBEDDED__ || window.__CLOUDCLI_SIDE_CHAT__) return;
+    window.parent.postMessage({ kind: 'cloudcli:chat-visibility', sessionId, visible: !(panel?.open && (narrow || panel.maximized)) }, location.origin);
+  }, [sessionId, panel?.open, panel?.maximized, narrow]);
 
   const beginResize = (event: PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || narrow || panel?.maximized) return;

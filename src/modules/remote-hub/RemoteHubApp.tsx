@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Bell, GitFork, Pencil, ChevronDown, ChevronRight, ExternalLink, Folder, Layers, MoreHorizontal, Pin, Plus, RefreshCw, Server, Settings, Trash2, X } from 'lucide-react';
+
+import { HubConversationDialog, type HubConversationAction } from '@/modules/remote-hub/HubConversationDialog';
 import { useHubPanes } from '@/modules/remote-hub/hooks/useHubPanes';
 import { changeHubGroups, loadHubGroups, hubApi } from '@/shared/api';
 import type { HubRemote, HubRemoteState, HubConversation, HubGroup, HubGroupState } from '@/shared/types';
-
-import { Bell, ChevronDown, ChevronRight, ExternalLink, Folder, Layers, MoreHorizontal, Pin, Plus, RefreshCw, Server, Settings, Trash2, X } from 'lucide-react';
-
 import { ThemeProvider } from '@/shared/context/ThemeContext';
 import { SessionAttentionIndicator, SessionRunningIndicator, ActionMenu, Button, Dialog, DialogContent, DialogTitle, Input } from '@/shared/ui';
 import { useConversationGroupDrag } from '@/modules/sidebar';
@@ -50,9 +50,18 @@ function Hub() {
   const [selection, setSelection] = useState<HubConversation | null>(null);
   // Allows login to a machine before any conversation is selected.
   const [loginRemote, setLoginRemote] = useState<string | null>(null);
-  const { panes, navigate: navigatePane, register: registerPane, remoteForSource, markReady, acceptSelection, openSettings } = useHubPanes();
+  const { chatVisibility, acceptChatVisibility, navigation, selections, acceptNavigation, selectTab, panes, navigate: navigatePane, register: registerPane, remoteForSource, markReady, acceptSelection, openSettings } = useHubPanes();
   // Retains the current group or conversation dialog operation.
   const [modal, setModal] = useState<Modal | null>(null);
+  // Keeps remote conversation operations separate from local group dialogs.
+  const [conversationAction, setConversationAction] = useState<HubConversationAction | null>(null);
+  // A background tab must not mark its retained conversation as read.
+  const [pageVisible, setPageVisible] = useState(document.visibilityState !== 'hidden');
+  useEffect(() => {
+    const changed = () => setPageVisible(document.visibilityState !== 'hidden');
+    document.addEventListener('visibilitychange', changed);
+    return () => document.removeEventListener('visibilitychange', changed);
+  }, []);
   // Allows the sidebar to be collapsed on a narrow workspace.
   const [sidebarOpen, setSidebarOpen] = useState(true);
   // Controls the retained cross-machine notification inbox.
@@ -81,7 +90,8 @@ function Hub() {
   const {
     states,
     refresh,
-    setStates
+    setStates,
+    markRead
   } = useHubConnections(remotes, onNotification);
   // Retains loaded project pages across sidebar view changes.
   const [projectRows, setProjectRows] = useState<Record<string, HubConversation[]>>({});
@@ -89,9 +99,11 @@ function Hub() {
   const [loadingRows, setLoadingRows] = useState<Set<string>>(new Set());
   const projectLoads = useRef(new Set<string>());
   useEffect(() => {
-    if (!selection || !states[selection.remoteId]?.attention?.includes(selection.sessionId)) return;
-    setStates(current => ({ ...current, [selection.remoteId]: { ...current[selection.remoteId], attention: current[selection.remoteId].attention.filter(id => id !== selection.sessionId) } }));
-  }, [selection, states, setStates]);
+    if (!selection || !pageVisible || selections[selection.remoteId] !== selection.sessionId) return;
+    const visible = chatVisibility[selection.remoteId];
+    if (visible && (visible.sessionId !== selection.sessionId || !visible.visible)) return;
+    if (states[selection.remoteId]?.attention.includes(selection.sessionId)) markRead(selection.remoteId, selection.sessionId);
+  }, [selection, selections, chatVisibility, pageVisible, states, markRead]);
   const allConversations = useMemo(() => Object.values(states).flatMap(s => s.conversations), [states]);
   const byKey = useMemo(() => new Map(allConversations.map(c => [memberKey(c), c])), [allConversations]);
   const resolvedMember = (member: HubConversation) => byKey.get(memberKey(member)) ?? member;
@@ -164,6 +176,8 @@ function Hub() {
       const remoteId = remoteForSource(event.source);
       if (!remoteId) return;
       if (event.data?.kind === 'cloudcli:ready') { markReady(remoteId); return; }
+      if (event.data?.kind === 'cloudcli:chat-visibility') { acceptChatVisibility(remoteId, event.data); return; }
+      if (event.data?.kind === 'cloudcli:workspace-nav') { acceptNavigation(remoteId, event.data); return; }
       if (event.data?.kind !== 'cloudcli:selection' || typeof event.data.sessionId !== 'string') return;
       if (remoteId !== (selection?.remoteId ?? loginRemote) || !acceptSelection(remoteId, event.data.sessionId)) return;
       const next = {
@@ -180,7 +194,7 @@ function Hub() {
     };
     window.addEventListener('message', message);
     return () => window.removeEventListener('message', message);
-  }, [selection?.remoteId, loginRemote, remoteForSource, markReady, acceptSelection]);
+  }, [selection?.remoteId, loginRemote, remoteForSource, markReady, acceptSelection, acceptNavigation, acceptChatVisibility]);
   // Import each remote user's existing groups once. Membership order is fetched
   // from that remote in pages, then becomes independent local hub metadata.
   useEffect(() => {
@@ -291,13 +305,12 @@ function Hub() {
       key = memberKey(member),
       status = states[member.remoteId]?.status;
     const running = Boolean(states[member.remoteId]?.running.includes(member.sessionId));
-    const attention = Boolean(states[member.remoteId]?.attention.includes(member.sessionId)) && (!selection || memberKey(selection) !== key);
-    const recent = !running && !attention && Boolean(member.lastActivity && Date.now() - Date.parse(member.lastActivity) < 10 * 60_000);
+    const attention = Boolean(states[member.remoteId]?.attention.includes(member.sessionId));
     const before = group?.members[index - 1],
       after = group?.members[index + 1];
     const target = drag.dropTarget?.sessionId === key ? drag.dropTarget.position : null;
     return <div key={key} data-testid="hub-conversation-row" data-group-id={group?.id} data-session-id={key} {...group ? drag.rowProps(group.id, key) : {}} className={`relative flex h-8 min-w-0 items-center gap-1 rounded-md px-1 hover:bg-accent ${selection && memberKey(selection) === key ? 'bg-primary/10' : ''} ${drag.dragState?.sessionId === key ? 'opacity-50' : ''}`}>
-      <SessionAttentionIndicator needsAttention={attention} isRecent={recent} className="absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2" />
+      <SessionAttentionIndicator needsAttention={attention} className="absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2" />
       {target && <span className={`pointer-events-none absolute inset-x-0 h-0.5 bg-primary ${target === 'before' ? 'top-0' : 'bottom-0'}`} />}
       {group ? <button {...drag.dragHandleProps(group.id, key)} disabled={saving} aria-label={`拖动 ${member.title}`} className="h-7 w-5 shrink-0 cursor-grab text-muted-foreground">⋮</button> : <span className="w-1 shrink-0" />}
       <a href={`/?remote=${member.remoteId}&session=${member.sessionId}`} className="flex min-w-0 flex-1 items-center gap-1.5 text-[13px]" title={`${member.title}\n${remotes.find(r => r.id === member.remoteId)?.name}\n${member.projectPath}`} onClick={e => {
@@ -308,6 +321,13 @@ function Hub() {
         <span className="min-w-0 flex-1 truncate">{member.title}</span><SessionRunningIndicator isProcessing={running} /><span className={`max-w-16 truncate text-[10px] ${status === 'online' ? 'text-muted-foreground' : 'text-amber-600'}`}>{remotes.find(r => r.id === member.remoteId)?.name}</span>
       </a>
       <ActionMenu label="会话菜单" ariaLabel={`${member.title} 的菜单`} icon={MoreHorizontal} iconOnly portal variant="ghost" triggerClassName="h-7 w-7 p-0" disabled={saving} items={[{
+        key: 'fork', label: 'Fork 对话', icon: GitFork, disabled: running || status !== 'online',
+        description: running ? '本轮结束后可从完整对话创建分支' : undefined,
+        onSelect: () => setConversationAction({ kind: 'fork', member, groupId: group?.id })
+      }, {
+        key: 'rename', label: '重命名', icon: Pencil, disabled: status !== 'online',
+        onSelect: () => setConversationAction({ kind: 'rename', member })
+      }, {
         key: 'assign',
         label: '移到分组',
         onSelect: () => setModal({
@@ -339,6 +359,10 @@ function Hub() {
         label: '在新窗口打开',
         icon: ExternalLink,
         onSelect: () => window.open(`/?remote=${member.remoteId}&session=${member.sessionId}`, '_blank', 'noopener')
+      }, {
+        key: 'delete', label: '删除对话', icon: Trash2, isDanger: true, showDividerBefore: true,
+        disabled: running || status !== 'online', description: running ? '本轮结束后可删除' : undefined,
+        onSelect: () => setConversationAction({ kind: 'delete', member })
       }]} />
     </div>;
   };
@@ -449,7 +473,12 @@ function Hub() {
       <div className="border-t border-border px-4 py-3 text-[11px] leading-relaxed text-muted-foreground">通过本机 SSH 隧道连接 · Claude 在远端运行</div>
     </aside>}
     <main className="flex min-w-0 flex-1 flex-col">
-      <header className="flex min-h-12 items-center gap-2 border-b border-border px-3"><Button variant="ghost" size="icon" aria-label="展开侧栏" onClick={() => setSidebarOpen(!sidebarOpen)}><Layers className="h-4 w-4" /></Button><div className="min-w-0 flex-1"><div className="truncate text-sm font-medium">{selection?.title ?? (loginRemote ? '连接远端' : '所有远端，一个窗口')}</div>{selectedRemote && <div className="flex items-center gap-1 text-xs text-muted-foreground"><Server className="h-3 w-3" /><span>{selectedRemote.name}</span>{selection?.projectPath && <span className="truncate"> · {selection.projectPath}</span>}</div>}</div>{selectedRemote && <Button variant="ghost" size="sm" onClick={() => openSettings(selectedRemote.id)}><Settings className="h-3.5 w-3.5" />机器设置</Button>}</header>
+      <header data-testid="hub-workspace-header" className="flex h-12 min-h-12 items-center gap-1.5 border-b border-border px-2">
+        <Button variant="ghost" size="icon" aria-label="展开侧栏" className="h-8 w-8 shrink-0" onClick={() => setSidebarOpen(!sidebarOpen)}><Layers className="h-4 w-4" /></Button>
+        <div className="min-w-0 flex-1 basis-28" title={`${selection?.title ?? ''} · ${selectedRemote?.name ?? ''} · ${selection?.projectPath ?? ''}`}><div className="truncate text-sm font-medium">{selection?.title ?? (loginRemote ? '连接远端' : '所有远端，一个窗口')}</div>{selectedRemote && <div className="truncate text-[10px] text-muted-foreground">{selectedRemote.name}</div>}</div>
+        {selectedRemote && navigation[selectedRemote.id]?.sessionId === (selection?.sessionId ?? null) && <nav aria-label="工作区视图" className="flex min-w-0 max-w-[65%] shrink items-center gap-0.5 overflow-x-auto">{navigation[selectedRemote.id].tabs.map(tab => <button key={tab.id} type="button" aria-pressed={navigation[selectedRemote.id].activeTab === tab.id} onClick={() => selectTab(selectedRemote.id, tab.id)} className={`shrink-0 whitespace-nowrap rounded-md px-2 py-1.5 text-xs ${navigation[selectedRemote.id].activeTab === tab.id ? 'bg-accent font-medium' : 'text-muted-foreground hover:bg-accent'}`}>{tab.label}</button>)}</nav>}
+        {selectedRemote && <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" aria-label="机器设置" title="机器设置" onClick={() => openSettings(selectedRemote.id)}><Settings className="h-4 w-4" /></Button>}
+      </header>
       {selectedRemote && states[selectedRemote.id]?.status === 'offline' && <div role="status" className="bg-amber-50 px-4 py-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-200">{selectedRemote.name} 连接中断，其他机器仍可使用。<button className="ml-2 underline" onClick={() => void refresh(selectedRemote.id)}>重新连接</button></div>}
       {panes.map(pane => <iframe
         name="cloudcli-remote" key={pane.remoteId}
@@ -469,6 +498,30 @@ function Hub() {
         if (member) openMember(member);
         setShowNotifications(false);
       }}>{remotes.find(r => r.id === n.remoteId)?.name} · {byKey.get(`${n.remoteId}:${n.sessionId}`)?.title ?? '会话'} · {n.label}</button>) : <p className="p-2 text-xs text-muted-foreground">暂无新通知</p>}</div>}
+    {conversationAction && <HubConversationDialog key={`${conversationAction.kind}:${memberKey(conversationAction.member)}`} action={conversationAction} machine={remotes.find(remote => remote.id === conversationAction.member.remoteId)?.name ?? conversationAction.member.remoteId} busySession={Boolean(states[conversationAction.member.remoteId]?.running.includes(conversationAction.member.sessionId))} close={() => setConversationAction(null)} onDone={async (action, result) => {
+      const key = memberKey(action.member);
+      await update(state => {
+        for (const group of state.groups) {
+          if (action.kind === 'delete') group.members = group.members.filter(member => memberKey(member) !== key);
+          else if (action.kind === 'rename' && result) group.members = group.members.map(member => memberKey(member) === key ? result : member);
+        }
+        if (action.kind === 'fork' && result) {
+          const group = state.groups.find(group => group.id === action.groupId) ?? state.groups.find(group => group.members.some(member => memberKey(member) === key));
+          if (group && !group.members.some(member => memberKey(member) === memberKey(result))) group.members.push(result);
+        }
+        return state;
+      });
+      setProjectRows(current => Object.fromEntries(Object.entries(current).map(([id, rows]) => [id, action.kind === 'delete' ? rows.filter(member => memberKey(member) !== key) : rows.map(member => action.kind === 'rename' && memberKey(member) === key && result ? result : member)])));
+      if (action.kind === 'delete') {
+        markRead(action.member.remoteId, action.member.sessionId);
+        setStates(current => ({ ...current, [action.member.remoteId]: { ...current[action.member.remoteId], conversations: current[action.member.remoteId].conversations.filter(member => memberKey(member) !== key), projects: current[action.member.remoteId].projects.map(project => ({ ...project, sessions: project.sessions?.filter(session => session.id !== action.member.sessionId) })) } }));
+        if (selection && memberKey(selection) === key) {
+          setSelection(null); setLoginRemote(action.member.remoteId); navigatePane(action.member.remoteId, null);
+          const url = new URL(location.href); url.searchParams.delete('session'); history.replaceState(null, '', url);
+        }
+      } else if (result && (action.kind === 'fork' || selection && memberKey(selection) === key)) openMember(result);
+      await refresh(action.member.remoteId);
+    }} />}
     {modal && <HubDialog key={`${modal.kind}:${'group' in modal ? modal.group?.id ?? 'new' : ''}`} modal={modal} groups={groups.groups} remotes={remotes} states={states} close={() => setModal(null)} onAssign={assign} onUpdate={update} onCreated={member => {
       openMember(member);
       void refresh(member.remoteId);

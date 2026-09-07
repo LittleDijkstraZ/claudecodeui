@@ -98,7 +98,20 @@ test('an empty current turn is not mislabeled with earlier file changes', () => 
       />
     </I18nextProvider>,
   );
-  assert.match(html, /No recorded edits in this turn yet/);
+  assert.match(html, /Review changes/);
+  assert.doesNotMatch(html, /No recorded edits in this turn yet/);
   assert.match(html, /1 earlier edit/);
   assert.doesNotMatch(html, /1 file changed/);
+});
+
+
+test('a new turn without recorded or unloaded edits adds no empty composer bar', () => {
+  const html = renderToStaticMarkup(
+    <I18nextProvider i18n={i18n}>
+      <ConversationChangesBar turns={[{ id: 'new', label: 'Current request', timestamp: new Date(), changes: [] }]}
+        isProcessing hasEarlierMessages={false} isLoadingEarlierMessages={false}
+        onLoadAllMessages={() => {}} onJumpToChange={() => {}} />
+    </I18nextProvider>,
+  );
+  assert.equal(html, '');
 });

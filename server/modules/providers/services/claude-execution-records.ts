@@ -25,17 +25,26 @@ export const claudeExecutionRecords = {
     });
     if (bound && activeExecutions.has(executionId)) activeExecutions.set(executionId, bound);
   },
-  observe(executionId: string, observation: ClaudeExecutionRecord['observed']): void {
+  observe(executionId: string, observation: ClaudeExecutionRecord['observed'], expectedConfiguration?: Pick<ClaudeExecutionRecord['observed'], 'model' | 'effort'>): void {
     // Whitelist again at the persistence boundary: runtime hooks can carry tool
     // contents and full settings can carry credentials. Neither belongs here.
     const safe: ClaudeExecutionRecord['observed'] = {};
     if (typeof observation.model === 'string' && observation.model.length <= 256 && /^[a-zA-Z0-9_./:[\]-]+$/.test(observation.model)) safe.model = observation.model;
     if (observation.effort === null || ['low', 'medium', 'high', 'xhigh', 'max'].includes(observation.effort || '')) safe.effort = observation.effort;
     if (typeof observation.ultracode === 'boolean') safe.ultracode = observation.ultracode;
+    if (['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan', 'dontAsk'].includes(observation.permissionMode || '')) safe.permissionMode = observation.permissionMode;
     if (typeof observation.promptId === 'string' && /^[a-zA-Z0-9_.:-]{1,128}$/.test(observation.promptId)) safe.promptId = observation.promptId;
     if (['response', 'initialization', 'chat-hook', 'shell-hook', 'runtime-applied-settings'].includes(observation.source || '')) safe.source = observation.source;
-    if (!('model' in safe) && !('effort' in safe) && !('ultracode' in safe)) return;
-    claudeExecutionsDb.update(executionId, (record) => ({ ...record, observed: { ...record.observed, ...safe, observedAt: new Date().toISOString() } }));
+    if (!('model' in safe) && !('effort' in safe) && !('ultracode' in safe) && !('permissionMode' in safe)) return;
+    claudeExecutionsDb.update(executionId, (record) => {
+      if (expectedConfiguration && (record.observed.model !== expectedConfiguration.model || record.observed.effort !== expectedConfiguration.effort)) return record;
+      const changedConfiguration = ('model' in safe && safe.model !== record.observed.model)
+        || ('effort' in safe && safe.effort !== record.observed.effort);
+      const observed = { ...record.observed, ...safe, observedAt: new Date().toISOString() };
+      // A previous true/false report is not evidence after the model or effort changes.
+      if (changedConfiguration && !('ultracode' in safe)) delete observed.ultracode;
+      return { ...record, observed };
+    });
   },
   finish(executionId: string, failed = false): void {
     activeExecutions.delete(executionId);

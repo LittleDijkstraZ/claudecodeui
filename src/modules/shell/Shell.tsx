@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import '@xterm/xterm/css/xterm.css';
-import type { Project, ProjectSession, ShellTerminationRegistrar } from '@/shared/types';
+import type { Project, ProjectSession, ShellTerminationRegistrar, ClaudeShellPermissionSelection, PermissionMode } from '@/shared/types';
 import { SessionExecutionSettings } from '@/modules/session-configuration';
 import { useShellRuntime } from '@/modules/shell/hooks/useShellRuntime';
 import { sendSocketMessage } from '@/modules/shell/utils/socket';
@@ -58,11 +58,20 @@ export default function Shell({
 }: ShellProps) {
   const { t } = useTranslation('chat');
   const [isRestarting, setIsRestarting] = useState(false);
-  // Seeded from the chat composer's persisted permission setting; the header
-  // toggle only changes this shell's launches, not the chat setting.
+  // The terminal inherits only saved Chat mode/rules. A one-time approval is
+  // never converted into a wider directory grant or bypass permission.
+  const savedModeValue = (selectedSession?.id ? localStorage.getItem(`permissionMode-${selectedSession.id}`) : null)
+    || localStorage.getItem('permissionMode-last-claude') || 'default';
+  const savedMode: PermissionMode = ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan'].includes(savedModeValue)
+    ? savedModeValue as PermissionMode : 'default';
+  const savedPermissions = getClaudeSettings();
   const [bypassPermissions, setBypassPermissions] = useState(
-    () => getClaudeSettings().skipPermissions,
+    () => savedMode !== 'plan' && (savedMode === 'bypassPermissions' || savedPermissions.skipPermissions),
   );
+  const permissionSelection: ClaudeShellPermissionSelection = {
+    permissionMode: bypassPermissions ? 'bypassPermissions' : savedMode === 'bypassPermissions' ? 'default' : savedMode,
+    toolsSettings: { allowedTools: savedPermissions.allowedTools, disallowedTools: savedPermissions.disallowedTools, skipPermissions: false },
+  };
   const [cliPromptOptions, setCliPromptOptions] = useState<CliPromptOption[] | null>(null);
   const promptCheckTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const restartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -87,6 +96,7 @@ export default function Shell({
     isPlainShell,
     terminalInstanceId,
     bypassPermissions,
+    permissionSelection,
     minimal,
     autoConnect,
     isRestarting,

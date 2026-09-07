@@ -624,13 +624,8 @@ function ChatInterface({
             </p>
           )}
 
-          <ModelIdentitySummary
-            provider={provider}
-            sessionId={viewedSessionId}
-            selectedModel={currentProviderModel}
-            revision={`${isProcessing}-${chatMessages.length}`}
-          />
           <ChatComposer
+          modelDetails={<ModelIdentitySummary provider={provider} sessionId={viewedSessionId} selectedModel={currentProviderModel} revision={`${isProcessing}-${chatMessages.length}`} />}
           pendingPermissionRequests={pendingPermissionRequests}
           handlePermissionDecision={handlePermissionDecision}
           handleGrantToolPermission={handleGrantToolPermission}
@@ -641,6 +636,7 @@ function ChatInterface({
           availablePermissionModes={availablePermissionModes}
           onSelectPermissionMode={selectPermissionMode}
           providerLabel={selectedProviderLabel}
+          provider={provider}
           effort={currentProviderEffort}
           availableEffortOptions={currentProviderEffortOptions}
           onSelectEffort={handleSelectComposerEffort}

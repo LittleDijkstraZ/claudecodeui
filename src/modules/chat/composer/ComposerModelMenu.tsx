@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronRight } from 'lucide-react';
@@ -18,6 +19,8 @@ type EffortOption = NonNullable<ProviderModelOption['effort']>['values'][number]
 
 type ComposerModelMenuProps = {
   effort: string;
+  /** Read-only evidence and execution details for the selected remote session. */
+  details?: ReactNode;
   /** Effort values the active provider/model actually accepts; empty hides the section. */
   effortOptions: EffortOption[];
   onSelectEffort: (effort: string) => void;
@@ -34,6 +37,7 @@ type ComposerModelMenuProps = {
  * provider's model and reasoning effort for the next turn.
  */
 function ComposerModelMenu({
+  details,
   effort,
   effortOptions,
   onSelectEffort,
@@ -83,11 +87,11 @@ function ComposerModelMenu({
 
   const hasEffortSection = resolvedEffortOptions.length > 0;
   const hasModelSection = modelOptions.length > 0 || modelsLoading;
-  if (!hasEffortSection && !hasModelSection) {
+  if (!hasEffortSection && !hasModelSection && !details) {
     return null;
   }
 
-  const triggerLabel = hasModelSection ? modelLabel : effortLabel;
+  const triggerLabel = hasModelSection || details ? modelLabel : effortLabel;
   const ariaLabel = t('composer.modelMenu', {
     defaultValue: 'Select model and reasoning effort',
   });
@@ -116,6 +120,7 @@ function ComposerModelMenu({
 
       {isOpen && anchor && createPortal(
         <ComposerMenuSurface anchor={anchor} menuRef={menuRef} ariaLabel={ariaLabel}>
+          {details && <>{details}<ComposerMenuSeparator /></>}
           {hasEffortSection && (
             <>
               <ComposerMenuHeading>

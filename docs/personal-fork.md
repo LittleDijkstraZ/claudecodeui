@@ -409,3 +409,39 @@ The remote database persists only numerical counters and public/opaque model, re
 REST, history pages and live events use the same versioned snapshot with a durable per-session revision. Each remote pane keeps its own session cache; stale or mismatched snapshots cannot replace newer counters. Compaction and rewind change context without erasing prior spend. A fork inherits its prefix without charging that copied context again. Available old rewind backups and subagent logs contribute to historical request recovery, while missing internal calls and historical prices remain explicitly unknown. A stopped process preserves its observed partial spend.
 
 No discovery question, extra model session, token-count API call or account-wide `getUsage()` request is used for these statistics. The summary query operates only on an already user-started Claude process. Accounting cannot reconstruct an invoice or recover usage that Claude never recorded/reported.
+
+### Unified-window regression fixes
+
+Conversation menus in every Hub view include fork, rename and a final red delete
+entry. Forks use the owning remote and inherit the source group. Deletion defaults
+to recoverable archive; permanent transcript deletion is an explicit option.
+Whole-conversation fork and delete stay visible but disabled while a run is active.
+A failed local group save retries the completed remote result rather than forking
+a second time.
+
+The green dot means an unread reply or attention event, never merely recent
+activity. A yellow spinner independently indicates a running session. Read state
+is scoped to machine and session, survives reconnects in the Hub, and clears only
+when that conversation is visible. Background machine frames and chat covered by
+a maximized panel do not consume unread state. Metadata-only renames do not make
+a conversation unread; older metadata events without message watermarks cannot
+reliably announce an external CLI reply.
+
+Embedded remotes supply their actual enabled navigation to the Hub's single
+header. Older remotes retain their own navigation until upgraded. Model selection,
+reported identity and next-execution details share the composer model menu. Small
+changes and Agents controls replace permanent informational bars; shortcut hints
+live in a tooltip. Retained terminal and side-chat lifetimes are unchanged.
+
+Chat's explicitly saved allow/deny rules and permission mode are carried into the
+native Claude terminal on its next launch. A one-time approval is not converted
+into a saved broad grant, and the CLI may still ask its separate outside-working-
+directory question. Ultracode requests both xhigh effort and its independent CLI
+settings; `/effort` alone confirms neither that switch nor an earlier Chat run.
+The execution details distinguish requested values from observations.
+
+When a new client receives old Claude usage payloads it labels them as legacy,
+not validated context or cumulative consumption. A still-running older remote
+serves its own older frontend too; updating only the Mac Hub cannot activate the
+new remote runtime or statistics. Updates must wait for that remote's active
+work to finish.

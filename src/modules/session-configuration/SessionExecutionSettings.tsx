@@ -4,11 +4,13 @@ import { api, claudeExecutionSettingsApi } from '@/shared/api';
 import type { ClaudeSessionExecutionSnapshot, ClaudeSessionSettings, LLMProvider, ProviderModelOption } from '@/shared/types';
 
 /** Used by Chat and retained Shell panes to distinguish requested, reported and next-launch configuration. */
-export function SessionExecutionSettings({ sessionId, provider, surface, executionId }: {
+export function SessionExecutionSettings({ sessionId, provider, surface, executionId, presentation = 'inline' }: {
   sessionId: string | null;
   provider: LLMProvider;
   surface: 'chat' | 'shell';
   executionId?: string | null;
+  /** In the model menu the existing controls already select next settings. */
+  presentation?: 'inline' | 'menu';
 }) {
   // One server snapshot contains both the frozen execution and independent next-launch choice.
   const [snapshot, setSnapshot] = useState<ClaudeSessionExecutionSnapshot | null>(null);
@@ -71,13 +73,13 @@ export function SessionExecutionSettings({ sessionId, provider, surface, executi
   }, [identity, open, refresh]);
 
   useEffect(() => {
-    if (!open || provider !== 'claude') return;
+    if (!open || provider !== 'claude' || presentation === 'menu') return;
     let cancelled = false;
     void api.providers.models('claude').then((response) => response.json()).then((payload) => {
       if (!cancelled) setModels(payload.data?.models?.OPTIONS || []);
     }).catch(() => {});
     return () => { cancelled = true; };
-  }, [open, provider]);
+  }, [open, provider, presentation]);
 
   if (provider !== 'claude' || !sessionId) return null;
   const current = snapshot?.sessionId === sessionId && (!executionId || snapshot.execution?.executionId === executionId) ? snapshot : null;
@@ -110,18 +112,21 @@ export function SessionExecutionSettings({ sessionId, provider, surface, executi
     }
   };
 
-  return <details open={open} onToggle={(event) => setOpen(event.currentTarget.open)} className="border-t border-border/50 px-3 py-1.5 text-xs" data-testid="session-execution-settings">
+  return <details open={open} onToggle={(event) => setOpen(event.currentTarget.open)} className={presentation === 'menu' ? 'px-2.5 pb-2 text-xs' : 'border-t border-border/50 px-3 py-1.5 text-xs'} data-testid="session-execution-settings">
     <summary className="cursor-pointer select-none break-words text-muted-foreground">
-      执行配置 · {observed?.model || '实际模型未确认'}{differs ? ' · 下次启动有新设置' : ''}
+      {presentation === 'menu' ? '本次执行与下轮设置' : <>执行配置 · {observed?.model || '实际模型未确认'}</>}{differs ? ' · 下次启动有新设置' : ''}
     </summary>
     <div className="mt-2 min-w-0 space-y-2 break-words">
       <div className="break-all text-muted-foreground">当前机器上的会话：{sessionId}<br />Claude ID：{current?.providerSessionId || '尚未建立'}</div>
       {execution ? <>
         <div>最近执行（{execution.surface === 'chat' ? 'Chat' : 'Claude 终端'}）：<code className="break-all">{execution.executionId}</code> · {execution.status === 'running' && execution.isLive === false ? '运行状态未确认（历史记录）' : execution.status}</div>
         <div>启动时请求：{execution.requested.model} · {execution.requested.effort} · Ultracode {execution.requested.ultracode ? '开' : '关'}</div>
+        {execution.permissionRequest && <div>启动权限：{execution.permissionRequest.mode}；请求允许/拒绝规则 {execution.permissionRequest.allowedRuleCount}/{execution.permissionRequest.deniedRuleCount}</div>}
+        <div>实际权限模式：{observed?.permissionMode || '未确认'}</div>
         <div>实际报告：模型 {observed?.model || '未确认'}；effort {observed?.effort === null ? '未发送 effort 参数' : observed?.effort || '未确认'}；Ultracode {typeof observed?.ultracode === 'boolean' ? observed.ultracode ? '开' : '关' : '未确认'}</div>
       </> : <div className="text-muted-foreground">尚无此功能记录的执行；历史设置不作为实际生效证明。</div>}
-      {next && <fieldset disabled={saving} className="space-y-2">
+      {next && presentation === 'menu' && <div>下次启动：{next.model} · {next.effort} · Ultracode {next.ultracode ? '开' : '关'}</div>}
+      {next && presentation !== 'menu' && <fieldset disabled={saving} className="space-y-2">
         <legend className="font-medium">下次 Chat / Claude 终端启动</legend>
         <div className="flex flex-wrap gap-2">
           <label className="flex min-w-0 max-w-full items-center gap-1">模型 <select aria-label="Next execution model" className="min-w-0 max-w-full rounded border bg-background p-1" value={next.model} onChange={(event) => void save({ model: event.target.value })}>
@@ -136,8 +141,8 @@ export function SessionExecutionSettings({ sessionId, provider, surface, executi
           <label className="flex items-center gap-1"><input type="checkbox" checked={next.ultracode} onChange={(event) => void save({ ultracode: event.target.checked, ...(event.target.checked ? { effort: 'xhigh' } : {}) })} />Ultracode</label>
         </div>
       </fieldset>}
-      <p className="text-muted-foreground">{surface === 'shell' ? '已打开的 Claude 终端保留启动配置；更改以上选项后需重新启动该终端。' : '设置用于下一轮 Chat；当前执行保持原配置。'} 终端内的 /model、/effort 是该进程的操作；实际报告以该次执行的观测为准。xhigh 本身不证明 Ultracode 已开启。</p>
-      {error && <p role="alert" className="text-red-500">{error}</p>}
+      <p className="text-muted-foreground">{surface === 'shell' ? '仅沿用已保存的权限；一次允许不会自动保留。已运行终端需重新启动才使用新设置。' : '设置用于下一轮 Chat；当前执行保持原配置。'} 终端内的 /model、/effort 是该进程的操作；实际报告以该次执行的观测为准。xhigh 本身不证明 Ultracode 已开启。</p>
+      {error && <p role="alert" className="text-red-500">{presentation === 'menu' && !current ? '此远端暂时无法读取完整执行配置；上方仍显示可读取的模型记录。' : error}</p>}
     </div>
   </details>;
 }
