@@ -24,7 +24,6 @@ interface UseChatSessionStateArgs {
   newSessionTrigger?: number;
   processingSessions?: SessionActivityMap;
   onSessionIdle?: MarkSessionIdle;
-  resetStreamingState: () => void;
   /** When each session's `chat.subscribe` was last sent; guards stale idle acks. */
   statusCheckSentAtRef: MutableRefObject<Map<string, number>>;
   /** Highest live seq observed per session; sent as `lastSeq` on subscribe. */
@@ -124,7 +123,6 @@ export function useChatSessionState({
   newSessionTrigger,
   processingSessions,
   onSessionIdle,
-  resetStreamingState,
   statusCheckSentAtRef,
   lastSeqRef,
   sessionStore,
@@ -193,7 +191,6 @@ export function useChatSessionState({
      * - No dependence on route/tab/session-object identity changes.
      * - No coupling to unrelated external update signals.
      */
-    resetStreamingState();
     setCurrentSessionId(null);
     setPendingUserMessage(null);
     messagesOffsetRef.current = 0;
@@ -224,7 +221,7 @@ export function useChatSessionState({
       clearTimeout(loadAllFinishedTimerRef.current);
       loadAllFinishedTimerRef.current = null;
     }
-  }, [newSessionTrigger, onSessionIdle, resetStreamingState]);
+  }, [newSessionTrigger, onSessionIdle]);
 
   /* ---------------------------------------------------------------- */
   /*  Derive processing state for the viewed session                  */
@@ -598,7 +595,6 @@ export function useChatSessionState({
         return;
       }
 
-      resetStreamingState();
       setCurrentSessionId(null);
       messagesOffsetRef.current = 0;
       setHasMoreMessages(false);
@@ -631,9 +627,6 @@ export function useChatSessionState({
     }
 
     const sessionChanged = currentSessionId !== null && currentSessionId !== selectedSessionId;
-    if (sessionChanged) {
-      resetStreamingState();
-    }
 
     // Reset pagination/scroll state
     messagesOffsetRef.current = 0;
@@ -682,7 +675,6 @@ export function useChatSessionState({
     });
   }, [
     isActive,
-    resetStreamingState,
     requestLatestMessages,
     selectedProject,
     selectedSession?.id,

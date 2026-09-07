@@ -139,6 +139,7 @@
     }
   },
   "composer": {
+    "ultracodeDescription": "xhigh reasoning with automatic workflows. Uses more API tokens.",
     "reasoning": "Reasoning",
     "model": "Model",
     "effortDefault": "Default",

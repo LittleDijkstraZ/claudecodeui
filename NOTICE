@@ -11,3 +11,8 @@ Contributions by Siteboon AI B.V. prior to commit 004135ef were originally
 published under GPL-3.0 and are hereby relicensed to AGPL-3.0-or-later.
 Contributions by other authors prior to that commit remain under GPL-3.0
 and are incorporated into this work as permitted by GPL-3.0 Section 13.
+
+Personal fork modifications, 2026-09-07:
+Incremental Claude output, per-session stream buffering, and Ultracode workflow
+integration are maintained at https://github.com/LittleDijkstraZ/claudecodeui.
+This modified version is not an official Siteboon release.

@@ -56,7 +56,9 @@ export default function ComposerModelMenu({
     () => (effortOptions.length > 0 ? [{ value: DEFAULT_EFFORT_VALUE }, ...effortOptions] : []),
     [effortOptions],
   );
-  const effortLabel = effort === DEFAULT_EFFORT_VALUE ? defaultEffortLabel : effort;
+  const effortLabel = effort === DEFAULT_EFFORT_VALUE
+    ? defaultEffortLabel
+    : effort === 'ultracode' ? 'Ultracode' : effort;
 
   const selectedModelOption = useMemo(
     () => modelOptions.find((option) => option.value === model) ?? null,
@@ -106,8 +108,10 @@ export default function ComposerModelMenu({
               {resolvedEffortOptions.map((option) => (
                 <ComposerMenuItem
                   key={option.value}
-                  label={option.value === DEFAULT_EFFORT_VALUE ? defaultEffortLabel : option.value}
-                  description={option.description}
+                  label={option.value === DEFAULT_EFFORT_VALUE ? defaultEffortLabel : option.value === 'ultracode' ? 'Ultracode' : option.value}
+                  description={option.value === 'ultracode'
+                    ? t('composer.ultracodeDescription', { defaultValue: 'xhigh reasoning with automatic workflows. Uses more API tokens.' })
+                    : option.description}
                   isSelected={option.value === effort}
                   onSelect={() => {
                     onSelectEffort(option.value);

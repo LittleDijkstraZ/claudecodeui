@@ -1,4 +1,7 @@
 {
+  "composer": {
+    "ultracodeDescription": "xhigh 推理 + 自动组织多个子任务，会增加 API 用量。"
+  },
   "codeBlock": {
     "copy": "复制",
     "copied": "已复制",
