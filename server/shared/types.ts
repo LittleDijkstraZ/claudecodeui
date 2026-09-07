@@ -22,6 +22,11 @@ export type ApiSuccessShape<TData = unknown> = {
 export type AnyRecord = Record<string, any>;
 
 // ---------------------------
+//----------------- CONVERSATION GROUP CONTRACTS ------------
+/** Validated page controls shared by conversation-group routes, service, and repository. */
+export type ConversationGroupPageOptions = { limit: number; offset: number; query: string };
+
+// ---------------------------
 //----------------- WEBSOCKET TRANSPORT TYPES ------------
 /**
  * Minimal websocket client contract used by backend broadcaster services.

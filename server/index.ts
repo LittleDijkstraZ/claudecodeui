@@ -41,6 +41,7 @@ import {
     stopAllPlugins,
 } from './modules/plugins/index.js';
 import providerRoutes from './modules/providers/provider.routes.js';
+import { createConversationGroupsRouter } from './modules/conversation-groups/index.js';
 import { voiceRoutes } from './modules/voice/index.js';
 import browserUseRoutes from './modules/browser-use/browser-use.routes.js';
 import { assetsRoutes } from './modules/assets/index.js';
@@ -190,6 +191,7 @@ app.use('/api/browser-use', authenticateToken, browserUseRoutes);
 
 // Unified provider MCP routes (protected)
 app.use('/api/providers', authenticateToken, providerRoutes);
+app.use('/api/conversation-groups', authenticateToken, createConversationGroupsRouter());
 
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);

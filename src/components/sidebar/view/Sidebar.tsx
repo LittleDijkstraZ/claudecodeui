@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useDeviceSettings } from '../../../hooks/useDeviceSettings';
@@ -8,6 +8,7 @@ import { useSidebarController } from '../hooks/useSidebarController';
 import { useTaskMaster } from '../../../contexts/TaskMasterContext';
 import { usePaletteOps } from '../../../contexts/PaletteOpsContext';
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
+import { useConversationGroups } from '../../../contexts/ConversationGroupsContext';
 import type { Project, LLMProvider } from '../../../types/app';
 import type { MCPServerStatus, SidebarProps } from '../types/types';
 
@@ -53,6 +54,8 @@ function Sidebar({
   const { setCurrentProject, mcpServerStatus } = useTaskMaster() as TaskMasterSidebarContext;
   const { tasksEnabled } = useTasksSettings();
   const paletteOps = usePaletteOps();
+  const { refresh: refreshGroups } = useConversationGroups();
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
 
   const {
     isSidebarCollapsed,
@@ -257,12 +260,14 @@ function Sidebar({
             isLoadingMoreRecentConversations={isLoadingMoreRecentConversations}
             recentConversationsError={recentConversationsError}
             searchFilter={searchFilter}
+            selectedGroupId={selectedGroupId}
+            onSelectGroup={setSelectedGroupId}
             onSearchFilterChange={setSearchFilter}
             onClearSearchFilter={() => setSearchFilter('')}
             searchMode={searchMode}
             onSearchModeChange={(mode) => {
               setSearchMode(mode);
-              if (mode === 'projects') clearConversationResults();
+              if (mode !== 'conversations') clearConversationResults();
             }}
             conversationResults={conversationResults}
             isSearching={isSearching}
@@ -310,6 +315,7 @@ function Sidebar({
             }}
             onRefresh={() => {
               void refreshProjects();
+              void refreshGroups();
             }}
             isRefreshing={isRefreshing}
             onCreateProject={() => setShowNewProject(true)}

@@ -76,6 +76,37 @@ test('provider session id is unavailable until the provider assigns one', { conc
   });
 });
 
+test('omitting an initial message creates an unnamed draft with empty history and fresh runtime state', { concurrency: false }, async () => {
+  await withIsolatedDatabase(async () => {
+    const draft = sessionsService.createAppSession('claude', '/tmp/group-draft-project');
+
+    assert.equal(draft.sessionName, 'Untitled Session');
+    assert.equal(sessionsDb.getSessionById(draft.sessionId)?.custom_name, null);
+    assert.equal(sessionsService.resolveProviderSessionId(draft.sessionId), null);
+    assert.deepEqual(await sessionsService.fetchHistory(draft.sessionId), {
+      messages: [], total: 0, hasMore: false, offset: 0, limit: null,
+    });
+
+    sessionsService.initializeAppSessionName(draft.sessionId, 'Fix the missing save button now');
+    sessionsService.initializeAppSessionName(draft.sessionId, 'A later message must not replace it');
+    assert.equal(sessionsDb.getSessionById(draft.sessionId)?.custom_name, 'Fix the missing save');
+  });
+});
+
+test('draft naming preserves explicit renames and sessions that already own provider history', { concurrency: false }, async () => {
+  await withIsolatedDatabase(() => {
+    const renamedDraft = sessionsService.createAppSession('claude', '/tmp/group-draft-project');
+    sessionsDb.updateSessionCustomName(renamedDraft.sessionId, 'My chosen name');
+    sessionsService.initializeAppSessionName(renamedDraft.sessionId, 'First prompt');
+    assert.equal(sessionsDb.getSessionById(renamedDraft.sessionId)?.custom_name, 'My chosen name');
+
+    const mappedSession = sessionsService.createAppSession('claude', '/tmp/group-draft-project');
+    sessionsDb.assignProviderSessionId(mappedSession.sessionId, 'native-existing-session');
+    sessionsService.initializeAppSessionName(mappedSession.sessionId, 'Resume prompt');
+    assert.equal(sessionsDb.getSessionById(mappedSession.sessionId)?.custom_name, null);
+  });
+});
+
 test('provider session id reports a missing app session', { concurrency: false }, async () => {
   await withIsolatedDatabase(() => {
     assert.throws(

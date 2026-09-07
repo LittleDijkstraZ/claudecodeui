@@ -212,6 +212,15 @@ export const sessionsDb = {
         .get(providerSessionId, providerSessionId, sessionId) as SessionRow | undefined;
 
       if (duplicate) {
+        // Preserve every user's grouping when the watcher races app creation.
+        // A membership already assigned to the stable app id wins for that
+        // same user; other users' memberships move before FK cascade deletion.
+        db.prepare(`
+          INSERT INTO conversation_group_memberships (user_id, session_id, group_id)
+          SELECT user_id, ?, group_id FROM conversation_group_memberships
+          WHERE session_id = ?
+          ON CONFLICT(user_id, session_id) DO NOTHING
+        `).run(sessionId, duplicate.session_id);
         db.prepare('DELETE FROM sessions WHERE session_id = ?').run(duplicate.session_id);
         db.prepare(
           `UPDATE sessions SET
@@ -275,6 +284,20 @@ export const sessionsDb = {
     ).run(customName, sessionId);
   },
 
+  /**
+   * The providers session service calls this on the first accepted draft send.
+   * Conditional initialization preserves an explicit rename, an earlier send's
+   * title, and every session already mapped to provider-owned history.
+   */
+  initializeAppSessionName(sessionId: string, customName: string): void {
+    const db = getConnection();
+    db.prepare(
+      `UPDATE sessions
+       SET custom_name = ?
+       WHERE session_id = ? AND custom_name IS NULL AND provider_session_id IS NULL`
+    ).run(customName, sessionId);
+  },
+
   getSessionById(sessionId: string): SessionRow | null {
     const db = getConnection();
     const row = db
@@ -308,43 +331,6 @@ export const sessionsDb = {
          LIMIT 1`
       )
       .get(providerSessionId) as SessionRow | undefined;
-
-    return normalizeSessionRow(row) ?? null;
-  },
-
-  /**
-   * Finds the newest app-created session for a project that is still waiting
-   * for its provider-native id to be recorded.
-   *
-   * Primary intention: OpenCode can expose a new session in its shared
-   * `opencode.db` before the websocket runtime reports that same provider id
-   * back to our app. At that moment the sidebar already has an optimistic
-   * app-owned session row, but the watcher only knows the provider-native id.
-   *
-   * Without this lookup, the synchronizer would insert a second row keyed by
-   * the provider id, then `assignProviderSessionId()` would merge it a moment
-   * later. That eventually self-heals, but on slow networks the user can still
-   * briefly see two sidebar sessions for the same conversation.
-   *
-   * This helper lets the synchronizer claim the pending app row first, so the
-   * provider id is attached before any watcher-created row exists. The result
-   * is simpler than frontend dedupe and keeps the race resolved at the source.
-   */
-  findLatestPendingAppSession(provider: string, projectPath: string): SessionRow | null {
-    const db = getConnection();
-    const normalizedProjectPath = normalizeProjectPathForProvider(provider, projectPath);
-    const row = db
-      .prepare(
-        `SELECT ${SESSION_ROW_COLUMNS}
-         FROM sessions
-         WHERE provider = ?
-           AND project_path = ?
-           AND provider_session_id IS NULL
-           AND isArchived = 0
-         ORDER BY datetime(COALESCE(updated_at, created_at)) DESC, session_id DESC
-         LIMIT 1`
-      )
-      .get(provider, normalizedProjectPath) as SessionRow | undefined;
 
     return normalizeSessionRow(row) ?? null;
   },

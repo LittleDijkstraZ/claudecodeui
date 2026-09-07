@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
-import { Check, Copy, Edit2, Loader2, MoreHorizontal, Trash2, X } from 'lucide-react';
+import { Check, Copy, Edit2, Layers, Loader2, MoreHorizontal, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { ActionMenu, Badge, Dialog, DialogContent, DialogTitle, Tooltip, buttonVariants } from '../../../../shared/view/ui';
 import { cn } from '../../../../lib/utils';
 import type { Project, ProjectSession, LLMProvider } from '../../../../types/app';
 import { api } from '../../../../utils/api';
+import { useConversationGroups } from '../../../../contexts/ConversationGroupsContext';
 import { copyTextToClipboard } from '../../../../utils/clipboard';
 import type { SessionWithProvider } from '../../types/types';
 import { createSessionViewModel, formatCompactAge } from '../../utils/utils';
@@ -61,6 +62,9 @@ export default function SidebarSessionItem({
   onDeleteSession,
   t,
 }: SidebarSessionItemProps) {
+  const { openAssignment, memberships, groups } = useConversationGroups();
+  const groupName = groups.find((group) => group.id === memberships[session.id])?.name;
+  const moveToGroupLabel = t('conversationGroups.moveToGroup', { ns: 'common' });
   const sessionView = createSessionViewModel(session, currentTime, t);
   const isSelected = selectedSession?.id === session.id;
   const isEditing = editingSession === session.id;
@@ -353,6 +357,20 @@ export default function SidebarSessionItem({
               <div className="space-y-2">
                 <button
                   type="button"
+                  onClick={() => {
+                    setMobileOptionsOpen(false);
+                    openAssignment(session.id);
+                  }}
+                  className="flex min-h-12 w-full items-center gap-3 rounded-xl border border-border bg-muted/35 px-4 py-3 text-left text-foreground transition-colors active:bg-muted"
+                >
+                  <Layers className="h-5 w-5 flex-shrink-0" />
+                  <span className="min-w-0 text-sm font-medium">
+                    {moveToGroupLabel}
+                    {groupName && <span className="block truncate text-xs text-muted-foreground">{groupName}</span>}
+                  </span>
+                </button>
+                <button
+                  type="button"
                   onClick={startMobileRename}
                   className="flex min-h-12 w-full items-center gap-3 rounded-xl border border-border bg-muted/35 px-4 py-3 text-left text-foreground transition-colors active:bg-muted"
                 >
@@ -548,6 +566,13 @@ export default function SidebarSessionItem({
                   </div>
                 )}
                 items={[
+                  {
+                    key: 'group',
+                    label: moveToGroupLabel,
+                    description: groupName,
+                    icon: Layers,
+                    onSelect: () => openAssignment(session.id),
+                  },
                   {
                     key: 'rename',
                     label: 'Rename session',

@@ -3,10 +3,12 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import Sidebar from '../sidebar/view/Sidebar';
+import ConversationGroupDialogs from '../sidebar/view/subcomponents/ConversationGroupDialogs';
 import MainContent from '../main-content/view/MainContent';
 import CommandPalette from '../command-palette/CommandPalette';
 import { QuickSettingsPanel } from '../quick-settings-panel';
 import { useWebSocket } from '../../contexts/WebSocketContext';
+import { ConversationGroupsProvider, useConversationGroups } from '../../contexts/ConversationGroupsContext';
 import { PaletteOpsProvider, usePaletteOpsRegister } from '../../contexts/PaletteOpsContext';
 import { useDeviceSettings } from '../../hooks/useDeviceSettings';
 import { useSessionProtection } from '../../hooks/useSessionProtection';
@@ -43,7 +45,9 @@ const parseStartedAt = (value: unknown): number | undefined => {
 export default function AppContent() {
   return (
     <PaletteOpsProvider>
-      <AppContentInner />
+      <ConversationGroupsProvider>
+        <AppContentInner />
+      </ConversationGroupsProvider>
     </PaletteOpsProvider>
   );
 }
@@ -54,6 +58,20 @@ function AppContentInner() {
   const { t } = useTranslation('common');
   const { isMobile } = useDeviceSettings({ trackPWA: false });
   const { ws, sendMessage, subscribe } = useWebSocket();
+  const { refresh: refreshGroups } = useConversationGroups();
+
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const unsubscribe = subscribe((event) => {
+      if (!['session_upserted', 'websocket_reconnected'].includes(event.kind ?? '')) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => { void refreshGroups(); }, 500);
+    });
+    return () => {
+      unsubscribe();
+      if (timer) clearTimeout(timer);
+    };
+  }, [subscribe, refreshGroups]);
 
   const {
     processingSessions,
@@ -276,6 +294,22 @@ function AppContentInner() {
       />
 
       <QuickSettingsPanel />
+      <ConversationGroupDialogs
+        projects={sidebarSharedProps.projects}
+        selectedProject={selectedProject}
+        onCreated={(conversation, project) => {
+          handleProjectSelect(project);
+          registerOptimisticSession({
+            sessionId: conversation.sessionId,
+            provider: conversation.provider,
+            project,
+            summary: conversation.sessionName,
+          });
+          setActiveTab('chat');
+          navigate(`/session/${conversation.sessionId}`);
+          if (isMobile) setSidebarOpen(false);
+        }}
+      />
     </div>
   );
 }

@@ -7,6 +7,9 @@ The maintained customization branch is **`personal/cloudcli`**, based on upstrea
 
 ## Changes in this fork
 
+- **Conversation groups** organize chats across working folders. Move an existing
+  conversation into a group, or create a conversation in a group and choose its
+  working folder. Groups are saved per user in the self-hosted server's database.
 - Claude replies appear incrementally while they are generated. Each conversation
   has its own stream buffer, including when switching between conversations.
 - The model menu offers **Ultracode** for Claude model entries that support
@@ -21,6 +24,14 @@ are not an official Siteboon release. Upstream attribution and licensing are
 preserved in [NOTICE](NOTICE) and [LICENSE](LICENSE).
 
 ## 使用方式
+
+侧栏新增 **分组 / Groups** 视图，与原来的项目、对话视图并列。
+点击“新建分组”创建主题组，再从对话的 `…` 菜单选择“移到分组”。
+同一组可以包含多个工作文件夹里的对话；每个对话最多属于一个自定义组。
+在组内点击“新建会话”，选择已有的工作文件夹和助手，就会创建自动归组的
+空白对话。需要新文件夹时，先在项目视图添加。发送第一条消息才会调用助手。
+分组支持改名、搜索和分页，归档对话会显示标记；删除组不会删除对话。
+分组保存在当前 CloudCLI 服务器的数据库中，刷新或换浏览器后仍可使用。
 
 在聊天框旁打开模型菜单，选择支持该模式的 Claude 模型（例如 `Opus`、
 `Sonnet` 或 `Fable`），然后选择 **Ultracode**。它会自动组织多个子任务，

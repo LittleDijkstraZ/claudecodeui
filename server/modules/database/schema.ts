@@ -160,6 +160,30 @@ CREATE TABLE IF NOT EXISTS provider_models (
 );
 `;
 
+/** Used by database initialization and migrations to persist user-owned conversation groups. */
+export const CONVERSATION_GROUPS_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS conversation_groups (
+    id TEXT PRIMARY KEY NOT NULL,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL CHECK (length(trim(name)) BETWEEN 1 AND 80),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (id, user_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_conversation_groups_user ON conversation_groups(user_id, created_at, id);
+CREATE TABLE IF NOT EXISTS conversation_group_memberships (
+    user_id INTEGER NOT NULL,
+    session_id TEXT NOT NULL,
+    group_id TEXT NOT NULL,
+    PRIMARY KEY (user_id, session_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    FOREIGN KEY (group_id, user_id) REFERENCES conversation_groups(id, user_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_conversation_group_members ON conversation_group_memberships(group_id, user_id);
+CREATE INDEX IF NOT EXISTS idx_conversation_group_members_session ON conversation_group_memberships(session_id);
+`;
+
 export const INIT_SCHEMA_SQL = `
 -- Initialize authentication database
 PRAGMA foreign_keys = ON;

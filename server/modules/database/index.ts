@@ -1,4 +1,6 @@
 export { initializeDatabase } from '@/modules/database/init-db.js';
+// Used by Conversation Groups to persist groups and memberships through database-owned transactions.
+export { conversationGroupsDb } from '@/modules/database/repositories/conversation-groups.js';
 export { closeConnection, getConnection, getDatabasePath } from '@/modules/database/connection.js';
 export { apiKeysDb } from '@/modules/database/repositories/api-keys.js';
 export { appConfigDb } from '@/modules/database/repositories/app-config.js';

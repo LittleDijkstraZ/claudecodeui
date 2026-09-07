@@ -829,7 +829,9 @@ export function useProjectsState({
         const normalizedSession = normalizeSessionProvider(match);
         const shouldUpdateProject = selectedProject?.projectId !== project.projectId;
         const shouldUpdateSession =
-          selectedSession?.id !== sessionId || selectedSession.__provider !== normalizedSession.__provider;
+          selectedSession?.id !== sessionId
+          || selectedSession.__provider !== normalizedSession.__provider
+          || selectedSession.summary !== normalizedSession.summary;
 
         if (shouldUpdateProject) {
           setSelectedProject(project);
@@ -841,7 +843,12 @@ export function useProjectsState({
       }
     }
 
-    if (selectedSession?.id === sessionId) {
+    // Search/group rows can select a placeholder whose project is absent from
+    // the loaded sidebar. Matching the URL alone must not keep the last cwd.
+    if (selectedSession?.id === sessionId
+      && selectedProject
+      && selectedSession.__projectId === selectedProject.projectId
+      && typeof selectedSession.summary === 'string') {
       return;
     }
 
@@ -945,7 +952,7 @@ export function useProjectsState({
           : resolvedSession,
       );
     })();
-  }, [navigate, sessionId, projects, selectedProject, selectedSession?.id, selectedSession?.__provider]);
+  }, [navigate, sessionId, projects, selectedProject, selectedSession?.id, selectedSession?.__provider, selectedSession?.__projectId, selectedSession?.summary]);
 
   const handleProjectSelect = useCallback(
     (project: Project) => {

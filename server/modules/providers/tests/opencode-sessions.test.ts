@@ -298,7 +298,7 @@ test('OpenCode session synchronizer returns the app session id once provider map
   }
 });
 
-test('OpenCode session synchronizer adopts the pending app session before watcher sync creates a duplicate', { concurrency: false }, async () => {
+test('OpenCode indexing never adopts an empty draft by project path; runtime mapping merges the proven match', { concurrency: false }, async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-session-sync-race-'));
   const workspacePath = path.join(tempRoot, 'workspace');
   await mkdir(workspacePath, { recursive: true });
@@ -307,13 +307,21 @@ test('OpenCode session synchronizer adopts the pending app session before watche
   try {
     await createOpenCodeDatabase(tempRoot, workspacePath);
     await withIsolatedDatabase(() => {
-      sessionsDb.createAppSession('app-session-race', 'opencode', workspacePath);
+      sessionsDb.createAppSession('app-session-race', 'opencode', workspacePath, 'Initial message for actual run');
+      sessionsDb.createAppSession('empty-group-draft', 'opencode', workspacePath);
 
       const synchronizer = new OpenCodeSessionSynchronizer();
       return synchronizer.synchronizeFile(path.join(tempRoot, '.local', 'share', 'opencode', 'opencode.db')).then((sessionId) => {
-        assert.equal(sessionId, 'app-session-race');
-        assert.equal(sessionsDb.getAllSessions().length, 1);
+        assert.equal(sessionId, 'open-session-1');
+        assert.equal(sessionsDb.getAllSessions().length, 3);
+        assert.equal(sessionsDb.getSessionById('app-session-race')?.provider_session_id, null);
+        assert.equal(sessionsDb.getSessionById('empty-group-draft')?.provider_session_id, null);
+
+        sessionsDb.assignProviderSessionId('app-session-race', 'open-session-1');
+        assert.equal(sessionsDb.getAllSessions().length, 2);
         assert.equal(sessionsDb.getSessionById('app-session-race')?.provider_session_id, 'open-session-1');
+        assert.equal(sessionsDb.getSessionById('app-session-race')?.custom_name, 'Initial message for actual run');
+        assert.equal(sessionsDb.getSessionById('empty-group-draft')?.provider_session_id, null);
       });
     });
   } finally {

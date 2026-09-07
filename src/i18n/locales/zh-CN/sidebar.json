@@ -131,7 +131,9 @@
     "matches_one": "{{count}} 个匹配",
     "matches_other": "{{count}} 个匹配",
     "projectsScanned_one": "{{count}} 个项目已扫描",
-    "projectsScanned_other": "{{count}} 个项目已扫描"
+    "projectsScanned_other": "{{count}} 个项目已扫描",
+    "modeGroups": "分组",
+    "groupsPlaceholder": "搜索分组内的会话…"
   },
   "deleteConfirmation": {
     "deleteProject": "移除项目",
@@ -143,5 +145,41 @@
     "deleteAllData": "永久删除所有数据",
     "allConversationsDeleted": "项目将从侧边栏中移除。您的文件、记忆和会话数据将会保留。",
     "cannotUndo": "您可以稍后重新添加此项目。"
+  },
+  "groups": {
+    "title": "会话分组",
+    "create": "新建分组",
+    "rename": "重命名分组",
+    "delete": "删除分组",
+    "deleteDescription": "删除“{{name}}”分组？其中的会话仍会保留在“项目”和“对话”中。",
+    "name": "分组名称",
+    "namePlaceholder": "例如：资料研究",
+    "saving": "保存中…",
+    "saveFailed": "无法保存，请重试。",
+    "loadFailed": "无法加载分组。",
+    "retry": "重试",
+    "loading": "正在加载分组…",
+    "emptyTitle": "整理你的会话",
+    "emptyDescription": "创建分组后，可以通过会话旁的分组按钮，添加任意文件夹中的会话。",
+    "choose": "选择分组",
+    "manage": "管理分组",
+    "manageNamed": "管理分组“{{name}}”",
+    "acrossFolders": "汇集不同工作文件夹中的会话",
+    "newConversation": "新建会话",
+    "loadingConversations": "正在加载会话…",
+    "noMatches": "没有匹配的会话",
+    "noConversations": "分组中还没有会话",
+    "trySearch": "试试其他标题或文件夹名称。",
+    "addHint": "在这里新建会话，或从“项目”“对话”中添加已有会话。",
+    "conversationCount_one": "{{count}} 个会话",
+    "conversationCount_other": "{{count}} 个会话",
+    "archived": "已归档",
+    "moveConversation": "更改分组",
+    "moveNamed": "更改“{{name}}”的分组",
+    "conversationsFailed": "无法加载会话。",
+    "loadMore": "加载更多会话",
+    "browseViews": "会话浏览方式",
+    "running": "运行中",
+    "archive": "归档"
   }
 }

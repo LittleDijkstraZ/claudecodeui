@@ -1,8 +1,9 @@
-import { ChevronRight, MessageSquare } from 'lucide-react';
+import { ChevronRight, Layers, MessageSquare, MoreHorizontal } from 'lucide-react';
 import type { MouseEvent } from 'react';
 import type { TFunction } from 'i18next';
 
-import { Button } from '../../../../shared/view/ui';
+import { ActionMenu, Button } from '../../../../shared/view/ui';
+import { useConversationGroups } from '../../../../contexts/ConversationGroupsContext';
 import { cn } from '../../../../lib/utils';
 import type { ProjectSession } from '../../../../types/app';
 import type { RecentConversationListItem } from '../../types/types';
@@ -58,6 +59,7 @@ export default function SidebarRecentConversations({
   onRetry,
   t,
 }: SidebarRecentConversationsProps) {
+  const { openAssignment, memberships, groups } = useConversationGroups();
   if (isLoading && conversations.length === 0) {
     return <RecentConversationSkeleton />;
   }
@@ -117,13 +119,13 @@ export default function SidebarRecentConversations({
           };
 
           return (
+            <div key={conversation.sessionId} className="group flex min-w-0 items-center">
             <a
-              key={conversation.sessionId}
               href={`/session/${conversation.sessionId}`}
               onClick={handleClick}
               data-testid="recent-conversation-row"
               className={cn(
-                'group flex min-w-0 items-center gap-2 rounded-lg px-2 py-2 text-left transition-colors',
+                'flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-2 text-left transition-colors',
                 isSelected
                   ? 'bg-primary/10 text-foreground'
                   : 'text-foreground hover:bg-accent/60',
@@ -155,6 +157,24 @@ export default function SidebarRecentConversations({
 
               <ChevronRight className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground/40 transition-transform group-hover:translate-x-0.5 group-hover:text-muted-foreground" />
             </a>
+              <ActionMenu
+                label={t('conversationGroups.moveToGroup', { ns: 'common' })}
+                ariaLabel={t('conversationGroups.optionsFor', { ns: 'common', title: conversation.sessionTitle })}
+                icon={MoreHorizontal}
+                iconOnly
+                portal
+                variant="ghost"
+                size="icon"
+                triggerClassName="h-8 w-8 shrink-0 text-muted-foreground"
+                items={[{
+                  key: 'group',
+                  label: t('conversationGroups.moveToGroup', { ns: 'common' }),
+                  description: groups.find((group) => group.id === memberships[conversation.sessionId])?.name,
+                  icon: Layers,
+                  onSelect: () => openAssignment(conversation.sessionId),
+                }]}
+              />
+            </div>
           );
         })}
       </div>

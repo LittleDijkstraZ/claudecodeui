@@ -113,19 +113,11 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
     }
 
     const fallbackTitle = 'Untitled OpenCode Session';
-    const pendingAppSession = sessionsDb.getSessionByProviderSessionId(sessionId)
-      ?? sessionsDb.getSessionById(sessionId)
-      ?? sessionsDb.findLatestPendingAppSession(this.provider, projectPath);
-    if (pendingAppSession && !pendingAppSession.provider_session_id) {
-      // Slow networks can let the sqlite watcher index opencode.db before the
-      // runtime reports its provider id back through the websocket mapping.
-      // Bind that id to the fresh app row first so the watcher does not create
-      // a temporary provider-id sidebar entry for the same session.
-      sessionsDb.assignProviderSessionId(pendingAppSession.session_id, sessionId);
-    }
-
     // App-created sessions are keyed by an app id, so disk-discovered provider
-    // ids must be resolved through the provider-id mapping first.
+    // ids must be resolved through the provider-id mapping first. A shared
+    // project path is not evidence that a transcript belongs to an empty draft
+    // or a concurrent run. Only the runtime may establish that mapping; if the
+    // watcher wins the race, assignProviderSessionId merges its row afterward.
     const existingSession = sessionsDb.getSessionByProviderSessionId(sessionId)
       ?? sessionsDb.getSessionById(sessionId);
     const existingName = existingSession?.custom_name;

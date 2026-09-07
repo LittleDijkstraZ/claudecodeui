@@ -14,5 +14,6 @@ and are incorporated into this work as permitted by GPL-3.0 Section 13.
 
 Personal fork modifications, 2026-09-07:
 Incremental Claude output, per-session stream buffering, and Ultracode workflow
-integration are maintained at https://github.com/LittleDijkstraZ/claudecodeui.
+integration, plus persistent conversation groups across project directories,
+are maintained at https://github.com/LittleDijkstraZ/claudecodeui.
 This modified version is not an official Siteboon release.
