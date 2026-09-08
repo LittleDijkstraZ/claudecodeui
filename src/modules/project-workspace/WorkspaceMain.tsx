@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
-import { PanelRightClose, PanelRightOpen, Settings } from 'lucide-react';
+import { PanelRightClose, PanelRightOpen, Settings, SlidersHorizontal } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { ChatInterface, AgentsPanel } from '@/modules/chat';
@@ -122,6 +122,7 @@ function WorkspaceMain({
     <div className={`flex min-h-[52px] min-w-0 shrink-0 items-center gap-1 border-b border-border/60 bg-background ${hubControlsPanel ? 'px-14' : 'px-2'}`} data-testid="workspace-header">
       {!window.__CLOUDCLI_EMBEDDED__ && isMobile && selectedProject && <MobileMenuButton onMenuClick={onMenuClick} compact />}
       <div className="min-w-0 flex-1 px-1">{workspaceIdentity}</div>
+      <button type="button" onClick={() => panelActions?.togglePanel('preferences')} aria-label={t('workspacePanel.preferences', { defaultValue: 'Preferences' })} title={`${machineLabel} · ${t('workspacePanel.preferences', { defaultValue: 'Preferences' })}`} aria-pressed={Boolean(panel?.open && panel.tab === 'preferences')} className="flex h-11 min-h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"><SlidersHorizontal className="h-[18px] w-[18px]" /></button>
       <button type="button" onClick={() => onShowSettings()} aria-label={`${machineLabel} · ${t('workspacePanel.machineSettings', { defaultValue: 'Machine settings' })}`} title={`${machineLabel} · ${t('workspacePanel.machineSettings', { defaultValue: 'Machine settings' })}`} aria-haspopup="dialog" aria-expanded={settingsOpen} className="flex h-11 min-h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"><Settings className="h-[18px] w-[18px]" /></button>
       {!hubControlsPanel && !mainCovered && <button type="button" onClick={() => panelActions?.setPanelOpen(!panel?.open)} aria-label={t(panel?.open ? 'workspacePanel.collapse' : 'workspacePanel.open', { defaultValue: panel?.open ? 'Collapse panel; keep work running' : 'Open workspace panel' })} title={t(panel?.open ? 'workspacePanel.collapse' : 'workspacePanel.open', { defaultValue: panel?.open ? 'Collapse panel; keep work running' : 'Open workspace panel' })} aria-expanded={Boolean(panel?.open)} className="flex h-11 min-h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">{panel?.open ? <PanelRightClose className="h-[18px] w-[18px]" /> : <PanelRightOpen className="h-[18px] w-[18px]" />}</button>}
     </div>

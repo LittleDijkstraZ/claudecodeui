@@ -34,7 +34,7 @@ beforeEach(() => {
 afterEach(() => { delete window.__CLOUDCLI_EMBEDDED__; delete window.__REMOTE_NAME__; });
 function ModalCoverage({ open }: { open: boolean }) { useModalPresence(open); return null; }
 
-test('tools live only in the right panel while Settings and the panel toggle stay in the single top header', () => {
+test('tools live only in the right panel while Preferences, Settings and the panel toggle stay in the single top header', () => {
   render(workspace());
   expect(screen.getAllByTestId('workspace-header')).toHaveLength(1);
   expect(screen.queryByTestId('workspace-tool-bar')).toBeNull();
@@ -46,7 +46,9 @@ test('tools live only in the right panel while Settings and the panel toggle sta
   fireEvent.click(within(toolbar).getByRole('button', { name: 'Alpha · Machine settings' }));
   expect(settings).toHaveBeenCalledTimes(1);
   expect(screen.queryByTestId('inline-preferences')).toBeNull();
-  fireEvent.click(within(toolbar).getByRole('button', { name: 'Open workspace panel' }));
+  fireEvent.click(within(toolbar).getByRole('button', { name: 'Preferences' }));
+  expect(screen.getByTestId('inline-preferences')).toBeTruthy();
+  expect(within(panel).queryByRole('button', { name: 'Preferences' })).toBeNull();
   const tools = within(panel).getAllByRole('tab');
   expect(tools.map(tool => tool.getAttribute('aria-label'))).toEqual(['tabs.shell', 'tabs.files', 'workspacePanel.sourceControl', 'workspacePanel.agents', 'tabs.browser']);
   expect(panel.classList.contains('hidden')).toBe(false);
@@ -63,7 +65,7 @@ test('tools live only in the right panel while Settings and the panel toggle sta
   expect(panel.classList.contains('hidden')).toBe(true);
   fireEvent.click(within(toolbar).getByRole('button', { name: 'Open workspace panel' }));
   expect(panel.classList.contains('hidden')).toBe(false);
-  fireEvent.click(screen.getByRole('button', { name: 'Preferences' }));
+  fireEvent.click(within(toolbar).getByRole('button', { name: 'Preferences' }));
   expect(screen.getByTestId('inline-preferences')).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Alpha · Machine settings' }));
   expect(settings).toHaveBeenCalledTimes(2);
@@ -143,13 +145,13 @@ test('the top-right toggle stays visible while maximizing, collapsing and restor
   fireEvent.click(within(header).getByRole('button', { name: 'Open workspace panel' }));
   fireEvent.click(screen.getByRole('tab', { name: 'tabs.shell' }));
   const terminal = screen.getByLabelText('retained terminal');
-  fireEvent.click(screen.getByRole('button', { name: 'Maximize panel' }));
+  fireEvent.click(within(screen.getByTestId('workspace-panel-tools')).getByRole('button', { name: 'Maximize panel' }));
   const toggle = within(header).getByRole('button', { name: 'Collapse panel; keep work running' });
   expect(toggle.getAttribute('aria-expanded')).toBe('true');
   fireEvent.click(toggle);
   fireEvent.click(within(header).getByRole('button', { name: 'Open workspace panel' }));
   fireEvent.click(screen.getByRole('button', { name: 'Maximize panel' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Restore split view' }));
+  fireEvent.click(within(screen.getByTestId('workspace-panel-tools')).getByRole('button', { name: 'Restore split view' }));
   expect(screen.getByLabelText('retained terminal')).toBe(terminal);
   expect(within(header).getByRole('button', { name: 'Collapse panel; keep work running' })).toBeTruthy();
 });

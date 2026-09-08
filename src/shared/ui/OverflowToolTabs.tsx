@@ -56,7 +56,7 @@ export function OverflowToolTabs({ tabs, activeTab, onSelect, label, moreLabel }
     const tab = shown[next];
     if (tab && tab.id !== activeTab) onSelect(tab.id);
   };
-  return <div ref={root} className="relative flex w-full min-w-0 items-center justify-end gap-1" data-testid="overflow-tool-tabs" data-appearance={appearance}>
+  return <div ref={root} className="relative flex w-full min-w-0 items-center justify-start gap-1" data-testid="overflow-tool-tabs" data-appearance={appearance}>
     <div aria-hidden="true" className="pointer-events-none invisible absolute inset-0 overflow-hidden"><div ref={measures} className="flex w-max gap-1">
       {tabs.map(tab => <span key={tab.id} className={TAB_CLASS}>{tab.icon}{showLabels && <span className="max-w-40 truncate">{tab.label}</span>}</span>)}
     </div></div>
