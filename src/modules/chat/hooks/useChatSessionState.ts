@@ -445,8 +445,15 @@ export function useChatSessionState({
     return all;
   }, [storeMessages, pendingUserMessage]);
 
+  // Unmatched recovered copies have a separate display section and must not
+  // consume the transcript's visible tail or affect navigation offsets.
+  const transcriptMessages = useMemo(
+    () => chatMessages.filter(message => !message.isUnlocatedLocalCopy),
+    [chatMessages],
+  );
+
   const revealMessage = useCallback((messageKey: string) => {
-    const index = chatMessages.findIndex((message) => getIntrinsicMessageKey(message) === messageKey);
+    const index = transcriptMessages.findIndex((message) => getIntrinsicMessageKey(message) === messageKey);
     if (index < 0) return false;
     // A summary can point outside the last 100 rendered rows. Reveal only the
     // already-loaded range; fetching history here would fight scroll restoration.
@@ -457,9 +464,9 @@ export function useChatSessionState({
     messageRevealActiveRef.current = true;
     setSearchTarget(null);
     setIsUserScrolledUp(true);
-    setVisibleMessageCount((count) => Math.max(count, chatMessages.length - index));
+    setVisibleMessageCount((count) => Math.max(count, transcriptMessages.length - index));
     return true;
-  }, [chatMessages]);
+  }, [transcriptMessages]);
 
   const finishMessageReveal = useCallback(() => {
     messageRevealActiveRef.current = false;
@@ -974,9 +981,9 @@ export function useChatSessionState({
       // Resolve the target against the loaded transcript rather than the DOM.
       // The store is the freshest source here: the `fetchFromServer` above has
       // landed but `chatMessages` is from the render that scheduled this effect.
-      const messagesForSearch = activeSessionIdRef.current
+      const messagesForSearch = (activeSessionIdRef.current
         ? normalizedToChatMessages(sessionStore.getMessages(activeSessionIdRef.current))
-        : chatMessages;
+        : transcriptMessages).filter(message => !message.isUnlocatedLocalCopy);
       const targetIndex = findSearchTargetIndex(messagesForSearch, target);
       if (targetIndex < 0) {
         // The target is not in the transcript at all. Scrolling somewhere
@@ -1063,9 +1070,9 @@ export function useChatSessionState({
   }, [selectedSession?.id, setTokenBudget]);
 
   const visibleMessages = useMemo(() => {
-    if (chatMessages.length <= visibleMessageCount) return chatMessages;
-    return chatMessages.slice(-visibleMessageCount);
-  }, [chatMessages, visibleMessageCount]);
+    if (transcriptMessages.length <= visibleMessageCount) return transcriptMessages;
+    return transcriptMessages.slice(-visibleMessageCount);
+  }, [transcriptMessages, visibleMessageCount]);
 
   useEffect(() => {
     if (!isActive) return;

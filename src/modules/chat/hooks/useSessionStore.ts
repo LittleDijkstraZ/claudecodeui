@@ -144,34 +144,26 @@ function compareMessagesChronologically(a: NormalizedMessage, b: NormalizedMessa
 }
 
 /**
- * The time a row sorts by, which is its own except for one case.
- *
- * The optimistic echo of an edited message is the row whose clock cannot be
- * trusted against the rows around it. Providers that rewind by branching —
- * Codex has no way to resume a transcript partway, so an edit copies the kept
- * history into a new one — write the copy with the timestamps of the copy. So
- * every turn that survived the cut comes back from the next refresh stamped a
- * moment *after* the replacement was typed, and the message the user just sent
- * jumps to the top of the conversation.
- *
- * A replacement is by definition the newest thing in the conversation, so it
- * is sorted as such instead of by what the clock said when it was typed.
- */
-function readSortTime(message: NormalizedMessage, replacementFloor: number): number {
-  const time = readMessageTime(message) ?? 0;
-  return message.replacesAnchorId ? Math.max(time, replacementFloor) : time;
-}
-
-/**
- * Count how many user turns precede `message` in a chronologically merged view
- * of server + realtime rows. Used to match a realtime row to the correct turn
- * on disk when several turns share identical assistant text.
+ * Resolve a synthetic live reply to its saved user turn. Claude requires an
+ * exact observed identity; legacy providers retain their chronological fallback.
  */
 function getUserTurnOrdinalBefore(
   message: NormalizedMessage,
   serverMessages: NormalizedMessage[],
   realtimeMessages: NormalizedMessage[],
-): number {
+): number | null {
+  if (message.provider === 'claude') {
+    // Native append order wins over clocks. Only a shared user/native identity
+    // can place a synthetic stream in a saved turn; equal prose is not enough.
+    const messageIndex = realtimeMessages.findIndex(candidate => candidate.id === message.id);
+    const preceding = realtimeMessages.slice(0, messageIndex < 0 ? 0 : messageIndex);
+    const user = [...preceding].reverse().find(candidate => candidate.kind === 'text' && candidate.role === 'user' && !candidate.isUnlocatedLocalCopy);
+    const anchorIndex = user
+      ? serverMessages.findIndex(candidate => hasSameUserMessageIdentity(user, candidate))
+      : serverMessages.findIndex(candidate => candidate.id === preceding.at(-1)?.id);
+    if (anchorIndex < 0) return null;
+    return serverMessages.slice(0, anchorIndex + 1).filter(candidate => candidate.kind === 'text' && candidate.role === 'user').length - 1;
+  }
   const messageTime = readMessageTime(message);
   let userCount = 0;
 
@@ -235,13 +227,16 @@ function isAssistantTextEchoedInSameTurnOnServer(
   serverMessages: NormalizedMessage[],
   realtimeMessages: NormalizedMessage[],
 ): boolean {
+  // Native UUIDs already distinguish independent recorded answers, including
+  // repeated words. Only synthetic Claude stream rows need a prose fallback.
+  if (message.provider === 'claude' && message.kind !== 'stream_delta' && !message.id.startsWith('text_')) return false;
   const assistantText = (message.content || '').trim();
   if (!assistantText) {
     return false;
   }
 
   const turnOrdinal = getUserTurnOrdinalBefore(message, serverMessages, realtimeMessages);
-  const turnRange = findServerTurnRangeByOrdinal(serverMessages, turnOrdinal);
+  const turnRange = turnOrdinal === null ? null : findServerTurnRangeByOrdinal(serverMessages, turnOrdinal);
   if (!turnRange) {
     return false;
   }
@@ -262,11 +257,17 @@ function isAssistantTextEchoedInSameTurnOnServer(
  * A persisted-tail refresh reconciles realtime. Collapse same-text assistant rows and
  * stream_placeholder → text when content matches.
  */
-function dedupeAdjacentAssistantEchoes(merged: NormalizedMessage[]): NormalizedMessage[] {
+function dedupeAdjacentAssistantEchoes(merged: NormalizedMessage[], serverIds: ReadonlySet<string> = new Set()): NormalizedMessage[] {
   const out: NormalizedMessage[] = [];
   for (const m of merged) {
     const prev = out[out.length - 1];
     if (prev) {
+      const isSynthetic = (row: NormalizedMessage) => row.kind === 'stream_delta' || row.id.startsWith('text_');
+      if ((serverIds.has(prev.id) && serverIds.has(m.id))
+        || (prev.provider === 'claude' && m.provider === 'claude' && !isSynthetic(prev) && !isSynthetic(m))) {
+        out.push(m);
+        continue;
+      }
       if (prev.kind === 'stream_delta' && m.kind === 'text' && m.role === 'assistant') {
         const ps = (prev.content || '').trim();
         const ms = (m.content || '').trim();
@@ -311,10 +312,12 @@ function pruneRealtimeSupersededByServer(
   const reconciledRealtimeMessages = new Set(removeOptimisticUserEchoes(serverMessages, realtimeMessages));
 
   return realtimeMessages.filter((message) => {
-    // A REST response reflects an earlier point in time. New or replaced WS
-    // rows received during its request must survive even with the same ID.
-    if (realtimeAtRequestStart && !realtimeAtRequestStart.has(message)) return true;
+    // An exact persisted user identity retires its copy even when a newer
+    // receipt arrived during this read; receipt replay cannot undo confirmation.
     if (!reconciledRealtimeMessages.has(message)) return false;
+    // A REST response reflects an earlier point in time. New or replaced WS
+    // output received during its request must survive even with the same ID.
+    if (realtimeAtRequestStart && !realtimeAtRequestStart.has(message)) return true;
     if (serverIds.has(message.id)) {
       return false;
     }
@@ -347,9 +350,9 @@ function pruneRealtimeSupersededByServer(
   });
 }
 
-function computeMerged(server: NormalizedMessage[], realtime: NormalizedMessage[]): NormalizedMessage[] {
+function computeMerged(server: NormalizedMessage[], realtime: NormalizedMessage[], previous: NormalizedMessage[]): NormalizedMessage[] {
   if (realtime.length === 0) {
-    return dedupeAdjacentAssistantEchoes(server);
+    return server;
   }
   if (server.length === 0) {
     return dedupeAdjacentAssistantEchoes(realtime);
@@ -369,22 +372,48 @@ function computeMerged(server: NormalizedMessage[], realtime: NormalizedMessage[
   });
 
   if (extra.length === 0) {
-    return dedupeAdjacentAssistantEchoes(serverWithLiveUpdates);
+    return dedupeAdjacentAssistantEchoes(serverWithLiveUpdates, serverIds);
   }
 
-  // Interleave by timestamp so live rows stay with their turn instead of
-  // piling up at the bottom after every refresh. Sorting is stable and the
-  // live rows come second, so a replacement that ties with the newest server
-  // row still lands after it.
-  const newestServerTime = server.reduce(
-    (newest, message) => Math.max(newest, readMessageTime(message) ?? 0),
-    0,
-  );
-  return dedupeAdjacentAssistantEchoes(
-    [...serverWithLiveUpdates, ...extra].sort(
-      (a, b) => readSortTime(a, newestServerTime) - readSortTime(b, newestServerTime),
-    ),
-  );
+  // The API owns transcript order. Browser/receipt clocks can be hours apart,
+  // and even native timestamps can move backwards after a resume or copy.
+  // Place live rows before the next exact saved row already observed alongside
+  // them. Otherwise they remain at the live tail; never re-sort saved history.
+  const serverIndex = new Map(server.map((message, index) => [message.id, index]));
+  const extraById = new Map(extra.map(message => [message.id, message]));
+  const observed = [...previous, ...reconciledRealtime];
+  const observedIds = new Set<string>();
+  const sequence = observed.filter(message => {
+    if (observedIds.has(message.id)) return false;
+    observedIds.add(message.id);
+    return serverIndex.has(message.id) || extraById.has(message.id);
+  });
+  const beforeServer = new Map<number, NormalizedMessage[]>();
+  const retainedCopies: NormalizedMessage[] = [];
+  let nextServerIndex = server.length;
+  for (let index = sequence.length - 1; index >= 0; index--) {
+    const message = sequence[index];
+    const savedIndex = serverIndex.get(message.id);
+    if (savedIndex !== undefined) {
+      nextServerIndex = savedIndex;
+      continue;
+    }
+    const live = extraById.get(message.id)!;
+    if (live.isUnlocatedLocalCopy) {
+      retainedCopies.unshift(live);
+      continue;
+    }
+    const bucket = beforeServer.get(nextServerIndex) ?? [];
+    bucket.unshift(live);
+    beforeServer.set(nextServerIndex, bucket);
+  }
+  const ordered = serverWithLiveUpdates.flatMap((message, index) => [
+    ...(beforeServer.get(index) ?? []), message,
+  ]);
+  ordered.push(...(beforeServer.get(server.length) ?? []));
+  // Retained copies remain available to the UI in their own labelled section,
+  // without acting as transcript turns or changing the order of native rows.
+  return [...dedupeAdjacentAssistantEchoes(ordered, serverIds), ...retainedCopies];
 }
 
 /**
@@ -397,7 +426,7 @@ function recomputeMergedIfNeeded(slot: SessionSlot): boolean {
   }
   slot._lastServerRef = slot.serverMessages;
   slot._lastRealtimeRef = slot.realtimeMessages;
-  slot.merged = computeMerged(slot.serverMessages, slot.realtimeMessages);
+  slot.merged = computeMerged(slot.serverMessages, slot.realtimeMessages, slot.merged);
   return true;
 }
 
@@ -422,6 +451,9 @@ function olderPagePrecedesCachedHistory(
   const olderNewest = olderMessages[olderMessages.length - 1];
   const cachedOldest = cachedMessages[0];
   if (!olderNewest || !cachedOldest) return true;
+  // Claude pages already have authoritative append order; a clock adjustment
+  // must not make an otherwise contiguous preceding page impossible to load.
+  if (olderNewest.provider === 'claude' && cachedOldest.provider === 'claude') return true;
 
   const olderTime = readMessageTime(olderNewest);
   const cachedTime = readMessageTime(cachedOldest);
@@ -703,11 +735,16 @@ export function useSessionStore(userId?: string | number | null) {
             );
             changed = changed || latestResult.changed;
             if (!latestResult.applied) break;
+            pendingUsers.confirm(sessionId, slot.serverMessages);
             continue;
           }
 
           slot.serverMessages = olderMerge.messages;
           pendingUsers.confirm(sessionId, data.messages);
+          // Retire the in-memory copy as well as its storage entry. Otherwise
+          // reopening the latest page hides the older native match and makes
+          // this already-confirmed copy reappear in the retained section.
+          slot.realtimeMessages = removeOptimisticUserEchoes(slot.serverMessages, slot.realtimeMessages);
           slot.hasMore = data.hasMore;
           slot.total = data.total;
           slot.offset = slot.serverMessages.length;
@@ -799,6 +836,7 @@ export function useSessionStore(userId?: string | number | null) {
         responseMessageId: normalizedMessage.responseMessageId || previous.responseMessageId,
         runId: normalizedMessage.runId || previous.runId,
         retriedAsClientMessageId: previous.retriedAsClientMessageId || normalizedMessage.retriedAsClientMessageId,
+        isUnlocatedLocalCopy: normalizedMessage.delivery ? previous.isUnlocatedLocalCopy : undefined,
         delivery: normalizedMessage.delivery ? (keepDelivery ? previous.delivery : normalizedMessage.delivery) : undefined,
         deliveryError: normalizedMessage.delivery ? (keepDelivery ? previous.deliveryError : normalizedMessage.deliveryError) : undefined,
       };

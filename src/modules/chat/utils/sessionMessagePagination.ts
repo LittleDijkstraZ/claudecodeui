@@ -133,9 +133,9 @@ export function planLatestPageBridge(
 }
 
 /**
- * Returns true once a backward bridge has reached the time range already
- * represented by the cached tail. This prevents a rewritten transcript with
- * no semantic ID overlap from walking backward through old history forever.
+ * Uses a time boundary for legacy provider readers that sort by creation time.
+ * Claude history follows native append order: queued input creation time can
+ * precede its parent answer, so only row overlap or the first page ends its bridge.
  */
 export function hasReachedCachedTailTimeBoundary(
   cachedMessages: NormalizedMessage[],
@@ -144,6 +144,7 @@ export function hasReachedCachedTailTimeBoundary(
   const cachedNewest = cachedMessages[cachedMessages.length - 1];
   const fetchedOldest = fetchedMessages[0];
   if (!cachedNewest || !fetchedOldest) return false;
+  if (cachedNewest.provider === 'claude' && fetchedOldest.provider === 'claude') return false;
 
   const cachedNewestTime = Date.parse(cachedNewest.timestamp);
   const fetchedOldestTime = Date.parse(fetchedOldest.timestamp);

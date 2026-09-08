@@ -589,6 +589,19 @@ time cannot silently reuse stale history.
 
 User sends carry a stable client UUID. Native replay receipts and verified transcript ancestry associate the UI copy with its recorded message; identical text is never a deduplication key. Admission means queued, while a correlated native receipt means delivered. Process exit, failed preparation, and reconnect without a live execution settle unconfirmed sends as unconfirmed, with an explicit manual retry. No automatic retry starts another query or stops background work. The outbox retains attachments and original branch identity; removing a browser copy does not delete native history.
 
+Claude history keeps the native transcript's append order after branch filtering.
+A queued prompt's creation time can precede the answer it follows, so timestamps
+remain display metadata rather than a reason to reorder history or reject an
+older page. Live rows use observed row order and exact saved identities.
+
+Reloaded browser copies whose native position is not present in the loaded page
+appear in a separate, collapsed retained-copies section. They do not reorder
+the latest page, consume its visible-row budget, or create Review turn boundaries.
+Loading a matching older page retires the copy by exact identity; loading the
+entire conversation is not required to show the latest messages correctly.
+Unmatched copies keep their original text, delivery state and manual actions;
+this display repair never resends them or rewrites Claude's transcript.
+
 Rewind previews its target and effects on background work, queued drafts, and scheduled messages. The original native branch remains available. The commit transaction isolates old queued/scheduled work on that branch, and late saves or already-claimed dispatchers cannot silently feed it into the new branch. Active execution conflicts are reported rather than stopped automatically. File recovery still covers only recorded native checkpoints, not arbitrary shell, database, or external side effects.
 
 The Agents panel includes Workflows, with recorded task IDs, progress, final results, duration where known, and a link to the originating tool call. An old launch receipt is not proof a task is still running; unverified state is explicit. Inspecting a task does not issue resume or stop commands. Only foreground generation drives the main composer timer.

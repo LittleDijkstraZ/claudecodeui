@@ -137,8 +137,16 @@ function ChatMessagesPane({
 }: ChatMessagesPaneProps) {
   const { t } = useTranslation('chat');
   const lazyRows = useLazyRowObserver(scrollContainerRef);
+  const retainedLocalMessages = useMemo(
+    () => chatMessages.filter(message => message.isUnlocatedLocalCopy),
+    [chatMessages],
+  );
+  const transcriptMessages = useMemo(
+    () => chatMessages.filter(message => !message.isUnlocatedLocalCopy),
+    [chatMessages],
+  );
   const groupedVisibleMessages = useMemo(
-    () => groupConsecutiveTools(visibleMessages, Boolean(showThinking)),
+    () => groupConsecutiveTools(visibleMessages.filter(message => !message.isUnlocatedLocalCopy), Boolean(showThinking)),
     [visibleMessages, showThinking],
   );
 
@@ -187,7 +195,7 @@ function ChatMessagesPane({
         <div className="pointer-events-none sticky right-4 top-3 z-10 mb-2 flex justify-end sm:px-4">
           <div className="pointer-events-auto">
             <ChatExportMenu
-              messages={chatMessages}
+              messages={transcriptMessages}
               sessionTitle={selectedSession?.summary || selectedSession?.title}
               provider={provider}
               selectedProject={selectedProject}
@@ -255,9 +263,9 @@ function ChatMessagesPane({
           />
 
           {/* Legacy message count indicator (for non-paginated view) */}
-          {!hasMoreMessages && chatMessages.length > visibleMessageCount && (
+          {!hasMoreMessages && transcriptMessages.length > visibleMessageCount && (
             <div className="border-b border-gray-200 py-2 text-center text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
-              {t('session.messages.showingLast', { count: visibleMessageCount, total: chatMessages.length })} |
+              {t('session.messages.showingLast', { count: visibleMessageCount, total: transcriptMessages.length })} |
               <button className="ml-1 text-blue-600 underline hover:text-blue-700" onClick={loadEarlierMessages}>
                 {t('session.messages.loadEarlier')}
               </button>
@@ -345,6 +353,36 @@ function ChatMessagesPane({
           })()}
         </>
       )}
+        {retainedLocalMessages.length > 0 && (
+          <details className="rounded-lg border border-border bg-muted/30 p-3 text-sm" data-testid="retained-local-messages">
+            <summary className="cursor-pointer rounded px-1 py-2 font-medium focus-visible:outline focus-visible:outline-2">
+              {t('message.delivery.retainedCopies', { count: retainedLocalMessages.length, defaultValue: '{{count}} retained local message copies' })}
+            </summary>
+            <p className="px-1 pb-3 text-muted-foreground">
+              {t('message.delivery.unlocatedHint', { defaultValue: 'These copies have not been matched to the loaded conversation history. Their position is unknown, so they are shown separately. They will not be sent again automatically.' })}
+            </p>
+            <div className="space-y-3">
+              {retainedLocalMessages.map(message => (
+                <div key={message.clientMessageId ?? message.id as string} data-retained-message-id={message.clientMessageId}>
+                  <MessageComponent
+                    message={message}
+                    prevMessage={null}
+                    createDiff={createDiff}
+                    onFileOpen={onFileOpen}
+                    onShowSettings={onShowSettings}
+                    onGrantToolPermission={onGrantToolPermission}
+                    showRawParameters={showRawParameters}
+                    showThinking={showThinking}
+                    selectedProject={selectedProject}
+                    provider={provider}
+                    onDismissPendingMessage={onDismissPendingMessage}
+                    onRetryPendingMessage={onRetryPendingMessage}
+                  />
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
       </div>
     </div>
   );

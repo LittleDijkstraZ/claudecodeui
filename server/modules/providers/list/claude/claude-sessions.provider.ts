@@ -512,20 +512,21 @@ async function getSessionMessages(
       }
     }
 
-    const sortedMessages = messages
-      .filter((message) => !foldedNotificationUuids.has(String(message.uuid ?? '')))
-      .sort(
-      (a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime(),
-    );
-    const total = sortedMessages.length;
+    // readTranscriptRows and the branch filter preserve native append order.
+    // Queued prompts retain their creation timestamp even when Claude consumes
+    // them after a later-timestamped answer. Sorting by time would move the
+    // prompt ahead of its saved parent and change turn boundaries on reload.
+    const orderedMessages = messages
+      .filter((message) => !foldedNotificationUuids.has(String(message.uuid ?? '')));
+    const total = orderedMessages.length;
 
     if (limit === null) {
-      return sortedMessages;
+      return orderedMessages;
     }
 
     const startIndex = Math.max(0, total - offset - limit);
     const endIndex = total - offset;
-    const paginatedMessages = sortedMessages.slice(startIndex, endIndex);
+    const paginatedMessages = orderedMessages.slice(startIndex, endIndex);
     const hasMore = startIndex > 0;
 
     return {

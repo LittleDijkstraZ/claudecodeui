@@ -300,7 +300,9 @@
       "retry": "Retry as new message",
       "retryHint": "Delivery was not confirmed. Review the conversation first; retrying sends a new message.",
       "retried": "Retried as a new message",
-      "retriedHint": "Follow the new message below for delivery status. This original copy will not be retried again."
+      "retriedHint": "Follow the new message below for delivery status. This original copy will not be retried again.",
+      "retainedCopies": "{{count}} retained local message copies",
+      "unlocatedHint": "These copies have not been matched to the loaded conversation history. Their position is unknown, so they are shown separately. They will not be sent again automatically."
     }
   },
   "export": {

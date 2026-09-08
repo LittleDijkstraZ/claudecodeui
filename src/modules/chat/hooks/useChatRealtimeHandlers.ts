@@ -150,6 +150,7 @@ export function useChatRealtimeHandlers({
           images: Array.isArray(msg.images) ? msg.images as NormalizedMessage['images'] : undefined,
           files: Array.isArray(msg.files) ? msg.files as NormalizedMessage['files'] : undefined,
           delivery,
+          isUnlocatedLocalCopy: true,
           deliveryError: typeof msg.error === 'string' ? msg.error : undefined,
         });
       }

@@ -670,3 +670,41 @@ test('native user identity follows an exact consumed API response through tool-r
     });
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+test('queued user creation times cannot reorder saved turns or their history pages', { concurrency: false }, async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'claude-queued-history-'));
+  const nativeSessionId = 'queued-native-fixture';
+  const appSessionId = 'queued-app-fixture';
+  // This is append order and a single explicit parent chain. The second user
+  // message was created while the first response was still being generated.
+  const rows = [
+    { uuid: 'first-user', parentUuid: null, type: 'user', timestamp: '2026-08-23T10:00:00.000Z', message: { role: 'user', content: 'First question' } },
+    { uuid: 'first-answer', parentUuid: 'first-user', type: 'assistant', timestamp: '2026-08-23T10:03:00.000Z', message: { role: 'assistant', id: 'first-api-answer', content: 'First answer finishes' } },
+    { uuid: 'queued-user', parentUuid: 'first-answer', type: 'user', timestamp: '2026-08-23T10:01:00.000Z', message: { role: 'user', content: 'Queued follow-up' } },
+    { uuid: 'queued-answer', parentUuid: 'queued-user', type: 'assistant', timestamp: '2026-08-23T10:04:00.000Z', message: { role: 'assistant', id: 'queued-api-answer', content: 'Answer to queued follow-up' } },
+  ].map(row => ({ ...row, sessionId: nativeSessionId }));
+  const transcriptPath = path.join(directory, `${nativeSessionId}.jsonl`);
+  const original = rows.map(row => JSON.stringify(row)).join('\n');
+  await writeFile(transcriptPath, original);
+  try {
+    await withIsolatedDatabase(async () => {
+      sessionsDb.createSession(appSessionId, 'claude', directory, 'Queued history fixture', undefined, undefined, transcriptPath);
+      const provider = new ClaudeSessionsProvider();
+      const options = { providerSessionId: nativeSessionId };
+      const history = await provider.fetchHistory(appSessionId, options);
+      assert.deepEqual(history.messages.map(message => message.content), rows.map(row => row.message.content));
+      const latest = await provider.fetchHistory(appSessionId, { ...options, limit: 2 });
+      const earlier = await provider.fetchHistory(appSessionId, { ...options, limit: 2, offset: 2 });
+      assert.deepEqual([...earlier.messages, ...latest.messages].map(message => message.id), history.messages.map(message => message.id));
+      assert.deepEqual(latest.messages.map(message => message.content), ['Queued follow-up', 'Answer to queued follow-up']);
+      assert.equal(latest.total, 4);
+      assert.equal(latest.hasMore, true);
+      assert.equal(earlier.hasMore, false);
+      assert.equal(latest.messages[0].timestamp, rows[2].timestamp, 'Creation time remains accurate even when consumption is later.');
+      assert.equal(latest.messages[0].transcriptAnchorId, 'queued-user');
+      assert.deepEqual(latest.messages[0].responseMessageIds, ['queued-api-answer']);
+      assert.deepEqual((await provider.fetchHistory(appSessionId, options)).messages.map(message => message.id), history.messages.map(message => message.id));
+      assert.equal(await readFile(transcriptPath, 'utf8'), original, 'Reading history never rewrites the native transcript.');
+    });
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

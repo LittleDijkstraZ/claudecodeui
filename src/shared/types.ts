@@ -322,6 +322,8 @@ export type ChatMessage = {
   executionId?: string;
   providerSessionId?: string;
   delivery?: ChatMessageDelivery;
+  /** Browser-retained input whose position has not been matched to loaded native history; display separately. */
+  isUnlocatedLocalCopy?: boolean;
   deliveryError?: string;
   content?: string;
   displayText?: string;
@@ -456,6 +458,8 @@ export type NormalizedMessage = {
   executionId?: string;
   providerSessionId?: string;
   delivery?: ChatMessageDelivery;
+  /** Browser-retained input whose position has not been matched to loaded native history; display separately. */
+  isUnlocatedLocalCopy?: boolean;
   deliveryError?: string;
   /**
    * The provider's own id for the transcript row behind this message, when the

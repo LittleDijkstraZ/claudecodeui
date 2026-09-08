@@ -26,10 +26,10 @@ test.each(['queued', 'failed', 'delivered'] as const)('%s user copies survive lo
   expect(first.result.current.getMessages('session-a').filter(message => message.role === 'user')).toHaveLength(1);
   first.unmount();
   const restored = renderHook(() => useSessionStore('user-a'));
-  expect(restored.result.current.getMessages('session-a')).toEqual([input(delivery)]);
+  expect(restored.result.current.getMessages('session-a')).toEqual([{ ...input(delivery), isUnlocatedLocalCopy: true }]);
   sessionMessages.mockResolvedValueOnce(response([]));
   await act(async () => { await restored.result.current.fetchFromServer('session-a'); });
-  expect(restored.result.current.getMessages('session-a')).toEqual([input(delivery)]);
+  expect(restored.result.current.getMessages('session-a')).toEqual([{ ...input(delivery), isUnlocatedLocalCopy: true }]);
 });
 
 test('only the exact persisted native prompt retires its local copy and receipt replay cannot restore a duplicate', async () => {
@@ -55,7 +55,7 @@ test('pending messages are isolated by machine, login identity, and session even
   window.__REMOTE_ID__ = 'remote-b'; view.rerender({ userId: 'user-a' });
   expect(view.result.current.getMessages('session-a')).toEqual([]);
   window.__REMOTE_ID__ = 'remote-a'; view.rerender({ userId: 'user-a' });
-  expect(view.result.current.getMessages('session-a')).toEqual([input()]);
+  expect(view.result.current.getMessages('session-a')).toEqual([{ ...input(), isUnlocatedLocalCopy: true }]);
 });
 
 test('dismissing removes only the local copy and survives reconnect receipts and reloads', () => {

@@ -118,11 +118,24 @@ test('tool-result totals walk bounded bridge chunks until a contiguous anchor', 
   assert.deepEqual(merged.messages.map((item) => item.id), range(81, 125).map((item) => item.id));
 });
 
-test('bridge discovery stops after crossing the cached tail time boundary', () => {
-  const cached = range(81, 100);
+test('legacy provider bridge discovery stops after crossing the cached tail time boundary', () => {
+  const legacy = (start: number, end: number) => range(start, end).map(row => ({ ...row, provider: 'codex' as const }));
+  const cached = legacy(81, 100);
 
-  assert.equal(hasReachedCachedTailTimeBoundary(cached, range(101, 120)), false);
-  assert.equal(hasReachedCachedTailTimeBoundary(cached, range(95, 114)), true);
+  assert.equal(hasReachedCachedTailTimeBoundary(cached, legacy(101, 120)), false);
+  assert.equal(hasReachedCachedTailTimeBoundary(cached, legacy(95, 114)), true);
+});
+
+test('an earlier-created queued Claude prompt does not stop finding the saved overlap', () => {
+  const cached = [message(1), message(2, { timestamp: message(40).timestamp })];
+  const queued = message(3, { timestamp: message(10).timestamp });
+  const latest = [queued, message(4, { timestamp: message(50).timestamp })];
+  assert.equal(hasReachedCachedTailTimeBoundary(cached, latest), false);
+  const request = planLatestPageBridge(cached, latest, 2, 4);
+  assert.deepEqual(request, { offset: 2, limit: 1 });
+  const bridged = mergeLatestServerPage(cached, [cached[1], ...latest]);
+  assert.deepEqual(bridged.messages.map(row => row.id), ['m1', 'm2', 'm3', 'm4']);
+  assert.equal(bridged.overlapLength, 1);
 });
 
 test('older-page reconciliation removes overlap caused by tail growth', () => {

@@ -168,7 +168,7 @@ function extractChanges(tool: ToolRecord): RecordedChange[] {
 }
 
 function isRealUserTurn(message: ChatMessage): boolean {
-  return message.type === 'user' && !message.isLocalCommand && !message.isLocalCommandStdout
+  return message.type === 'user' && !message.isUnlocatedLocalCopy && !message.isLocalCommand && !message.isLocalCommandStdout
     && !message.isCompactSummary && !message.isTaskNotification
     && (!message.delivery || message.delivery === 'delivered')
     && !/^\s*<task-notification(?:\s|>)/.test(message.content ?? '');

@@ -255,6 +255,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
               clientMessageId: msg.clientMessageId,
               retriedAsClientMessageId: msg.retriedAsClientMessageId,
               delivery: msg.delivery,
+              isUnlocatedLocalCopy: msg.isUnlocatedLocalCopy,
               deliveryError: msg.deliveryError,
               content,
               timestamp: msg.timestamp,

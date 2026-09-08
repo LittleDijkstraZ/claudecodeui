@@ -42,7 +42,11 @@ export function createPendingUserMessages(scope: string, onStorageFailure: () =>
         const message = entry.message;
         if (message && message.sessionId === sessionId && message.provider === 'claude' && message.kind === 'text' && message.role === 'user'
           && message.clientMessageId && key(sessionId, message.clientMessageId) === storageKey
-          && ['queued', 'delivered', 'failed'].includes(message.delivery || '')) restored.push(message);
+          && ['queued', 'delivered', 'failed'].includes(message.delivery || '')) {
+          // A browser timestamp is not a transcript position. Keep recovered
+          // copies outside history until exact native identity confirms them.
+          restored.push({ ...message, isUnlocatedLocalCopy: true });
+        }
       }
       return restored.sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp));
     },
