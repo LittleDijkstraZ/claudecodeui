@@ -593,6 +593,15 @@ Rewind previews its target and effects on background work, queued drafts, and sc
 
 The Agents panel includes Workflows, with recorded task IDs, progress, final results, duration where known, and a link to the originating tool call. An old launch receipt is not proof a task is still running; unverified state is explicit. Inspecting a task does not issue resume or stop commands. Only foreground generation drives the main composer timer.
 
+The runtime background-task count and the detail cards have different sources:
+the count is reported by the running execution, while cards require recorded
+task identities in loaded history. If the count is positive but no cards are
+available, the panel explains that details are missing and offers a prominent
+read-only older-page loader when more history exists. It does not manufacture
+task identities from the count, claim an empty panel means no running work,
+or automatically fetch the entire transcript. When no older page is available,
+the message explicitly says the current records do not provide task details.
+
 Review merges tool snapshots and successful receipts without discarding known Write metadata. Failed, queued, or duplicate optimistic bubbles cannot invent new turn boundaries. A successful file remains listed even if its line count cannot be established; missing baselines are not guessed. Added/removed badges are per-edit totals in the selected scope, not repository-wide Git totals.
 
 Session identity details separate CloudCLI's preserved name, Claude's automatic title, native `/rename` title, and app/native execution IDs. A retained terminal reports its original branch binding. Chat refusal due to an occupied terminal offers the existing terminal when available; that action never starts a second Claude process.

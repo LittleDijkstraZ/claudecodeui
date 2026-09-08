@@ -329,6 +329,11 @@
     "reconnectBeforeClose": "请先重新连接此终端，再关闭它，以便真正停止远端进程。",
     "preferences": "偏好",
     "open": "打开右侧工具面板",
-    "machineSettings": "机器设置"
+    "machineSettings": "机器设置",
+    "backgroundTasksReported": "远端报告有 {{count}} 个后台任务。",
+    "taskDetailsNotLoaded": "任务详情尚未加载。可加载更早的对话活动，查找这些任务的发起记录。",
+    "taskDetailsNotRecorded": "当前对话记录未提供这些任务的详情。",
+    "loadingEarlierAgents": "正在加载更早的活动…",
+    "loadEarlierAgentsReadOnly": "每次只读取更早的一页记录，不会恢复或停止任务。"
   }
 }

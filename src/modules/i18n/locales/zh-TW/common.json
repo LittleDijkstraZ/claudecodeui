@@ -270,6 +270,12 @@
   "workspacePanel": {
     "preferences": "偏好",
     "open": "開啟右側工具面板",
-    "machineSettings": "機器設定"
+    "machineSettings": "機器設定",
+    "backgroundTasksReported": "遠端回報有 {{count}} 個背景任務。",
+    "taskDetailsNotLoaded": "任務詳情尚未載入。可載入更早的對話活動，尋找這些任務的發起記錄。",
+    "taskDetailsNotRecorded": "目前的對話記錄未提供這些任務的詳情。",
+    "loadingEarlierAgents": "正在載入更早的活動…",
+    "loadEarlierAgentsReadOnly": "每次只讀取更早的一頁記錄，不會恢復或停止任務。",
+    "loadEarlierAgents": "載入更早的對話活動"
   }
 }

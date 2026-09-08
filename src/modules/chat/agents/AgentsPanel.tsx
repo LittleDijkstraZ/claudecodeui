@@ -20,6 +20,10 @@ export function AgentsPanel() {
   const task = tasks.find(item => item.sourceKey === panel?.agentReveal?.messageKey)
     ?? tasks.find(item => item.status === 'running') ?? tasks.at(-1);
   const visible = Boolean(panel?.open && panel.tab === 'agents');
+  // A runtime count is independent of paginated history; it cannot identify
+  // task cards whose originating tool calls have not been loaded.
+  const reportedBackgroundTasks = snapshot?.activity?.backgroundTasks ?? 0;
+  const hasUnloadedTaskDetails = tasks.length === 0 && reportedBackgroundTasks > 0;
   const detailRef = useRef<HTMLDivElement>(null);
   const createDiff = useMemo(() => createCachedDiffCalculator(), []);
   const [now, setNow] = useState(Date.now);
@@ -44,7 +48,7 @@ export function AgentsPanel() {
   return <div className="flex h-full min-h-0 flex-col" data-testid="workspace-agents">
     <div className="shrink-0 border-b border-border px-3 py-2">
       <p className="truncate text-[10px] text-muted-foreground">{window.__REMOTE_NAME__ || window.__REMOTE_ID__ || t('workspacePanel.currentRemote', { defaultValue: 'Current remote' })} · {snapshot?.project?.displayName || ''}</p>
-      {snapshot?.hasEarlierMessages && <Button variant="ghost" size="sm" className="mt-1 h-7 px-0 text-[11px]" disabled={snapshot.isLoadingEarlierMessages} onClick={snapshot.loadEarlierMessages}>{t('workspacePanel.loadEarlierAgents', { defaultValue: 'Load earlier conversation activity' })}</Button>}
+      {snapshot?.hasEarlierMessages && !hasUnloadedTaskDetails && <Button variant="ghost" size="sm" className="mt-1 h-7 px-0 text-[11px]" disabled={snapshot.isLoadingEarlierMessages} onClick={snapshot.loadEarlierMessages}>{t('workspacePanel.loadEarlierAgents', { defaultValue: 'Load earlier conversation activity' })}</Button>}
     </div>
     {snapshot?.historyError && <p role="alert" className="shrink-0 px-3 py-2 text-xs text-red-600">{snapshot.historyError}</p>}
     {tasks.length > 0 && <div className="max-h-[32%] shrink-0 overflow-y-auto border-b border-border p-2" aria-label="Agents and Workflows">
@@ -72,6 +76,20 @@ export function AgentsPanel() {
             {task.result && <div><h4 className="mb-1 text-xs font-medium">{task.status === 'completed' ? 'Result' : 'Recorded output'}</h4><pre className="whitespace-pre-wrap break-words rounded-md bg-muted p-3 font-mono text-[11px]">{task.result}</pre></div>}
             {task.usage !== undefined && <details className="text-xs"><summary className="cursor-pointer">Reported progress and usage</summary><pre className="mt-2 whitespace-pre-wrap break-words text-[11px]">{typeof task.usage === 'string' ? task.usage : JSON.stringify(task.usage, null, 2)}</pre></details>}
           </div>}
+      </div> : hasUnloadedTaskDetails ? <div className="px-3 py-8 text-center text-sm" data-testid="unloaded-task-details">
+        <Bot className="mx-auto mb-3 h-6 w-6 text-muted-foreground" />
+        <p role="status" className="font-medium">{t('workspacePanel.backgroundTasksReported', { count: reportedBackgroundTasks, defaultValue: 'The remote reports {{count}} background tasks.' })}</p>
+        <p className="mt-2 text-muted-foreground">{snapshot?.hasEarlierMessages
+          ? t('workspacePanel.taskDetailsNotLoaded', { defaultValue: 'Task details have not been loaded yet. Load earlier conversation activity to look for their originating messages.' })
+          : t('workspacePanel.taskDetailsNotRecorded', { defaultValue: 'The available conversation records do not provide task details.' })}</p>
+        {snapshot?.hasEarlierMessages && <>
+          <Button size="sm" className="mt-4" disabled={snapshot.isLoadingEarlierMessages} onClick={snapshot.loadEarlierMessages}>
+            {snapshot.isLoadingEarlierMessages
+              ? t('workspacePanel.loadingEarlierAgents', { defaultValue: 'Loading earlier activity…' })
+              : t('workspacePanel.loadEarlierAgents', { defaultValue: 'Load earlier conversation activity' })}
+          </Button>
+          <p className="mt-2 text-xs text-muted-foreground">{t('workspacePanel.loadEarlierAgentsReadOnly', { defaultValue: 'Loads one earlier page of saved records. It does not resume or stop tasks.' })}</p>
+        </>}
       </div> : <div className="px-3 py-8 text-center text-sm text-muted-foreground"><Bot className="mx-auto mb-3 h-6 w-6 opacity-50" />{t('workspacePanel.noRecordedTasks', { defaultValue: 'Agents and Workflows from this conversation appear here with their recorded progress and results.' })}</div>}
     </div>
   </div>;

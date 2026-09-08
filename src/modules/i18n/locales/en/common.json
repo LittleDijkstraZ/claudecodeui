@@ -414,6 +414,12 @@
     "agentsRecorded_one": "{{count}} agent",
     "preferences": "Preferences",
     "open": "Open workspace panel",
-    "machineSettings": "Machine settings"
+    "machineSettings": "Machine settings",
+    "backgroundTasksReported": "The remote reports {{count}} background tasks.",
+    "backgroundTasksReported_one": "The remote reports {{count}} background task.",
+    "taskDetailsNotLoaded": "Task details have not been loaded yet. Load earlier conversation activity to look for their originating messages.",
+    "taskDetailsNotRecorded": "The available conversation records do not provide task details.",
+    "loadingEarlierAgents": "Loading earlier activity…",
+    "loadEarlierAgentsReadOnly": "Loads one earlier page of saved records. It does not resume or stop tasks."
   }
 }
