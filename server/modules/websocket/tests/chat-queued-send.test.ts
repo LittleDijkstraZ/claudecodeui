@@ -31,7 +31,7 @@ async function withFixture(runTest: (fixture: {
   connection: FakeConnection;
   run: NonNullable<ReturnType<typeof chatRunRegistry.startRun>>;
   enqueueCalls: Array<{ provider: LLMProvider; sessionId: string; command: string; options: AnyRecord }>;
-}) => Promise<void>, options: { userId?: string; ownerId?: string; enqueue?: () => Promise<boolean>; run?: RuntimeGateway['run']; provider?: LLMProvider } = {}): Promise<void> {
+}) => Promise<void>, options: { userId?: string; ownerId?: string; enqueue?: () => Promise<boolean>; run?: RuntimeGateway['run']; abort?: RuntimeGateway['abort']; provider?: LLMProvider } = {}): Promise<void> {
   const previous = process.env.DATABASE_PATH;
   const directory = await mkdtemp(path.join(os.tmpdir(), 'chat-queued-send-'));
   closeConnection(); process.env.DATABASE_PATH = path.join(directory, 'auth.db');
@@ -47,7 +47,7 @@ async function withFixture(runTest: (fixture: {
     const runtime: RuntimeGateway = {
       hasRuntime: () => true,
       run: options.run ?? (async () => assert.fail('A queued send must never start another runtime')),
-      abort: async () => assert.fail('A queued send must never stop the current runtime'),
+      abort: options.abort ?? (async () => assert.fail('A queued send must never stop the current runtime')),
       resolveToolApproval: () => {}, getPendingApprovalsForSession: () => [],
       enqueue: async (selectedProvider, sessionId, command, runtimeOptions) => {
         enqueueCalls.push({ provider: selectedProvider, sessionId, command, options: runtimeOptions });
@@ -100,6 +100,8 @@ for (const rejection of ['false', 'throw'] as const) {
       assert.ok(error);
       assert.equal(error.clientMessageId, CLIENT_ID);
       assert.equal(error.isProcessing, true);
+      assert.equal(error.runId, run.runId);
+      assert.equal(error.acceptsInput, false);
       assert.equal(connection.frames.filter(frame => frame.kind === 'complete').length, 0);
     }, { enqueue: async () => { if (rejection === 'throw') throw new Error('fixture input closed'); return false; } });
   });
@@ -114,6 +116,63 @@ test('invalid client UUIDs never reach the live input queue', { concurrency: fal
     assert.equal(connection.frames.filter(frame => frame.code === 'INVALID_MESSAGE_ID').length, 3);
     assert.equal(chatRunRegistry.getRun(sessionId), run);
     assert.equal(run.status, 'running');
+  });
+});
+
+for (const outcome of ['false', 'throw'] as const) {
+  test(`abort ${outcome} retains registry ownership and a manual retry enters the original input stream`, { concurrency: false }, async () => {
+    await withFixture(async ({ sessionId, connection, run, enqueueCalls }) => {
+      run.writer.send({ kind: 'status', text: 'claude_runtime_state', provider: 'claude', phase: 'background', acceptsInput: true, backgroundTasks: 1 });
+      await connection.receive({ type: 'chat.abort', sessionId });
+      const error = connection.frames.find(frame => frame.code === 'ABORT_FAILED');
+      assert.equal(error?.isProcessing, true);
+      assert.equal(error?.runId, run.runId);
+      assert.equal(error?.acceptsInput, true);
+      assert.equal(error?.backgroundTasks, 1);
+      assert.equal(run.status, 'running');
+      await connection.receive({ type: 'chat.send', sessionId, clientMessageId: CLIENT_ID, content: 'Manual retry' });
+      assert.equal(enqueueCalls.length, 1);
+      assert.equal(chatRunRegistry.getRun(sessionId), run);
+      assert.equal(connection.frames.some(frame => frame.kind === 'complete'), false);
+    }, { abort: async () => { if (outcome === 'throw') throw new Error('Fixture interrupt rejected'); return false; } });
+  });
+}
+
+test('a successful Claude interrupt does not release the registry before native completion', { concurrency: false }, async () => {
+  await withFixture(async ({ sessionId, connection, run }) => {
+    await connection.receive({ type: 'chat.abort', sessionId });
+    assert.equal(run.status, 'running');
+    assert.equal(connection.frames.some(frame => frame.kind === 'complete'), false);
+    run.writer.send({ kind: 'status', text: 'claude_runtime_state', provider: 'claude', phase: 'background', acceptsInput: false, backgroundTasks: 0 });
+    await connection.receive({ type: 'chat.send', sessionId, clientMessageId: CLIENT_ID, content: 'Retry before exit' });
+    const error = connection.frames.find(frame => frame.code === 'INPUT_NOT_ACCEPTED');
+    assert.equal(error?.isProcessing, true);
+    assert.equal(error?.acceptsInput, false);
+    assert.equal(error?.clientMessageId, CLIENT_ID);
+    run.writer.sendComplete({ exitCode: 0, aborted: true });
+    await connection.receive({ type: 'chat.subscribe', sessions: [{ sessionId }] });
+    const ack = connection.frames.find(frame => frame.kind === 'chat_subscribed');
+    assert.equal(ack?.isProcessing, false);
+    assert.equal(ack?.acceptsInput, false);
+  }, { abort: async () => true, enqueue: async () => false });
+});
+
+test('subscriptions expose starting, ready, closing and completed input capabilities', { concurrency: false }, async () => {
+  await withFixture(async ({ sessionId, connection, run }) => {
+    const subscribe = async () => {
+      connection.frames = [];
+      await connection.receive({ type: 'chat.subscribe', sessions: [{ sessionId, runId: run.runId, lastSeq: run.lastSeq }] });
+      return connection.frames.find(frame => frame.kind === 'chat_subscribed');
+    };
+    assert.equal((await subscribe())?.acceptsInput, false);
+    run.writer.send({ kind: 'status', text: 'claude_runtime_state', provider: 'claude', phase: 'background', acceptsInput: true, backgroundTasks: 1 });
+    assert.equal((await subscribe())?.acceptsInput, true);
+    run.writer.send({ kind: 'status', text: 'claude_runtime_state', provider: 'claude', phase: 'background', acceptsInput: false, backgroundTasks: 0 });
+    assert.equal((await subscribe())?.acceptsInput, false);
+    run.writer.sendComplete({ exitCode: 0 });
+    const completed = await subscribe();
+    assert.equal(completed?.isProcessing, false);
+    assert.equal(completed?.acceptsInput, false);
   });
 });
 

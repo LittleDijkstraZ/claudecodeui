@@ -67,6 +67,7 @@ export function createPendingUserMessages(scope: string, onStorageFailure: () =>
         transcriptAnchorId: message.transcriptAnchorId || prior?.transcriptAnchorId,
         responseMessageId: message.responseMessageId || prior?.responseMessageId,
         runId: message.runId || prior?.runId,
+        retriedAsClientMessageId: prior?.retriedAsClientMessageId || message.retriedAsClientMessageId,
       } });
     },
     confirm(sessionId: string, history: NormalizedMessage[]) {

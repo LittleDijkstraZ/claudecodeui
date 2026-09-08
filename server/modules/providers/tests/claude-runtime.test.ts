@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import type { Options, Query, query } from '@anthropic-ai/claude-agent-sdk';
+import type { Options, Query, query, SpawnOptions } from '@anthropic-ai/claude-agent-sdk';
 
 import { createClaudeRuntime, mapCliOptionsToSDK } from '@/modules/providers/list/claude/claude-runtime.provider.js';
 import { ClaudeSessionsProvider } from '@/modules/providers/list/claude/claude-sessions.provider.js';
@@ -65,7 +68,13 @@ function runtimeHarness(steps: (state: {
   events: NormalizedMessage[];
   inputClosed: () => boolean;
   inputDone: Promise<void>;
-}) => AsyncGenerator<AnyRecord>, waitCeilingMs = 1000) {
+}) => AsyncGenerator<AnyRecord>, waitCeilingMs = 1000, fixture: {
+  interrupt?: () => Promise<void>;
+  resolveModel?: () => Promise<string>;
+  onEvent?: (event: NormalizedMessage) => void;
+  spawn?: (options: SpawnOptions) => ChildProcessWithoutNullStreams;
+  spawnOptions?: SpawnOptions;
+} = {}) {
   const events: NormalizedMessage[] = [];
   let sdkOptions: Options | undefined;
   let inputClosed = false;
@@ -73,20 +82,26 @@ function runtimeHarness(steps: (state: {
   let queryCount = 0; let interrupts = 0;
   const queryMock = ((input: Parameters<typeof query>[0]) => {
     queryCount++; sdkOptions = input.options;
+    if (fixture.spawn) {
+      input.options!.spawnClaudeCodeProcess!(fixture.spawnOptions ?? {
+        command: '/fixture/claude', args: ['--fixture'], cwd: '/fixture/project', env: { FIXTURE: 'true' }, signal: new AbortController().signal,
+      });
+    }
     assert.notEqual(typeof input.prompt, 'string');
     const inputDone = (async () => {
       for await (const message of input.prompt) { assert.equal(typeof message, 'object'); inputs.push(message as AnyRecord); }
       inputClosed = true;
     })();
     const iterator = steps({ events, inputClosed: () => inputClosed, inputDone });
-    return Object.assign(iterator, { interrupt: async () => { interrupts++; } }) as unknown as Query;
+    return Object.assign(iterator, { interrupt: async () => { interrupts++; await fixture.interrupt?.(); } }) as unknown as Query;
   }) as typeof query;
-  const runtime = createClaudeRuntime({ query: queryMock, loadMcpConfig: async () => null, waitCeilingMs });
+  const runtime = createClaudeRuntime({ query: queryMock, loadMcpConfig: async () => null, waitCeilingMs,
+    ...(fixture.spawn ? { spawn: fixture.spawn } : {}) });
   const appSessionId = `fixture-app-${++harnessSequence}`;
   const provider = new ClaudeSessionsProvider();
   const context: ProviderRuntimeContext = {
     resolveProviderSessionId: () => nativeSession,
-    resolveResumeModel: async () => 'fixture',
+    resolveResumeModel: fixture.resolveModel ?? (async () => 'fixture'),
     getProviderModels: async () => models,
     normalizeMessage: (raw, sid) => provider.normalizeMessage(raw, sid),
     isProviderInstalled: async () => true,
@@ -97,7 +112,7 @@ function runtimeHarness(steps: (state: {
     options: () => sdkOptions,
     abort: () => runtime.abort(appSessionId),
     run: () => runtime.run('Fixture only; no model call is made.', { sessionId: appSessionId }, {
-      send: message => events.push(message as NormalizedMessage),
+      send: message => { events.push(message as NormalizedMessage); fixture.onEvent?.(message as NormalizedMessage); },
     }, context),
   };
 }
@@ -186,7 +201,7 @@ test('native exit after an SDK error produces a failed completion while a Workfl
   assert.equal(h.events.some(event => event.kind === 'error'), true);
 });
 
-test('aborting a held Workflow closes input and leaves exactly-one-complete ownership with the gateway', async () => {
+test('aborting a held Workflow closes input and completes once after the native query exits', async () => {
   let launched!: () => void;
   const launch = new Promise<void>(resolve => { launched = resolve; });
   const h = runtimeHarness(async function* ({ inputDone }) {
@@ -199,7 +214,8 @@ test('aborting a held Workflow closes input and leaves exactly-one-complete owne
   await launch;
   assert.equal(await h.abort(), true);
   await running;
-  assert.equal(h.events.some(event => event.kind === 'complete'), false);
+  assert.equal(h.events.filter(event => event.kind === 'complete').length, 1);
+  assert.equal(h.events.find(event => event.kind === 'complete')?.aborted, true);
   assert.equal(h.events.some(event => event.kind === 'error'), false);
 });
 
@@ -330,4 +346,179 @@ test('a foreground API error does not close or stop an existing Workflow', async
   await h.run();
   assert.equal(h.queries(), 1);
   assert.equal(h.events.filter(event => event.kind === 'complete').length, 1);
+});
+
+test('a failed interrupt leaves the original Workflow input writable for a fresh retry UUID', async () => {
+  const retryId = 'b2034b8d-0b2d-4e3a-a757-b9249a6e7729';
+  const h = runtimeHarness(async function* ({ inputDone, inputClosed, events }) {
+    yield workflow(); yield started(); yield result();
+    assert.equal(await h.abort(), false);
+    assert.equal(inputClosed(), false);
+    assert.equal(events.some(event => event.kind === 'complete'), false);
+    assert.equal(await h.enqueue('Explicit manual retry', retryId), true);
+    assert.equal(await h.enqueue('Explicit manual retry', retryId), true);
+    await delay(0);
+    assert.equal(h.inputs.filter(input => input.uuid === retryId).length, 1);
+    assert.equal(h.queries(), 1);
+    yield { type: 'user', uuid: retryId, session_id: nativeSession, message: { role: 'user', content: 'Explicit manual retry' } };
+    yield { ...result(), user_message_uuid: retryId };
+    yield notification(); yield result(); await inputDone;
+  }, 1000, { interrupt: async () => { throw new Error('Fixture interrupt was rejected'); } });
+  await h.run();
+  assert.equal(h.events.filter(event => event.kind === 'complete').length, 1);
+  assert.equal(h.events.at(-1)?.success, true);
+});
+
+test('a successful stop keeps ownership while the native query is still closing', async () => {
+  let ready!: () => void; let finish!: () => void;
+  const startedQuery = new Promise<void>(resolve => { ready = resolve; });
+  const exitQuery = new Promise<void>(resolve => { finish = resolve; });
+  const h = runtimeHarness(async function* ({ inputDone }) {
+    yield workflow(); yield started(); yield result(); ready();
+    await inputDone; await exitQuery;
+  });
+  const running = h.run();
+  await startedQuery;
+  assert.equal(await h.abort(), true);
+  assert.equal(h.events.some(event => event.kind === 'complete'), false);
+  assert.equal(h.events.filter(event => event.text === 'claude_runtime_state').at(-1)?.acceptsInput, false);
+  assert.equal(await h.enqueue('Too early', '5c3692b0-937c-4dc5-9113-5c9fd7a08918'), false);
+  await assert.rejects(h.run(), /already owns this session/);
+  assert.equal(h.queries(), 1);
+  finish(); await running;
+  assert.equal(h.events.filter(event => event.kind === 'complete').length, 1);
+  assert.equal(h.events.at(-1)?.aborted, true);
+});
+
+test('starting admission is explicitly unwritable and does not spawn a replacement query', async () => {
+  let finishPreparation!: () => void;
+  const prepared = new Promise<void>(resolve => { finishPreparation = resolve; });
+  const h = runtimeHarness(async function* ({ inputDone }) { yield result(); await inputDone; }, 1000, {
+    resolveModel: async () => { await prepared; return 'fixture'; },
+  });
+  const running = h.run();
+  assert.equal(h.events.find(event => event.text === 'claude_runtime_state')?.acceptsInput, false);
+  assert.equal(h.queries(), 0);
+  assert.equal(await h.enqueue('Not admitted while starting', 'd80a8d4f-f59c-49a2-b983-1fc7d99bd10e'), false);
+  await assert.rejects(h.run(), /already owns this session/);
+  finishPreparation(); await running;
+  assert.equal(h.queries(), 1);
+});
+
+test('an immediate send after terminal completion can start once without old cleanup releasing its reservation', async () => {
+  let secondRun: Promise<unknown> | undefined;
+  let unblockSecond!: () => void;
+  const prepared = new Promise<void>(resolve => { unblockSecond = resolve; });
+  let modelResolutions = 0;
+  const h = runtimeHarness(async function* ({ inputDone }) { yield result(); await inputDone; }, 1000, {
+    resolveModel: async () => { if (++modelResolutions === 2) await prepared; return 'fixture'; },
+    onEvent: event => { if (event.kind === 'complete' && !secondRun) secondRun = h.run(); },
+  });
+  await h.run();
+  assert.ok(secondRun);
+  assert.equal(h.queries(), 1);
+  await assert.rejects(h.run(), /already owns this session/);
+  unblockSecond(); await secondRun;
+  assert.equal(h.queries(), 2);
+  assert.equal(h.events.filter(event => event.kind === 'complete').length, 2);
+  assert.equal(h.events.some(event => event.kind === 'error'), false);
+});
+
+test('native iterator exit waits for a pending interrupt verdict without prematurely reporting aborted completion', async () => {
+  let ready!: () => void; let endIterator!: () => void; let rejectInterrupt!: (error: Error) => void;
+  const active = new Promise<void>(resolve => { ready = resolve; });
+  const end = new Promise<void>(resolve => { endIterator = resolve; });
+  const interrupt = new Promise<void>((_resolve, reject) => { rejectInterrupt = reject; });
+  const h = runtimeHarness(async function* () { yield workflow(); yield started(); yield result(); ready(); await end; }, 1000, { interrupt: () => interrupt });
+  const running = h.run(); await active;
+  const stopping = h.abort();
+  endIterator(); await delay(0);
+  assert.equal(h.events.some(event => event.kind === 'complete'), false);
+  await assert.rejects(h.run(), /already owns this session/);
+  // The SDK's iterator cleanup rejects still-pending control responses on exit.
+  rejectInterrupt(new Error('Fixture query closed before interrupt response'));
+  assert.equal(await stopping, false);
+  await running;
+  assert.equal(h.queries(), 1);
+  assert.equal(h.events.filter(event => event.kind === 'complete').length, 1);
+  assert.equal(h.events.at(-1)?.aborted, false);
+});
+
+function syntheticChild(pid: number | null = 12345) {
+  const child = Object.assign(new EventEmitter(), {
+    pid: pid ?? undefined, killed: false, exitCode: null as number | null, signalCode: null as NodeJS.Signals | null,
+    stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+    kill: () => assert.fail('The runtime must never add an automatic kill'),
+  });
+  return {
+    child: child as unknown as ChildProcessWithoutNullStreams,
+    stderr: child.stderr,
+    exit(code = 0) { child.exitCode = code; child.emit('exit', code, null); },
+    error(error: Error) { child.emit('error', error); },
+  };
+}
+
+test('native exit does not complete a still-running SDK iterator and spawn options remain identical', async () => {
+  const process = syntheticChild();
+  const controller = new AbortController();
+  const spawnOptions: SpawnOptions = { command: '/fixture/exact-cli', args: ['--permission-mode', 'auto', '--resume=fixture'],
+    cwd: '/fixture/exact-project', env: { FIXTURE_SETTING: 'unchanged' }, signal: controller.signal };
+  const h = runtimeHarness(async function* ({ events, inputDone }) {
+    process.exit();
+    assert.equal(events.some(event => event.kind === 'complete'), false);
+    yield result(); await inputDone;
+  }, 1000, { spawnOptions, spawn: received => {
+    assert.equal(received, spawnOptions);
+    assert.equal(received.signal, controller.signal);
+    return process.child;
+  } });
+  await h.run();
+  assert.equal(h.queries(), 1);
+  assert.equal(h.events.filter(event => event.kind === 'complete').length, 1);
+});
+
+test('SDK iterator failure cannot release ownership while its observed native child remains alive', async () => {
+  const process = syntheticChild();
+  let failed!: () => void;
+  const failure = new Promise<void>(resolve => { failed = resolve; });
+  const h = runtimeHarness(async function* () {
+    yield workflow(); yield started(); yield result();
+    process.stderr.write('Fixture detailed terminal ownership diagnostic');
+    failed(); throw new Error('Fixture SDK cleanup ended before child exit');
+  }, 1000, { spawn: () => process.child });
+  const running = h.run(); await failure; await delay(0);
+  process.error(Object.assign(new Error('Fixture abort signal while PID remains alive'), { code: 'ABORT_ERR' }));
+  assert.equal(h.events.some(event => event.kind === 'complete'), false);
+  await assert.rejects(h.run(), /already owns this session/);
+  assert.equal(await h.enqueue('Too early', '5c3692b0-937c-4dc5-9113-5c9fd7a08918'), false);
+  assert.equal(h.queries(), 1);
+  process.exit(1); await running;
+  assert.equal(h.events.filter(event => event.kind === 'complete').length, 1);
+  assert.ok(h.events.some(event => event.kind === 'error' && event.content?.includes('Fixture detailed terminal ownership diagnostic')));
+  assert.equal(h.events.at(-1)?.success, false);
+});
+
+test('an absent-PID spawn error releases ownership without waiting for an exit that cannot occur', async () => {
+  const process = syntheticChild(null);
+  const h = runtimeHarness(async function* () {
+    yield* []; // A failed spawn has no SDK messages before the transport error.
+    const error = Object.assign(new Error('Fixture executable missing'), { code: 'ENOENT', syscall: 'spawn /fixture/missing' });
+    process.error(error); throw error;
+  }, 1000, { spawn: () => process.child });
+  await h.run();
+  assert.equal(h.events.filter(event => event.kind === 'complete').length, 1);
+  assert.equal(h.events.at(-1)?.success, false);
+  await h.run();
+  assert.equal(h.queries(), 2);
+});
+
+test('a synchronous spawn failure reports completion and does not leave a startup reservation', async () => {
+  const h = runtimeHarness(async function* () { yield* []; assert.fail('An unspawned query cannot stream'); }, 1000, {
+    spawn: () => { throw new Error('Fixture spawn threw synchronously'); },
+  });
+  await h.run();
+  assert.equal(h.events.filter(event => event.kind === 'complete').length, 1);
+  assert.equal(h.events.at(-1)?.success, false);
+  await h.run();
+  assert.equal(h.queries(), 2);
 });

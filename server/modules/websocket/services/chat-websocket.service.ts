@@ -132,7 +132,7 @@ function sendProtocolError(
     error,
     ...(clientMessageId ? { clientMessageId } : {}),
     sessionId: sessionId ?? null,
-    isProcessing: Boolean(sessionId && chatRunRegistry.isProcessing(sessionId)),
+    ...(sessionId ? chatRunRegistry.getRuntimeSnapshot(sessionId) : { isProcessing: false, acceptsInput: false }),
     timestamp: new Date().toISOString(),
   });
 }
@@ -464,9 +464,8 @@ async function handleChatEditSend(
 }
 
 /**
- * Handles `chat.abort`: cancels the run for one app session and emits the
- * terminal `complete` on its behalf (runtimes skip their own complete for
- * aborted runs, and the registry drops any duplicate).
+ * Handles an explicit cancellation. Claude retains ownership until its native
+ * query exits; a rejected interrupt must not make a live run appear completed.
  */
 async function handleChatAbort(
   ws: WebSocket,
@@ -485,12 +484,17 @@ async function handleChatAbort(
     return;
   }
 
-  const success = await dependencies.runtime.abort(run.provider, sessionId);
-
-  chatRunRegistry.completeRun(sessionId, {
-    exitCode: success ? 0 : 1,
-    aborted: true,
-  });
+  let success = false;
+  try {
+    success = await dependencies.runtime.abort(run.provider, sessionId);
+  } catch { /* Rejected interrupts leave the existing run and queue intact. */ }
+  if (!success) {
+    sendProtocolError(ws, 'ABORT_FAILED', 'The provider did not confirm the stop request. The existing process may still be running; its session has not been released.', sessionId);
+    return;
+  }
+  // Claude itself publishes completion only once its input and query have
+  // closed. Other providers retain their existing gateway completion contract.
+  if (run.provider !== 'claude') chatRunRegistry.completeRunIfCurrent(run, { exitCode: 0, aborted: true });
 }
 
 /**
@@ -542,11 +546,7 @@ function handleChatSubscribe(
     sendJson(ws, {
       kind: 'chat_subscribed',
       sessionId,
-      isProcessing,
-      runId: run?.runId,
-      runStartedAt: run?.startedAt,
-      ...(run?.runtimeState ?? {}),
-      lastSeq: run?.lastSeq ?? 0,
+      ...chatRunRegistry.getRuntimeSnapshot(sessionId),
       pendingPermissions,
       messageReceipts: run && String(run.writer.userId) === String(userId) ? [...run.messageReceipts.values()] : [],
       timestamp: new Date().toISOString(),
@@ -644,17 +644,15 @@ export async function runDetachedChatTurn(
     if (!input.interruptActiveRun) {
       return { started: false, error: 'A run was already in progress for this session.' };
     }
-    // Same shape as `chat.abort`: cancel the provider run and emit the
-    // terminal `complete` on its behalf, so every watching client sees the
-    // interrupted run end before this turn's stream begins. The interrupted
-    // run's own dispatch settles later through completeRunIfCurrent, which is
-    // scoped to that run and cannot touch the one started here.
-    const aborted = await dependencies.runtime.abort(activeRun.provider, input.sessionId);
+    let aborted = false;
+    try { aborted = await dependencies.runtime.abort(activeRun.provider, input.sessionId); }
+    catch { /* The scheduled row records the rejection for a manual retry. */ }
     if (!contextMatches()) return changedContext;
-    chatRunRegistry.completeRun(input.sessionId, {
-      exitCode: aborted ? 0 : 1,
-      aborted: true,
-    });
+    if (!aborted) return { started: false, error: 'The provider did not confirm stopping the existing run. This message was not sent; retry manually after checking the session.' };
+    if (activeRun.provider !== 'claude') chatRunRegistry.completeRunIfCurrent(activeRun, { exitCode: 0, aborted: true });
+    // Claude owns completion until its query exits. Keep the scheduled row as
+    // failed/reviewable instead of starting a replacement during stdin close.
+    if (chatRunRegistry.isProcessing(input.sessionId)) return { started: false, error: 'The previous process is still closing or another run started. This message was not sent; retry manually after checking the session.' };
   }
 
   if (!contextMatches()) return changedContext;

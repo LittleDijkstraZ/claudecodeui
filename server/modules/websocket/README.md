@@ -130,7 +130,7 @@ flowchart TD
   B -->|ok| D{data.type}
 
   D -->|chat.send| E[resolve session row -> startRun -> providerRuntimeService.run]
-  D -->|chat.abort| F[providerRuntimeService.abort + synthetic complete]
+  D -->|chat.abort| F[providerRuntimeService.abort + confirmed terminal lifecycle]
   D -->|chat.subscribe| G[chat_subscribed ack + attach socket + replay events seq > lastSeq]
   D -->|chat.permission-response| H[providerRuntimeService.resolveToolApproval]
   D -->|other| I[send kind:protocol_error]
@@ -139,7 +139,7 @@ flowchart TD
 ### Chat Notes
 
 1. **Unified envelope**: every server-to-client frame carries a `kind` — either a provider `NormalizedMessage` kind or a gateway kind (`chat_subscribed`, `session_upserted`, `loading_progress`, `protocol_error`). There is no second `type`-based protocol.
-2. **Unified terminal lifecycle**: every provider run ends with exactly one `complete` message built by `createCompleteMessage()` (`server/shared/utils.ts`): `{ kind: "complete", sessionId, actualSessionId, exitCode, success, aborted }`. The chat handler emits a synthetic `complete` for runs that crash or get aborted, and the run registry drops duplicate completes.
+2. **Unified terminal lifecycle**: every provider run ends with exactly one `complete` message built by `createCompleteMessage()` (`server/shared/utils.ts`): `{ kind: "complete", sessionId, actualSessionId, exitCode, success, aborted }`. Claude retains ownership until its native query exits, including after an acknowledged interrupt. Failed interrupts leave the original run active. Other providers retain gateway completion after a successful interrupt; the crash safety net and abort fallback are scoped to their captured run so late cleanup cannot complete its successor.
 3. **Per-run event log**: every live event gets a monotonically increasing `seq`. `chat.subscribe { sessions: [{ sessionId, lastSeq }] }` re-attaches the live stream to the requesting socket (any provider, not just Claude) and replays events with `seq > lastSeq`. If the buffer no longer covers `lastSeq`, the client refreshes over REST.
 4. `chat_subscribed` includes `isProcessing` (replaces `check-session-status`) and `pendingPermissions` (replaces `get-pending-permissions`).
 

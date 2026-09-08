@@ -258,14 +258,13 @@ export function useChatRealtimeHandlers({
         case 'protocol_error': {
           console.error('[Chat] Protocol error:', msg.code, msg.error);
           if (sid) {
-            // Surface the failure in the conversation and stop the spinner —
-            // the run never started (or was rejected), so no `complete` follows.
+            // Input rejection is not process completion. Reconcile the remote
+            // ownership snapshot without clearing a Workflow or a failed abort.
             if (typeof msg.clientMessageId === 'string') {
               sessionStore.updateMessageDelivery(sid, msg.clientMessageId, 'failed', String(msg.error || 'Request failed'));
-              if (msg.isProcessing === false) onSessionIdle?.(sid);
-            } else {
-              onSessionIdle?.(sid);
             }
+            if (msg.isProcessing === true) onSessionProcessing?.(sid, readSessionRuntimeState(msg));
+            else if (msg.isProcessing === false) onSessionIdle?.(sid);
             sessionStore.appendRealtime(sid, {
               id: `protocol_error_${Date.now()}`,
               sessionId: sid,

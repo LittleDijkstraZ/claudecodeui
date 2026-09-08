@@ -798,6 +798,7 @@ export function useSessionStore(userId?: string | number | null) {
         transcriptAnchorId: normalizedMessage.transcriptAnchorId || previous.transcriptAnchorId,
         responseMessageId: normalizedMessage.responseMessageId || previous.responseMessageId,
         runId: normalizedMessage.runId || previous.runId,
+        retriedAsClientMessageId: previous.retriedAsClientMessageId || normalizedMessage.retriedAsClientMessageId,
         delivery: normalizedMessage.delivery ? (keepDelivery ? previous.delivery : normalizedMessage.delivery) : undefined,
         deliveryError: normalizedMessage.delivery ? (keepDelivery ? previous.deliveryError : normalizedMessage.deliveryError) : undefined,
       };

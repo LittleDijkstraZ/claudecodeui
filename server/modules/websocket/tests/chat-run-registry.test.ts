@@ -562,5 +562,8 @@ test('a forgotten or replaced run cannot publish late delivery into the replacem
     assert.equal(next.messageReceipts.size, 0);
     next.writer.send({ ...late, clientMessageId: 'new-send' });
     assert.equal(next.messageReceipts.get('new-send')?.delivery, 'delivered');
+    next.writer.setSessionId('native-current');
+    first.writer.setSessionId('native-late-old');
+    assert.equal(sessionsDb.getSessionById('stale-writer')?.provider_session_id, 'native-current');
   });
 });

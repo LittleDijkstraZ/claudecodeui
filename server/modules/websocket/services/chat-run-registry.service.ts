@@ -120,6 +120,7 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
   if (message.kind === 'complete' && run.status === 'completed') {
     return null;
   }
+  if (run.status === 'completed' && message.kind === 'status' && message.text === 'claude_runtime_state') return null;
 
   if (message.kind === 'complete') {
     // A process may fail before the provider creates its stdin queue. Never leave
@@ -165,6 +166,7 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
     // the app id, so the "actual" id is by definition the app id as well.
     outbound.actualSessionId = run.appSessionId;
     run.status = 'completed';
+    if (run.runtimeState) run.runtimeState = { ...run.runtimeState, acceptsInput: false };
     run.completedAt = Date.now();
     evictRunLater(run.appSessionId);
   }
@@ -205,7 +207,7 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
  * happens first wins; later calls with the same id are no-ops.
  */
 function recordProviderSessionId(run: ChatRun, providerSessionId: string): void {
-  if (!providerSessionId || run.providerSessionId === providerSessionId) {
+  if (runs.get(run.appSessionId) !== run || !providerSessionId || run.providerSessionId === providerSessionId) {
     return;
   }
 
@@ -339,6 +341,22 @@ export const chatRunRegistry = {
 
   isProcessing(appSessionId: string): boolean {
     return runs.get(appSessionId)?.status === 'running';
+  },
+
+  /** The chat gateway uses this current-run snapshot for subscriptions and rejected sends. */
+  getRuntimeSnapshot(appSessionId: string) {
+    const run = runs.get(appSessionId);
+    const isProcessing = run?.status === 'running';
+    return {
+      isProcessing,
+      runId: run?.runId,
+      runStartedAt: run?.startedAt,
+      lastSeq: run?.lastSeq ?? 0,
+      ...(run?.runtimeState ?? {}),
+      // Admission precedes initialization. Neither a starting query nor a
+      // retained completed run advertises a writable native input stream.
+      acceptsInput: isProcessing && run?.runtimeState?.acceptsInput === true,
+    };
   },
 
   listRunningRuns(): Array<{

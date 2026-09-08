@@ -38,6 +38,23 @@ confirms delivery. Unconfirmed input stays visible across stream replay.
 Explicit task lifetimes have no UI silence timeout. Settings changed while this
 process is running apply when the next execution starts, not to appended input.
 
+Explicit Claude sends and manual retries are admitted by the remote runtime,
+not rejected solely by a stale browser loading flag or a missed capability
+snapshot. Rejected inputs include the current ownership/capability snapshot;
+failed interrupts never mark a still-running query complete. A confirmed stop
+retains ownership until the query exits, and release of a starting reservation
+is scoped to its own execution so the next send cannot lose its reservation.
+Polling uses the client clock for idle-response guards; remote timestamps must
+not keep a restarted session artificially busy. Partial capabilities are retained
+only when a snapshot identifies the same execution.
+
+A manual retry links the retained unconfirmed copy to its new send UUID. Repeated
+clicks cannot create additional copies from that source, including after refresh;
+if the new send fails, retry is offered on that new copy. Retrying preserves
+another draft, its edit anchor and the original attachment references. Preparation
+failures before creating a new copy leave the retry available. Nothing is resent
+automatically.
+
 Live subagent text is forwarded and remains scoped to its parent tool. Optional
 settings/context control requests never block transcript streaming; delayed
 responses are checked against the owning query and its stream generation.

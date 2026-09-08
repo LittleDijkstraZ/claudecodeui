@@ -253,6 +253,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
             converted.push({
               type: 'user',
               clientMessageId: msg.clientMessageId,
+              retriedAsClientMessageId: msg.retriedAsClientMessageId,
               delivery: msg.delivery,
               deliveryError: msg.deliveryError,
               content,

@@ -246,6 +246,9 @@ export function useChatComposerState({
   }, [draftScope, sessionKey, provider, attachedFiles]);
   // One preparation per draft scope prevents double Enter from uploading or allocating twice.
   const preparingSends = useRef(new Set<string>());
+  // Retain successful retry claims across renders; only preparation failures
+  // release the source UUID. The message copy persists the same relationship.
+  const claimedRetries = useRef(new Set<string>());
   const setInput = useCallback<Dispatch<SetStateAction<string>>>((next) => {
     setInputState((previous) => ({
       scope: draftScopeRef.current,
@@ -269,8 +272,6 @@ export function useChatComposerState({
   });
 
   const { t } = useTranslation('chat');
-  // Reserve the single legacy draft slot across async uploads, preventing later sends from replacing it.
-  const legacyQueueReservations = useRef(new Set<string>());
   const [queuedDraft, setQueuedDraft] = useState<QueuedDraft | null>(() => {
     if (typeof window === 'undefined' || !sessionKey) {
       return null;
@@ -664,6 +665,7 @@ export function useChatComposerState({
     async (
       event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>,
       queuedSubmission?: QueuedDraft,
+      onUserCopyCreated?: (clientMessageId: string) => void,
     ) => {
       event.preventDefault();
       const mutationAtSubmission = sessionKey ? contextMutations.current.get(sessionKey) : undefined;
@@ -697,14 +699,11 @@ export function useChatComposerState({
           && inputValueRef.current === currentInput;
       };
 
-      // A turn is already in flight: stash this message instead of sending it.
-      // Upload attached files now so the queued record contains durable image
-      // descriptors that can be sent even if another session is open later.
-      if (provider === 'claude' && isLoading) {
-        addMessage({ type: 'error', content: 'This Claude process has not advertised an available input stream. Your message remains in the composer and has not been queued. Retry when the process is ready, or open its existing terminal.', timestamp: new Date() });
-        return;
-      }
-      if (isLoading) {
+      // Claude input admission belongs to the remote process. A missed capability
+      // event (or an old loading flag after reconnect) cannot permanently block an
+      // explicit send/retry here. The server appends to the owner or rejects this
+      // UUID; it never stops that process to make room for the message.
+      if (isLoading && provider !== 'claude') {
         // A run can restart in the tiny gap between scheduling and flushing a
         // queued submission. Put the same durable draft back without uploading
         // its files again.
@@ -714,76 +713,68 @@ export function useChatComposerState({
           return;
         }
 
-        const legacyQueueKey = sessionKey || 'new-session';
-        if (provider === 'claude' && (legacyQueueReservations.current.has(legacyQueueKey) || (sessionKey && readQueuedMessage(sessionKey)))) {
-          addMessage({ type: 'error', content: t('input.queue.alreadyWaiting', { defaultValue: 'A message is already waiting. Your new text remains in the input. Edit or remove the waiting message first.' }), timestamp: new Date() });
+        const queuedOptions = buildSendOptions(currentInput);
+        const queuedSessionKey = sessionKey;
+        let uploadedAttachments: unknown[] = [];
+        try {
+          uploadedAttachments = await uploadAttachmentFiles(currentAttachments);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Unknown error';
+          console.error('Queued file upload failed:', error);
+          addMessage({
+            type: 'error',
+            content: `Failed to upload files: ${message}`,
+            timestamp: new Date(),
+          });
           return;
         }
-        if (provider === 'claude') legacyQueueReservations.current.add(legacyQueueKey);
-        try {
-          const queuedOptions = buildSendOptions(currentInput);
-          const queuedSessionKey = sessionKey;
-          let uploadedAttachments: unknown[] = [];
-          try {
-            uploadedAttachments = await uploadAttachmentFiles(currentAttachments);
-          } catch (error) {
-            const message = error instanceof Error ? error.message : 'Unknown error';
-            console.error('Queued file upload failed:', error);
-            addMessage({
-              type: 'error',
-              content: `Failed to upload files: ${message}`,
-              timestamp: new Date(),
-            });
-            return;
-          }
 
-          const durableDraft: QueuedDraft = {
-            content: currentInput,
-            attachments: currentAttachments,
-            uploadedAttachments,
-            options: queuedOptions,
-          };
-          if (queuedSessionKey) {
-            // Write the claim ticket synchronously after upload; this closes the
-            // gap before React's persistence effect runs.
-            writeQueuedMessage(queuedSessionKey, {
-              content: durableDraft.content,
-              options: durableDraft.options,
-              attachments: durableDraft.uploadedAttachments,
-            });
-          }
+        const durableDraft: QueuedDraft = {
+          content: currentInput,
+          attachments: currentAttachments,
+          uploadedAttachments,
+          options: queuedOptions,
+        };
+        if (queuedSessionKey) {
+          // Write the claim ticket synchronously after upload; this closes the
+          // gap before React's persistence effect runs.
+          writeQueuedMessage(queuedSessionKey, {
+            content: durableDraft.content,
+            options: durableDraft.options,
+            attachments: durableDraft.uploadedAttachments,
+          });
+        }
 
-          // Recorded under the session the message was queued FOR, and before
-          // the session-switch return below — the queued text must be
-          // recallable even when it dispatches without this composer.
-          recordSentMessage(currentInput, queuedSessionKey);
+        // Recorded under the session the message was queued FOR, and before
+        // the session-switch return below — the queued text must be
+        // recallable even when it dispatches without this composer.
+        recordSentMessage(currentInput, queuedSessionKey);
 
-          // The server owns dispatch after persistence. If the user changed
-          // sessions during upload, the durable record is already enough; do
-          // not attach its UI card to the newly opened composer.
-          if (composerDraftRef.current.scope !== submittedDraft.scope || sessionKeyRef.current !== queuedSessionKey) {
-            return;
-          }
-
-          queuedDraftSessionRef.current = queuedSessionKey;
-          setQueuedDraft(durableDraft);
-          // An upload must not clear another scope or an edited text/attachment draft.
-          if (draftStillMatches()) {
-            setInput('');
-            inputValueRef.current = '';
-            setAttachedFiles([]);
-            setFileErrors(new Map());
-            resetCommandMenuState();
-            setIsTextareaExpanded(false);
-            if (textareaRef.current) {
-              textareaRef.current.style.height = 'auto';
-            }
-            if (submittedDraft.scope) {
-              writeDraftText(submittedDraft.scope, '');
-            }
-          }
+        // The server owns dispatch after persistence. If the user changed
+        // sessions during upload, the durable record is already enough; do
+        // not attach its UI card to the newly opened composer.
+        if (composerDraftRef.current.scope !== submittedDraft.scope || sessionKeyRef.current !== queuedSessionKey) {
           return;
-        } finally { legacyQueueReservations.current.delete(legacyQueueKey); }
+        }
+
+        queuedDraftSessionRef.current = queuedSessionKey;
+        setQueuedDraft(durableDraft);
+        // An upload must not clear another scope or an edited text/attachment draft.
+        if (draftStillMatches()) {
+          setInput('');
+          inputValueRef.current = '';
+          setAttachedFiles([]);
+          setFileErrors(new Map());
+          resetCommandMenuState();
+          setIsTextareaExpanded(false);
+          if (textareaRef.current) {
+            textareaRef.current.style.height = 'auto';
+          }
+          if (submittedDraft.scope) {
+            writeDraftText(submittedDraft.scope, '');
+          }
+        }
+        return;
       }
 
       // Intercept slash commands only when "/" is the first input character.
@@ -927,6 +918,7 @@ export function useChatComposerState({
         };
 
         addMessage(userMessage, targetSessionId, provider);
+        if (clientMessageId) onUserCopyCreated?.(clientMessageId);
         setIsUserScrolledUp(false);
         setTimeout(() => scrollToBottom(), 100);
 
@@ -957,7 +949,7 @@ export function useChatComposerState({
             statusText: null, canInterrupt: true, phase: 'foreground', acceptsInput: false,
           });
         }
-        setEditingTarget(previous => previous?.scope === submittedDraft.scope && previous.anchorId === editingAnchorId ? null : previous);
+        if (!queuedSubmission) setEditingTarget(previous => previous?.scope === submittedDraft.scope && previous.anchorId === editingAnchorId ? null : previous);
 
         // Recorded under the (possibly just-allocated) session id, so the first
         // message of a new chat lands in the history of the session the user is
@@ -1327,16 +1319,30 @@ export function useChatComposerState({
   }, [setInput]);
 
   /** An explicit retry creates a new send UUID. It never overwrites the current draft or reuses old edit intent. */
-  const retryUnconfirmedMessage = useCallback((message: ChatMessage) => {
-    if (message.delivery !== 'failed' || !message.clientMessageId) return;
+  const retryUnconfirmedMessage = useCallback(async (message: ChatMessage) => {
+    if (message.delivery !== 'failed' || !message.clientMessageId || message.retriedAsClientMessageId) return;
+    if (!sessionKey || message.sessionId && message.sessionId !== sessionKey) return;
+    const retryKey = `${provider}:${sessionKey}:${message.clientMessageId}`;
+    if (claimedRetries.current.has(retryKey)) return;
     const attachments = [...(message.images || []), ...(message.files || [])];
     if (attachments.some(attachment => typeof attachment.path !== 'string')) {
       addMessage({ type: 'error', content: 'This retained copy has attachments that need to be selected again before retrying.', timestamp: new Date() });
       return;
     }
-    void handleSubmit(createFakeSubmitEvent(), { content: message.content || '', attachments: [], uploadedAttachments: attachments,
-      options: buildSendOptions(message.content || '') });
-  }, [handleSubmit, addMessage, buildSendOptions]);
+    claimedRetries.current.add(retryKey);
+    let createdCopy = false;
+    try {
+      await handleSubmit(createFakeSubmitEvent(), { content: message.content || '', attachments: [], uploadedAttachments: attachments,
+        options: buildSendOptions(message.content || '') }, clientMessageId => {
+        createdCopy = true;
+        // Keep the original unconfirmed text for review. Further retries belong
+        // to the new failed copy, whose UUID owns the new delivery outcome.
+        addMessage({ ...message, retriedAsClientMessageId: clientMessageId }, sessionKey, provider);
+      });
+    } finally {
+      if (!createdCopy) claimedRetries.current.delete(retryKey);
+    }
+  }, [handleSubmit, addMessage, buildSendOptions, sessionKey, provider]);
 
   const cancelEditMessage = useCallback(() => {
     setEditingTarget(null);

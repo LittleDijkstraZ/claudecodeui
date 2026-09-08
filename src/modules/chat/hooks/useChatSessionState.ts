@@ -136,7 +136,7 @@ function chatMessageToNormalized(
     : typeof msg.timestamp === 'number'
       ? new Date(msg.timestamp).toISOString()
       : String(msg.timestamp);
-  const base = { id, sessionId, timestamp: ts, provider, clientMessageId: msg.clientMessageId, delivery: msg.delivery, deliveryError: msg.deliveryError };
+  const base = { id, sessionId, timestamp: ts, provider, clientMessageId: msg.clientMessageId, retriedAsClientMessageId: msg.retriedAsClientMessageId, delivery: msg.delivery, deliveryError: msg.deliveryError };
 
   if (msg.isToolUse) {
     return {

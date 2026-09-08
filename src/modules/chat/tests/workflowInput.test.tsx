@@ -59,13 +59,14 @@ test.each(['background', 'foreground'] as const)('a live %s query accepts multip
   expect(readQueuedMessage('session-a')).toBeNull();
 });
 
-test('a process without live input capability refuses a send without an automatic queue', async () => {
-  const view = composer({ startedAt: 100, statusText: null, canInterrupt: true });
-  await view.submit('wait for this run');
-  expect(view.send).not.toHaveBeenCalled();
+test.each([undefined, false])('missing/stale input capability (%s) asks the remote to admit the explicit send', async acceptsInput => {
+  const view = composer({ startedAt: 100, statusText: null, canInterrupt: true, acceptsInput });
+  await view.submit('Check this input');
+  expect(view.send).toHaveBeenCalledTimes(1);
+  expect(view.send.mock.calls[0][0]).toMatchObject({ type: 'chat.send', sessionId: 'session-a', content: 'Check this input' });
   expect(readQueuedMessage('session-a')).toBeNull();
-  expect(view.result.current.input).toBe('wait for this run');
-  expect(view.add.mock.calls.at(-1)?.[0].content).toContain('has not been queued');
+  expect(view.add.mock.calls.map(([message]) => message.delivery)).toEqual(['queued']);
+  expect(view.processing).not.toHaveBeenCalled();
 });
 
 test('a disconnected send is explicitly not delivered and never stops the Workflow', async () => {
@@ -152,14 +153,15 @@ test('a foreground response refreshes the transcript once while keeping backgrou
   expect(view.refresh).toHaveBeenCalledTimes(2);
 });
 
-test('repeated attempts to an unavailable stream remain unsent drafts', async () => {
+test('explicit sends with stale activity remain separate UUID requests without a deferred draft queue', async () => {
   const view = composer({ startedAt: 100, statusText: null, canInterrupt: true });
-  await view.submit('First waiting message');
-  await view.submit('Second waiting message');
+  await view.submit('First message');
+  await view.submit('Second message');
   expect(readQueuedMessage('session-a')).toBeNull();
-  expect(view.result.current.input).toBe('Second waiting message');
-  expect(view.send).not.toHaveBeenCalled();
-  expect(view.add.mock.calls.at(-1)?.[0].content).toContain('has not been queued');
+  expect(view.send).toHaveBeenCalledTimes(2);
+  const frames = view.send.mock.calls.map(([frame]) => frame as Record<string, unknown>);
+  expect(frames[0].clientMessageId).not.toBe(frames[1].clientMessageId);
+  expect(frames.map(frame => frame.type)).toEqual(['chat.send', 'chat.send']);
 });
 
 test('a completed run subscription restores only matching valid delivery receipts without replaying arbitrary content', () => {
@@ -179,15 +181,16 @@ test('a completed run subscription restores only matching valid delivery receipt
 });
 
 
-test('an unavailable stream does not upload attachments or create waiting copies', async () => {
+test('stale capability does not lose an attachment; remote admission receives its durable reference', async () => {
+  uploadFiles.mockResolvedValueOnce({ ok: true, json: async () => ({ attachments: [{ path: '/uploads/fixture.txt' }] }) });
   const view = composer({ startedAt: 100, statusText: null, canInterrupt: true });
   const file = new File(['fixture'], 'fixture.txt');
-  await act(async () => { view.result.current.setInput('Unsent attachment'); view.result.current.setAttachedFiles([file]); });
+  await act(async () => { view.result.current.setInput('Attachment'); view.result.current.setAttachedFiles([file]); });
   await act(async () => { await view.result.current.handleSubmit({ preventDefault() {} } as never); });
-  expect(uploadFiles).not.toHaveBeenCalled();
-  expect(view.result.current.input).toBe('Unsent attachment');
-  expect(view.result.current.attachedFiles).toEqual([file]);
-  expect(view.add.mock.calls.some(([message]) => message.delivery === 'queued')).toBe(false);
+  expect(uploadFiles).toHaveBeenCalledTimes(1);
+  expect(view.send).toHaveBeenCalledTimes(1);
+  expect(view.send.mock.calls[0][0]).toMatchObject({ options: { attachments: [{ path: '/uploads/fixture.txt' }] } });
+  expect(view.add.mock.calls[0][0].files).toEqual([{ path: '/uploads/fixture.txt' }]);
 });
 
 test('edit sends have a stable input UUID so disconnected edits retain a failed user copy', async () => {
@@ -240,10 +243,10 @@ test.each([true, false])('upload completion preserves a same-text draft in anoth
   await act(async () => { pending = view.result.current.handleSubmit({ preventDefault() {} } as never); await Promise.resolve(); });
   view.rerender({ sessionId: 'session-b' });
   await act(async () => { view.result.current.setInput('Same wording'); });
-  await act(async () => { if (acceptsInput) release({ ok: true, json: async () => ({ attachments: [{ path: 'one.txt' }] }) }); await pending; });
+  await act(async () => { release({ ok: true, json: async () => ({ attachments: [{ path: 'one.txt' }] }) }); await pending; });
   expect(view.result.current.input).toBe('Same wording');
-  if (acceptsInput) expect(view.send.mock.calls[0][0]).toMatchObject({ sessionId: 'session-a' });
-  else { expect(readQueuedMessage('session-a')).toBeNull(); expect(uploadFiles).not.toHaveBeenCalled(); }
+  expect(view.send.mock.calls[0][0]).toMatchObject({ sessionId: 'session-a' });
+  expect(readQueuedMessage('session-a')).toBeNull();
 });
 
 test.each([true, false])('upload completion preserves attachments added without changing the text (acceptsInput=%s)', async acceptsInput => {
@@ -256,7 +259,7 @@ test.each([true, false])('upload completion preserves attachments added without 
   let pending!: Promise<void>;
   await act(async () => { pending = view.result.current.handleSubmit({ preventDefault() {} } as never); await Promise.resolve(); });
   await act(async () => { view.result.current.setAttachedFiles([first, second]); });
-  await act(async () => { if (acceptsInput) release({ ok: true, json: async () => ({ attachments: [{ path: 'one.txt' }] }) }); await pending; });
+  await act(async () => { release({ ok: true, json: async () => ({ attachments: [{ path: 'one.txt' }] }) }); await pending; });
   expect(view.result.current.input).toBe('Same wording');
   expect(view.result.current.attachedFiles).toEqual([first, second]);
 });
@@ -335,4 +338,82 @@ test('new run identity resets an old sequence cursor; late old receipts and comp
   expect(view.result.current.protection.processingSessions.has('session-a')).toBe(true);
   view.emit({ ...receipt('delivered'), clientMessageId: newId, runId: 'new-run', runStartedAt: 200, seq: 2 });
   expect(view.result.current.store.getMessages('session-a').at(-1)?.delivery).toBe('delivered');
+});
+
+
+test.each([undefined, false])('retry reaches remote admission with a new UUID despite stale capability %s, preserving another edit draft', async acceptsInput => {
+  const view = composer({ startedAt: 100, statusText: null, canInterrupt: true, acceptsInput });
+  const failed: ChatMessage = { type: 'user', sessionId: 'session-a', timestamp: 1, content: 'Retained question', delivery: 'failed', clientMessageId: '22222222-2222-4222-8222-222222222222', files: [{ path: '/uploads/retry.txt' }] };
+  await act(async () => { view.result.current.beginEditMessage({ type: 'user', content: 'Different edit draft', transcriptAnchorId: 'different-anchor', timestamp: 1 }); });
+  await act(async () => { await view.result.current.retryUnconfirmedMessage(failed); });
+  expect(view.send).toHaveBeenCalledTimes(1);
+  const frame = view.send.mock.calls[0][0] as Record<string, unknown>;
+  expect(frame).toMatchObject({ type: 'chat.send', sessionId: 'session-a', content: 'Retained question', options: { attachments: [{ path: '/uploads/retry.txt' }] } });
+  expect(frame.clientMessageId).not.toBe(failed.clientMessageId);
+  expect(frame).not.toHaveProperty('anchorId');
+  expect(view.result.current.input).toBe('Different edit draft');
+  expect(view.result.current.editingAnchorId).toBe('different-anchor');
+  expect(failed.delivery).toBe('failed');
+  expect(uploadFiles).not.toHaveBeenCalled();
+  expect(readQueuedMessage('session-a')).toBeNull();
+});
+
+test('a stale retry callback cannot submit another conversation’s retained copy', async () => {
+  const view = composer(BACKGROUND);
+  await act(async () => { await view.result.current.retryUnconfirmedMessage({ type: 'user', sessionId: 'session-b', content: 'Other session', timestamp: 1, delivery: 'failed', clientMessageId: '22222222-2222-4222-8222-222222222222' }); });
+  expect(view.send).not.toHaveBeenCalled();
+});
+
+test('failed abort preserves running state and an input rejection restores the authoritative capability', () => {
+  const view = handlers();
+  view.emit({ kind: 'status', text: 'claude_runtime_state', sessionId: 'session-a', ...BACKGROUND, acceptsInput: false });
+  view.emit(receipt('queued'));
+  view.emit({ kind: 'protocol_error', code: 'ABORT_FAILED', error: 'Could not stop', sessionId: 'session-a', isProcessing: true, ...BACKGROUND });
+  expect(view.result.current.protection.processingSessions.get('session-a')).toMatchObject({ phase: 'background', acceptsInput: true });
+  expect(view.result.current.store.getMessages('session-a').find(message => message.clientMessageId)?.delivery).toBe('queued');
+  view.emit({ kind: 'protocol_error', code: 'INPUT_NOT_ACCEPTED', error: 'Input closed', sessionId: 'session-a', clientMessageId: '16dfd601-35b0-409f-aec3-f6cb10b48441', isProcessing: true, ...BACKGROUND, acceptsInput: false });
+  expect(view.result.current.protection.processingSessions.get('session-a')?.acceptsInput).toBe(false);
+  expect(view.result.current.store.getMessages('session-a').find(message => message.clientMessageId)?.delivery).toBe('failed');
+  view.emit({ kind: 'protocol_error', code: 'INVALID_MESSAGE', error: 'Malformed unrelated request', sessionId: 'session-a' });
+  expect(view.result.current.protection.processingSessions.has('session-a')).toBe(true);
+});
+
+test('double-clicking one failed copy sends once; a further manual retry belongs to the new failed UUID', async () => {
+  const view = composer(BACKGROUND);
+  const failed: ChatMessage = { type: 'user', sessionId: 'session-a', content: 'Retained question', timestamp: 1, delivery: 'failed', clientMessageId: '22222222-2222-4222-8222-222222222222' };
+  await act(async () => { await Promise.all([view.result.current.retryUnconfirmedMessage(failed), view.result.current.retryUnconfirmedMessage(failed)]); });
+  expect(view.send).toHaveBeenCalledTimes(1);
+  const newId = (view.send.mock.calls[0][0] as Record<string, unknown>).clientMessageId as string;
+  expect(view.add.mock.calls.some(([message]) => message.clientMessageId === failed.clientMessageId && message.retriedAsClientMessageId === newId)).toBe(true);
+  await act(async () => { await view.result.current.retryUnconfirmedMessage(failed); });
+  expect(view.send).toHaveBeenCalledTimes(1);
+  await act(async () => { await view.result.current.retryUnconfirmedMessage({ ...failed, clientMessageId: newId }); });
+  expect(view.send).toHaveBeenCalledTimes(2);
+  expect((view.send.mock.calls[1][0] as Record<string, unknown>).clientMessageId).not.toBe(newId);
+});
+
+test('a persisted retry relationship prevents sending the old source after remount', async () => {
+  const view = composer(BACKGROUND);
+  await act(async () => { await view.result.current.retryUnconfirmedMessage({ type: 'user', sessionId: 'session-a', content: 'Retained question', timestamp: 1, delivery: 'failed', clientMessageId: '22222222-2222-4222-8222-222222222222', retriedAsClientMessageId: '33333333-3333-4333-8333-333333333333' }); });
+  expect(view.send).not.toHaveBeenCalled();
+});
+
+test('a retry refused before creating a new input copy can be retried after preparation is possible', async () => {
+  const view = composer(BACKGROUND);
+  const failed: ChatMessage = { type: 'user', sessionId: 'session-a', content: 'Retained question', timestamp: 1, delivery: 'failed', clientMessageId: '22222222-2222-4222-8222-222222222222' };
+  act(() => window.dispatchEvent(new CustomEvent('cloudcli:session-mutation', { detail: { sessionId: 'session-a', requestId: 'mutation', phase: 'started' } })));
+  await act(async () => { await view.result.current.retryUnconfirmedMessage(failed); });
+  expect(view.send).not.toHaveBeenCalled();
+  expect(view.add.mock.calls.some(([message]) => message.retriedAsClientMessageId)).toBe(false);
+  act(() => window.dispatchEvent(new CustomEvent('cloudcli:session-mutation', { detail: { sessionId: 'session-a', requestId: 'mutation', phase: 'failed' } })));
+  await act(async () => { await view.result.current.retryUnconfirmedMessage(failed); });
+  expect(view.send).toHaveBeenCalledTimes(1);
+});
+
+test('an already retried source retains its delivery warning without another retry button', () => {
+  const retry = vi.fn();
+  const view = render(<MessageDeliveryStatus message={{ type: 'user', timestamp: 1, delivery: 'failed', retriedAsClientMessageId: '33333333-3333-4333-8333-333333333333' }} onRetry={retry} />);
+  expect(view.getByRole('status').textContent).toMatch(/unconfirmed|未确认|未確認/);
+  expect(view.queryByRole('button')).toBeNull();
+  expect(view.container.textContent).toContain('Retried as a new message');
 });

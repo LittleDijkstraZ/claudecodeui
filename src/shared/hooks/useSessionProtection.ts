@@ -132,22 +132,28 @@ export function useSessionProtection() {
 
       for (const [sessionId, snapshot] of incoming) {
         const existing = prev.get(sessionId);
-        const snapshotStartedAt =
-          typeof snapshot.startedAt === 'number' && Number.isFinite(snapshot.startedAt) && snapshot.startedAt > 0
-            ? snapshot.startedAt
-            : undefined;
+        // A partial snapshot can retain capabilities only when it confirms the
+        // same execution. A replacement or unidentified process must advertise
+        // its own stream instead of inheriting the previous process's input.
+        const sameExecution = Boolean(snapshot.executionId && snapshot.executionId === existing?.executionId);
+        const previousRuntime = sameExecution ? existing : undefined;
+        const previousActivity = sameExecution || (!snapshot.executionId && !existing?.executionId) ? existing : undefined;
+        const phase = snapshot.phase ?? previousRuntime?.phase;
 
         updated.set(sessionId, {
-          phase: snapshot.phase,
-          foregroundTurnId: snapshot.foregroundTurnId,
-          foregroundStartedAt: snapshot.foregroundStartedAt,
-          acceptsInput: snapshot.acceptsInput,
-          backgroundTasks: snapshot.backgroundTasks,
+          phase,
+          foregroundTurnId: phase === 'background' ? undefined : snapshot.foregroundTurnId ?? previousRuntime?.foregroundTurnId,
+          foregroundStartedAt: phase === 'background' ? undefined : snapshot.foregroundStartedAt ?? previousRuntime?.foregroundStartedAt,
+          acceptsInput: snapshot.acceptsInput ?? previousRuntime?.acceptsInput,
+          backgroundTasks: snapshot.backgroundTasks ?? previousRuntime?.backgroundTasks,
           executionId: snapshot.executionId,
           statusText:
-            snapshot.statusText !== undefined ? snapshot.statusText : existing?.statusText ?? null,
-          canInterrupt: snapshot.canInterrupt ?? existing?.canInterrupt ?? true,
-          startedAt: snapshotStartedAt ?? existing?.startedAt ?? now,
+            snapshot.statusText !== undefined ? snapshot.statusText : previousActivity?.statusText ?? null,
+          canInterrupt: snapshot.canInterrupt ?? previousActivity?.canInterrupt ?? true,
+          // startedAt is a client-clock guard for late idle replies and absent
+          // polls. Remote timestamps can run ahead or behind this browser; the
+          // provider's foregroundStartedAt remains available for display.
+          startedAt: previousActivity?.startedAt ?? now,
         });
       }
 

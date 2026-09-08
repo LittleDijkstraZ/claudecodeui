@@ -262,21 +262,23 @@ export default function ChatComposer({
   const hasQueuedDraft = Boolean(queuedDraft);
   const legacyClaudeQueue = provider === 'claude' && Boolean(activity) && activity?.acceptsInput !== true;
   const canQueueDraft = isLoading && Boolean(input.trim() || attachedFiles.length > 0);
-  const submitHint = legacyClaudeQueue ? t('input.streamUnavailable', { defaultValue: 'Input unavailable; your draft will stay here' }) : canQueueDraft
-    ? activity?.acceptsInput === true
+  // Sending to Claude is checked by the server, even before capability updates
+  // reach this view. Keep the stop action only for an empty composer.
+  const submitHint = canQueueDraft
+    ? provider === 'claude'
       ? t('input.hintText.liveQueue', { defaultValue: 'Enter to send to this conversation' })
       : hasQueuedDraft
-      ? legacyClaudeQueue ? t('input.queue.alreadyWaitingHint') : t('input.hintText.updateQueued', { defaultValue: 'Enter to update queued message' })
-      : t('input.hintText.queue', { defaultValue: 'Enter to queue your next message' })
+        ? t('input.hintText.updateQueued', { defaultValue: 'Enter to update queued message' })
+        : t('input.hintText.queue', { defaultValue: 'Enter to queue your next message' })
     : sendByCtrlEnter
       ? t('input.hintText.ctrlEnter')
       : t('input.hintText.enter');
-  const submitAriaLabel = legacyClaudeQueue ? t('input.streamUnavailable', { defaultValue: 'Input unavailable; your draft will stay here' }) : canQueueDraft
-    ? activity?.acceptsInput === true
+  const submitAriaLabel = canQueueDraft
+    ? provider === 'claude'
       ? t('input.send')
       : hasQueuedDraft
-      ? legacyClaudeQueue ? t('input.queue.alreadyWaitingHint') : t('input.queue.update', { defaultValue: 'Update queued message' })
-      : t('input.queue.sendNext', { defaultValue: 'Queue next message' })
+        ? t('input.queue.update', { defaultValue: 'Update queued message' })
+        : t('input.queue.sendNext', { defaultValue: 'Queue next message' })
     : isLoading
       ? t('input.stop')
       : t('input.send');

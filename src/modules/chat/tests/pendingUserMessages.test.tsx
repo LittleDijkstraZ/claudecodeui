@@ -70,6 +70,25 @@ test('dismissing removes only the local copy and survives reconnect receipts and
   expect(sessionMessages).not.toHaveBeenCalled();
 });
 
+test('a source retry relationship survives late receipts and reloads without merging the distinct new UUID', () => {
+  const newId = '33333333-3333-4333-8333-333333333333';
+  const view = renderHook(() => useSessionStore('user-a'));
+  act(() => {
+    view.result.current.appendRealtime('session-a', { ...input('failed'), retriedAsClientMessageId: newId });
+    view.result.current.appendRealtime('session-a', { ...input(), id: `client_${newId}`, clientMessageId: newId });
+    view.result.current.appendRealtime('session-a', { ...input('queued'), retriedAsClientMessageId: undefined });
+  });
+  expect(view.result.current.getMessages('session-a')).toHaveLength(2);
+  expect(view.result.current.getMessages('session-a').find(message => message.clientMessageId === ID)).toMatchObject({ delivery: 'failed', retriedAsClientMessageId: newId });
+  view.unmount();
+  const restored = renderHook(() => useSessionStore('user-a'));
+  expect(restored.result.current.getMessages('session-a')).toHaveLength(2);
+  expect(restored.result.current.getMessages('session-a').find(message => message.clientMessageId === ID)?.retriedAsClientMessageId).toBe(newId);
+  act(() => restored.result.current.updateMessageDelivery('session-a', newId, 'failed', 'Synthetic error'));
+  expect(restored.result.current.getMessages('session-a').find(message => message.clientMessageId === newId)).toMatchObject({ delivery: 'failed' });
+  expect(restored.result.current.getMessages('session-a').find(message => message.clientMessageId === newId)?.retriedAsClientMessageId).toBeUndefined();
+});
+
 test('browser quota failure surfaces a warning without throwing away input or changing delivery', () => {
   vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('Quota exceeded', 'QuotaExceededError'); });
   const view = renderHook(() => useSessionStore('user-a'));

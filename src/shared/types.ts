@@ -306,6 +306,8 @@ export type ChatMessageDelivery = 'queued' | 'delivered' | 'failed';
 export type ChatMessage = {
   type: string;
   clientMessageId?: string;
+  /** New input UUID created by an explicit retry of this retained copy; prevents retrying the same copy twice. */
+  retriedAsClientMessageId?: string;
   /** Websocket run owning this receipt; used to close unconfirmed copies when a later execution starts. */
   runId?: string;
   /** Exact API response linked by native consumption receipt; history uses the same response ID and parent ancestry. */
@@ -438,6 +440,8 @@ export type NormalizedMessage = {
   toolUseResult?: unknown;
   id: string;
   clientMessageId?: string;
+  /** Persisted local retry relationship; delivery receipts must not reopen the source copy's retry action. */
+  retriedAsClientMessageId?: string;
   /** Websocket run owning this receipt; used to close unconfirmed copies when a later execution starts. */
   runId?: string;
   /** Exact API response linked by native consumption receipt; history uses the same response ID and parent ancestry. */

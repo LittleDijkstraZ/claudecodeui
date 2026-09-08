@@ -13,6 +13,8 @@
  */
 
 import crypto from 'crypto';
+import { spawn } from 'node:child_process';
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { claudeSettingsFlags, resolveClaudeExecutionSettings } from '@/modules/providers/services/claude-execution-settings.js';
 import { claudeExecutionRecords } from '@/modules/providers/services/claude-execution-records.js';
 import { shellConfigurationObservation } from '@/modules/providers/services/claude-shell-observer.js';
@@ -22,7 +24,7 @@ import os from 'os';
 import path from 'path';
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import type { McpServerConfig, Options, Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { McpServerConfig, Options, Query, SDKUserMessage, SpawnOptions } from '@anthropic-ai/claude-agent-sdk';
 
 import type { AnyRecord, IProviderRuntime, ProviderModelsDefinition, ProviderPermissionDecision, ProviderRuntimeContext, ProviderRuntimeWriter } from '@/shared/index.js';
 import { createClaudeTextStream } from '@/modules/providers/list/claude/claude-text-stream.js';
@@ -58,6 +60,8 @@ type ActiveSession = {
   writer: ProviderRuntimeWriter | null;
   releaseInput: (() => void) | null;
   enqueue?: (command: string, options: AnyRecord) => Promise<boolean>;
+  abortPromise?: Promise<boolean>;
+  aborted?: boolean;
 };
 type ApprovalDecision = Partial<ProviderPermissionDecision> & { cancelled?: boolean };
 type ApprovalMetadata = {
@@ -70,18 +74,15 @@ type ApprovalMetadata = {
 type ApprovalResolver = ((decision: ApprovalDecision | null) => void) & ApprovalMetadata;
 type RuntimeDependencies = {
   query: typeof query;
+  spawn: (options: SpawnOptions) => ChildProcessWithoutNullStreams;
   loadMcpConfig: typeof loadMcpConfig;
   waitCeilingMs: number;
   usage: typeof claudeUsageService | null;
 };
 
 const activeSessions = new Map<string, ActiveSession>();
-const startingSessions = new Set<string>();
+const startingSessions = new Map<string, symbol>();
 const pendingToolApprovals = new Map<string, ApprovalResolver>();
-// Sessions cancelled via abort-session. The abort handler already sent the
-// terminal `complete` (aborted: true) to the client, so the run loop must not
-// emit a second one when its generator winds down.
-const abortedSessionIds = new Set<string>();
 const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS || '', 10) || 55000;
 
 // Grace period for legacy background tools without explicit task lifetimes.
@@ -287,6 +288,11 @@ function addSession(sessionId: string, queryInstance: Query, writer: ProviderRun
     throw new Error('Claude already owns this session. Its running process must not be replaced.');
   }
   const carried = existing;
+  if (existing?.instance === queryInstance) {
+    existing.writer = writer;
+    existing.releaseInput = releaseInput || existing.releaseInput;
+    return;
+  }
   activeSessions.set(sessionId, {
     instance: queryInstance,
     startTime: carried?.startTime || Date.now(),
@@ -575,7 +581,7 @@ async function loadMcpConfig(cwd?: string): Promise<Record<string, McpServerConf
  * @param {Object} context - Provider-scoped model, session, and auth lookups
  * @returns {Promise<void>}
  */
-async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderRuntimeWriter, context: ProviderRuntimeContext, dependencies: RuntimeDependencies) {
+async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderRuntimeWriter, context: ProviderRuntimeContext, dependencies: RuntimeDependencies, releaseStartingReservation: () => void) {
   const { sessionId, sessionSummary } = options;
   const executionId = options.executionId || crypto.randomUUID();
   const initialMessageId = options.clientMessageId || crypto.randomUUID();
@@ -626,10 +632,10 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
       clientMessageId: entry.id, responseMessageId: entry.responseMessageId, transcriptAnchorId: entry.transcriptAnchorId, providerSessionId: capturedSessionId || undefined,
       delivery: entry.delivery, content: entry.command, images: entry.images, files: entry.files, timestamp: entry.timestamp, executionId, ...(error ? { error } : {}) }));
   });
-  releasePromptStream = inputQueue.release;
   const emitRuntimeState = () => ws.send(createNormalizedMessage({ kind: 'status', text: 'claude_runtime_state', provider: 'claude', sessionId: sessionKey(),
     phase: foreground ? 'foreground' : 'background', acceptsInput: streamStarted && inputQueue.isOpen(), backgroundTasks: backgroundWork.pendingCount(), executionId,
     foregroundTurnId: foreground ? foregroundTurnId : undefined, foregroundStartedAt: foreground ? foregroundStartedAt : undefined }));
+  releasePromptStream = inputQueue.release;
   const enqueueInput = async (command: string, next: AnyRecord): Promise<boolean> => {
     if (!streamStarted || !inputQueue.isOpen()) return false;
     claudeCommandCatalog.assertAllowed(command, capturedSessionId);
@@ -648,8 +654,11 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
   };
   const registerInput = () => {
     if (!sessionKey() || !queryInstance) return;
-    addSession(sessionKey()!, queryInstance, ws, releasePromptStream);
+    addSession(sessionKey()!, queryInstance, ws, () => { releasePromptStream(); emitRuntimeState(); });
     getSession(sessionKey()!)!.enqueue = enqueueInput;
+    // The active query now owns this reservation. Its final frame may trigger
+    // the next send before this async invocation's finally block settles.
+    releaseStartingReservation();
   };
 
   // Arms (or re-arms) the idle countdown that eventually closes stdin.
@@ -671,10 +680,28 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
 
   // Cleanup removes only the entry owned by this query.
   let queryInstance: Query | null = null;
+  const nativeExits: Array<Promise<void>> = [];
+  let nativeStderr = '';
+  const awaitNativeExit = async () => {
+    // SDK cleanup waits at most two seconds. Its iterator ending is not proof
+    // that a still-observed OS child has exited; retain ownership until it has.
+    await Promise.all(nativeExits);
+  };
+  const releaseOwnership = () => {
+    if (sessionKey() && getSession(sessionKey()!)?.instance === queryInstance) removeSession(sessionKey()!);
+    releaseStartingReservation();
+  };
+  const settleAbort = async () => {
+    const owned = sessionKey() ? getSession(sessionKey()!) : undefined;
+    if (owned?.instance !== queryInstance) return false;
+    await owned.abortPromise;
+    return owned.aborted === true;
+  };
   let executionRecorded = false;
   const textStream = createClaudeTextStream((message, sid) => context.normalizeMessage(transformMessage(message as AnyRecord), sid));
 
   try {
+    emitRuntimeState();
     claudeCommandCatalog.assertAllowed(command, capturedSessionId);
     if ('expectedProviderSessionId' in options && options.expectedProviderSessionId !== providerSessionId) throw new Error('The conversation changed before Claude started. Retry using its current state.');
     if (options.executionSettings && sessionId) {
@@ -704,6 +731,38 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
       model: resolvedModel || options.model,
       effortModels,
     });
+    sdkOptions.spawnClaudeCodeProcess = (spawnOptions) => {
+      // Let SDK choose command, flags, cwd, environment and its forwarded
+      // graceful-shutdown signal. This hook only observes the resulting child.
+      const child = dependencies.spawn(spawnOptions);
+      nativeExits.push(new Promise<void>((resolve) => {
+        let finished = false;
+        const exited = () => {
+          if (finished) return;
+          finished = true;
+          child.off('exit', exited);
+          child.off('error', failedToSpawn);
+          resolve();
+        };
+        const failedToSpawn = () => {
+          // Abort/error events on an existing PID do not prove process exit.
+          // Node emits no exit for ENOENT-style failures with no spawned child.
+          if (child.pid === undefined) exited();
+        };
+        child.once('exit', exited);
+        child.on('error', failedToSpawn);
+        if (child.exitCode !== null || child.signalCode !== null) exited();
+      }));
+      // A custom spawn bypasses SDK's stderr collector. Drain it and preserve
+      // a bounded diagnostic tail, without adding raw stderr to server logs.
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', (chunk: string) => {
+        nativeStderr = (nativeStderr + chunk).slice(-4096);
+        sdkOptions.stderr?.(chunk);
+      });
+      child.stderr.on('error', () => {});
+      return child;
+    };
 
     const mcpServers = await dependencies.loadMcpConfig(options.cwd);
     if (mcpServers) {
@@ -1001,7 +1060,7 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
         }
         lastResultFailed = message.is_error === true;
         const turn = backgroundWork.finishTurn(lastResultFailed);
-        const abortPending = sessionKey() ? abortedSessionIds.has(sessionKey()!) : false;
+        const abortPending = Boolean(sessionKey() && getSession(sessionKey()!)?.aborted);
         if (lastResultFailed && !abortPending) {
           const errors = Array.isArray(message.errors) ? message.errors.filter((error: unknown) => typeof error === 'string') : [];
           const errorContent = errors.join('\n') || (typeof message.result === 'string' ? message.result : '') || `Claude ended this turn with ${message.subtype || 'an error'}.`;
@@ -1041,13 +1100,9 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
     // Finalize bounded metadata requests after all stream events have been forwarded.
     await Promise.allSettled(pendingUsageSummaries);
 
-    // Remove only the process entry owned by this execution.
-    if (sessionKey() && getSession(sessionKey()!)?.instance === queryInstance) {
-      removeSession(sessionKey()!);
-    }
-
-    // Abort owns its terminal event; a normal native exit completes this runtime once.
-    const wasAborted = sessionKey() ? abortedSessionIds.delete(sessionKey()!) : false;
+    const wasAborted = await settleAbort();
+    await awaitNativeExit();
+    releaseOwnership();
     if (!turnCompleteSent) {
       turnCompleteSent = true;
       const workflowInterrupted = !lastResultFailed && backgroundWork.hasPendingWorkflow();
@@ -1064,8 +1119,9 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
             sessionName: sessionSummary, error: errorContent,
           });
         }
-        ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: lastResultFailed || workflowInterrupted ? 1 : 0 }));
       }
+      ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null,
+        exitCode: wasAborted ? 0 : lastResultFailed || workflowInterrupted ? 1 : 0, ...(wasAborted ? { aborted: true } : {}) }));
       if (wasAborted || (!workflowInterrupted && !lastResultFailed)) notifyRunStopped({
         userId: ws?.userId || null,
         provider: 'claude',
@@ -1082,15 +1138,16 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
     emitRuntimeState();
     console.error('SDK query error:', error);
 
-    // An error must not remove an entry owned by another execution.
-    if (sessionKey() && getSession(sessionKey()!)?.instance === queryInstance) {
-      removeSession(sessionKey()!);
-    }
-
-    const wasAborted = sessionKey() ? abortedSessionIds.delete(sessionKey()!) : false;
+    const wasAborted = await settleAbort();
+    await awaitNativeExit();
+    releaseOwnership();
     if (wasAborted) {
-      // The abort already produced the terminal complete; a generator throw
-      // caused by interrupt() is expected noise, not a user-facing error.
+      // Interrupt transport failures after an acknowledged stop are expected;
+      // release ownership before telling clients the old run is complete.
+      if (!turnCompleteSent) {
+        turnCompleteSent = true;
+        ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0, aborted: true }));
+      }
       return;
     }
 
@@ -1098,7 +1155,7 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
     const installed = await context.isProviderInstalled();
     const errorContent = !installed
       ? 'Claude Code is not installed. Please install it first: https://docs.anthropic.com/en/docs/claude-code'
-      : error instanceof Error ? error.message : String(error);
+      : `${error instanceof Error ? error.message : String(error)}${nativeStderr.trim() ? `. stderr: ${nativeStderr.trim()}` : ''}`;
 
     // Send error to WebSocket, then the terminal complete. A run that already
     // reported completion and then failed during its post-turn hold still
@@ -1125,6 +1182,8 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
       idleReleaseTimer = null;
     }
     releasePromptStream();
+    await awaitNativeExit();
+    releaseOwnership();
   }
 }
 
@@ -1141,33 +1200,25 @@ async function abortClaudeSDKSession(sessionId: string) {
     return false;
   }
 
-  try {
-    console.log(`Aborting SDK session: ${sessionId}`);
-
-    // Mark before interrupting so the run loop knows not to emit its own
-    // terminal complete (the abort handler sends the aborted one).
-    abortedSessionIds.add(sessionId);
-
-    // Call interrupt() on the query instance
-    await session.instance.interrupt();
-
-    // Release the held stdin stream; without this the CLI stays up for the rest
-    // of the post-turn hold even though the user cancelled.
-    session.releaseInput?.();
-
-    // Update session status
-    session.status = 'aborted';
-
-    // Clean up session
-    removeSession(sessionId);
-
-    return true;
-  } catch (error) {
-    console.error(`Error aborting session ${sessionId}:`, error);
-    // The run keeps going; let it emit its own terminal complete.
-    abortedSessionIds.delete(sessionId);
-    return false;
-  }
+  if (session.abortPromise) return session.abortPromise;
+  const pending = (async () => {
+    try {
+      console.log(`Aborting SDK session: ${sessionId}`);
+      await session.instance.interrupt();
+      session.aborted = true;
+      // Keep ownership until the query iterator exits. Closing stdin is not
+      // proof that the old process and its tool callbacks have finished.
+      session.releaseInput?.();
+      return true;
+    } catch (error) {
+      console.error(`Error aborting session ${sessionId}:`, error);
+      return false;
+    }
+  })();
+  session.abortPromise = pending;
+  const success = await pending;
+  if (!success && session.abortPromise === pending) session.abortPromise = undefined;
+  return success;
 }
 
 /**
@@ -1195,6 +1246,9 @@ function getPendingApprovalsForSession(sessionId: string) {
 /** Used by the Claude provider and provider tests to construct the SDK runtime with a replaceable model transport. */
 export function createClaudeRuntime(overrides: Partial<RuntimeDependencies> = {}): IProviderRuntime {
   const dependencies: RuntimeDependencies = { query, loadMcpConfig, waitCeilingMs: BG_WAIT_CEILING_MS,
+    spawn: ({ command, args, cwd, env, signal }) => spawn(command, args, {
+      cwd, env, signal, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+    }),
     // A test transport never opens an install database unless its fixture injects usage explicitly.
     usage: overrides.query ? null : claudeUsageService, ...overrides };
   return {
@@ -1203,9 +1257,13 @@ export function createClaudeRuntime(overrides: Partial<RuntimeDependencies> = {}
       if (key && (startingSessions.has(key) || activeSessions.get(key)?.status === 'active')) {
         throw new Error('Claude already owns this session. Send through its existing input stream.');
       }
-      if (key) startingSessions.add(key);
-      try { await queryClaudeSDK(command, options, writer, context, dependencies); }
-      finally { if (key) startingSessions.delete(key); }
+      const reservation = Symbol('claude-start');
+      if (key) startingSessions.set(key, reservation);
+      const releaseStartingReservation = () => {
+        if (key && startingSessions.get(key) === reservation) startingSessions.delete(key);
+      };
+      try { await queryClaudeSDK(command, options, writer, context, dependencies, releaseStartingReservation); }
+      finally { releaseStartingReservation(); }
     },
     enqueue: async (sessionId, command, options) => await getSession(sessionId)?.enqueue?.(command, options) ?? false,
     abort: abortClaudeSDKSession,

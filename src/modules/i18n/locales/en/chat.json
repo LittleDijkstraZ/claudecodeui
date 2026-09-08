@@ -292,7 +292,9 @@
       "dismissHint": "Removes only this browser copy. It does not cancel submitted input or delete remote history.",
       "storageFailed": "This browser could not save pending message copies. They remain visible now, but may not survive a reload.",
       "retry": "Retry as new message",
-      "retryHint": "Delivery was not confirmed. Review the conversation first; retrying sends a new message."
+      "retryHint": "Delivery was not confirmed. Review the conversation first; retrying sends a new message.",
+      "retried": "Retried as a new message",
+      "retriedHint": "Follow the new message below for delivery status. This original copy will not be retried again."
     }
   },
   "export": {

@@ -39,7 +39,7 @@ async function withIsolatedDatabase(runTest: (userId: number) => void | Promise<
 
 type RunCall = { provider: string; command: string; options: Record<string, unknown> };
 
-function createRuntime(runs: RunCall[], behaviour: 'ok' | 'throw' = 'ok', aborts: string[] = []) {
+function createRuntime(runs: RunCall[], behaviour: 'ok' | 'throw' = 'ok', aborts: string[] = [], interrupt?: () => Promise<boolean>) {
   return {
     hasRuntime: () => true,
     run: async (provider: string, command: string, options: Record<string, unknown>) => {
@@ -50,7 +50,7 @@ function createRuntime(runs: RunCall[], behaviour: 'ok' | 'throw' = 'ok', aborts
     },
     abort: async (_provider: string, sessionId: string) => {
       aborts.push(sessionId);
-      return true;
+      return interrupt ? await interrupt() : true;
     },
   } as never;
 }
@@ -149,7 +149,7 @@ test('a scheduled candidate claimed before rewind cannot later start in the repl
   });
 });
 
-test('a due message interrupts a run in progress instead of failing', async () => {
+test('a due message starts after the interrupted native query actually completes', async () => {
   await withIsolatedDatabase(async (userId) => {
     scheduledMessagesService.schedule({
       userId,
@@ -157,7 +157,7 @@ test('a due message interrupts a run in progress instead of failing', async () =
       content: 'the schedule wins',
       scheduledFor: new Date(Date.now() - 1_000).toISOString(),
     });
-    chatRunRegistry.startRun({
+    const active = chatRunRegistry.startRun({
       appSessionId: SESSION_ID,
       provider: 'claude',
       providerSessionId: null,
@@ -167,7 +167,10 @@ test('a due message interrupts a run in progress instead of failing', async () =
 
     const runs: RunCall[] = [];
     const aborts: string[] = [];
-    assert.equal(await dispatchDueScheduledMessages(createRuntime(runs, 'ok', aborts)), 1);
+    assert.equal(await dispatchDueScheduledMessages(createRuntime(runs, 'ok', aborts, async () => {
+      active!.writer.sendComplete({ exitCode: 0, aborted: true });
+      return true;
+    })), 1);
 
     assert.deepEqual(aborts, [SESSION_ID]);
     assert.equal(runs.length, 1);
@@ -175,6 +178,31 @@ test('a due message interrupts a run in progress instead of failing', async () =
     assert.equal(scheduledMessagesDb.listForSession(userId, SESSION_ID)[0].status, 'sent');
   });
 });
+
+for (const stop of ['rejected', 'throw', 'closing'] as const) {
+  test(`a scheduled send with ${stop} stop keeps its content as failed and never replaces or completes the active query`, async () => {
+    await withIsolatedDatabase(async userId => {
+      scheduledMessagesService.schedule({ userId, sessionId: SESSION_ID, content: 'Keep this scheduled prompt',
+        scheduledFor: new Date(Date.now() - 1000).toISOString() });
+      const active = chatRunRegistry.startRun({ appSessionId: SESSION_ID, provider: 'claude', providerSessionId: null, connection: null, userId });
+      const runs: RunCall[] = [], aborts: string[] = [];
+      const runtime = createRuntime(runs, 'ok', aborts, async () => {
+        if (stop === 'throw') throw new Error('Fixture interrupt rejected');
+        return stop === 'closing';
+      });
+      assert.equal(await dispatchDueScheduledMessages(runtime), 1);
+      const retained = scheduledMessagesDb.listForSession(userId, SESSION_ID)[0];
+      assert.equal(retained.status, 'failed');
+      assert.equal(retained.content, 'Keep this scheduled prompt');
+      assert.match(retained.failure_reason ?? '', /not sent; retry manually/);
+      assert.equal(chatRunRegistry.getRun(SESSION_ID), active);
+      assert.equal(active?.status, 'running');
+      assert.equal(runs.length, 0);
+      assert.deepEqual(aborts, [SESSION_ID]);
+      assert.equal(await dispatchDueScheduledMessages(runtime), 0, 'Failed sends are never automatically retried.');
+    });
+  });
+}
 
 test('a message that is not due yet is left alone', async () => {
   await withIsolatedDatabase(async (userId) => {
