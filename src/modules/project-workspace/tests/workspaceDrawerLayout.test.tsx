@@ -62,6 +62,8 @@ test('tools live only in the right panel while Preferences, Settings and the pan
   expect(within(panel).getByRole('heading', { name: 'tabs.shell' })).toBeTruthy();
   expect(within(panel).getByRole('tablist')).toBeTruthy();
   fireEvent.click(tools[0]);
+  expect(panel.classList.contains('hidden')).toBe(false);
+  fireEvent.click(within(toolbar).getByRole('button', { name: 'Collapse panel; keep work running' }));
   expect(panel.classList.contains('hidden')).toBe(true);
   fireEvent.click(within(toolbar).getByRole('button', { name: 'Open workspace panel' }));
   expect(panel.classList.contains('hidden')).toBe(false);
@@ -118,7 +120,7 @@ test('embedded header reserves symmetric parent sidebar toggles and keeps tools 
   fireEvent.click(screen.getByRole('tab', { name: 'tabs.shell' }));
   expect(screen.getByLabelText('retained terminal')).toBeTruthy();
   fireEvent.click(screen.getByRole('tab', { name: 'tabs.shell' }));
-  expect(screen.queryByRole('tab')).toBeNull();
+  expect(screen.getByRole('tab', { name: 'tabs.shell' }).getAttribute('aria-selected')).toBe('true');
 });
 
 test('top-level settings identity follows this workspace remote while another machine is selected', () => {

@@ -441,8 +441,20 @@ type QuestionOption = {
 
 //----------------- CHAT SESSION STORE ------------
 
+/** Exact provider text-block identity retained from streaming through saved history. */
+export type AssistantStreamIdentity = {
+  responseMessageId?: string;
+  transcriptAnchorId?: string;
+  contentBlockIndex?: number;
+};
+
 /** A provider-agnostic transcript event as normalized by the backend adapters, with all kind-specific fields kept flat; it is the shape the session store holds and that chat converts into ChatMessage for rendering, so treat it as the wire contract rather than a view model. */
 export type NormalizedMessage = {
+  /** Native index within an assistant API response; the response alone can contain several text blocks. */
+  contentBlockIndex?: number;
+  /** Client-observed neighbors keep unconfirmed live output in place when user IDs hydrate. */
+  livePreviousMessageId?: string;
+  liveNextMessageId?: string;
   /** Recorded provider tool-result metadata, including Write creation evidence and exact edited content. */
   toolUseResult?: unknown;
   id: string;
@@ -1917,7 +1929,10 @@ export type ClaudeUsageSnapshot = {
 export type WorkspaceToolTabAppearance = 'icons' | 'icons-and-text';
 
 /** A retained workspace view shown beside the primary conversation. */
-export type WorkspacePanelTab = Exclude<AppTab, 'chat'> | 'agents' | 'sideChat' | 'preferences';
+export type WorkspacePanelTab = Exclude<AppTab, 'chat'> | 'agents' | 'sideChat' | 'preferences' | `btw:${string}`;
+
+/** An ephemeral BTW tab stays bound to the Claude conversation that created it. */
+export type WorkspaceBtwTab = { id: `btw:${string}`; sessionId: string; sourceLabel: string; label: string };
 
 /** The normalized agents in the viewed conversation and callbacks back to that conversation. */
 export type WorkspaceAgentsSnapshot = {

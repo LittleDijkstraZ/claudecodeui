@@ -87,6 +87,9 @@ export function useChatRealtimeHandlers({
   const runCursors = lastRunRef || localRunRef;
   // Ignore late frames from runs already replaced while this chat surface remains mounted.
   const retiredRuns = useRef(new Set<string>());
+  // Only accepted text frames advance this cursor. Subscription/status
+  // snapshots can reuse sequence watermarks without containing replayed text.
+  const streamCursors = useRef(new Map<string, { runId: string; seq: number }>());
   // Session switches can send `chat.subscribe` before this effect has a chance
   // to rebind the websocket listener. Read the visible session id from a ref
   // so a fast `chat_subscribed` ack is matched against the current view, not
@@ -188,6 +191,14 @@ export function useChatRealtimeHandlers({
             }
           }
         }
+      }
+
+      if (sid && typeof msg.runId === 'string' && msg.runId
+        && typeof msg.seq === 'number' && Number.isFinite(msg.seq)
+        && (msg.kind === 'stream_delta' || msg.kind === 'stream_end')) {
+        const previous = streamCursors.current.get(sid);
+        if (previous?.runId === msg.runId && msg.seq <= previous.seq) return;
+        streamCursors.current.set(sid, { runId: msg.runId, seq: msg.seq });
       }
 
       // Record replay progress for every sequenced live event.

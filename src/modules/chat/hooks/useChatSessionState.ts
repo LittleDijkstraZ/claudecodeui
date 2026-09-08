@@ -1059,6 +1059,16 @@ export function useChatSessionState({
         );
 
         if (targetElement) {
+          // Search must reveal the matching continuation context before
+          // measuring its position; otherwise it lands on a closed card.
+          const summary = targetElement.querySelector<HTMLDetailsElement>('details[data-compaction-summary]');
+          if (summary && !summary.open) {
+            summary.open = true;
+            searchScrollTimerRef.current = setTimeout(
+              () => scrollToRenderedTarget(retriesLeft), SEARCH_SCROLL_RETRY_DELAY_MS,
+            );
+            return;
+          }
           targetElement.scrollIntoView({ block: 'center', behavior: 'smooth' });
           targetElement.classList.add('search-highlight-flash');
           setTimeout(() => targetElement.classList.remove('search-highlight-flash'), 4000);

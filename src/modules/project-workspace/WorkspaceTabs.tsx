@@ -1,15 +1,18 @@
-import { Terminal, Folder, GitBranch, ClipboardCheck, MonitorPlay, Bot, MessagesSquare, type LucideIcon } from 'lucide-react';
+import { useId, useState } from 'react';
+import { Plus, MessageCircle, Terminal, Folder, GitBranch, ClipboardCheck, MonitorPlay, Bot, MessagesSquare, type LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import type { AppTab, WorkspacePanelTab } from '@/shared/types';
+import type { AppTab, ProjectSession, WorkspacePanelTab } from '@/shared/types';
+import { getSessionTitle } from '@/shared/utils';
 import { usePlugins, PluginIcon } from '@/modules/plugins';
 import { useWorkspaceNavigationBridge } from '@/modules/project-workspace/hooks/useWorkspaceNavigationBridge';
-import { OverflowToolTabs } from '@/shared/ui';
-import { useWorkspacePanels } from '@/modules/workspace-panels';
+import { ActionMenu, Button, Dialog, DialogContent, DialogTitle, OverflowToolTabs } from '@/shared/ui';
+import { useWorkspacePanelActions, useWorkspacePanels } from '@/modules/workspace-panels';
 
 type WorkspaceTabsProps = {
   activeTab: AppTab | WorkspacePanelTab;
   sessionId?: string | null;
+  session?: ProjectSession | null;
   onHubNavigationReady?: (sessionId: string | null) => void;
   setActiveTab: (tab: AppTab | WorkspacePanelTab) => void;
   onNavigation?: (tab: AppTab | WorkspacePanelTab) => void;
@@ -59,6 +62,7 @@ const TASKS_TAB: BuiltInTab = {
 export default function WorkspaceTabs({
   activeTab,
   sessionId = null,
+  session = null,
   onHubNavigationReady,
   setActiveTab,
   onNavigation,
@@ -68,6 +72,12 @@ export default function WorkspaceTabs({
   const { t } = useTranslation();
   const { plugins } = usePlugins();
   const panel = useWorkspacePanels();
+  const actions = useWorkspacePanelActions();
+  // Removal stays pending until the user confirms discarding this tab and its request.
+  const [closingId, setClosingId] = useState<string | null>(null);
+  const dialogId = useId();
+  const closing = panel?.btwTabs.find(tab => tab.id === closingId);
+  const canCreateBtw = Boolean(sessionId && session && (!session.__provider || session.__provider === 'claude'));
 
   const builtInTabs: BuiltInTab[] = [
     ...BASE_TABS,
@@ -88,13 +98,24 @@ export default function WorkspaceTabs({
 
   const tabs: TabDefinition[] = [...builtInTabs, ...pluginTabs];
 
-  const navigationTabs = tabs.map(tab => ({ id: tab.id, label: tab.kind === 'builtin' ? t(tab.labelKey) : tab.label }));
+  const navigationTabs = [...tabs.map(tab => ({ id: tab.id, label: tab.kind === 'builtin' ? t(tab.labelKey) : tab.label })), ...(panel?.btwTabs ?? []).map(tab => ({ id: tab.id, label: tab.label }))];
   useWorkspaceNavigationBridge({ sessionId, activeTab, tabs: navigationTabs }, onNavigation ?? setActiveTab, onHubNavigationReady);
 
   return <div className="flex w-full min-w-0 px-1 py-1" data-testid="workspace-tool-navigation">
-    <OverflowToolTabs activeTab={activeTab} onSelect={id => setActiveTab(id as AppTab | WorkspacePanelTab)} label={t('tabs.views', { defaultValue: 'Workspace views' })} moreLabel={t('buttons.more', { defaultValue: 'More tools' })}
-      tabs={tabs.map(tab => ({ id: tab.id, label: tab.kind === 'builtin' ? t(tab.labelKey) : tab.label,
+    <OverflowToolTabs scrollable activeTab={activeTab} onSelect={id => setActiveTab(id as AppTab | WorkspacePanelTab)} label={t('tabs.views', { defaultValue: 'Workspace views' })} moreLabel={t('buttons.more', { defaultValue: 'More tools' })}
+      trailing={<ActionMenu portal iconOnly icon={Plus} variant="ghost" label={t('btw.addTab')} triggerClassName="h-11 w-11 p-0" className="sticky right-0 z-10 shrink-0 bg-background" items={[{ key: 'btw', label: t('btw.new'), icon: MessageCircle, disabled: !canCreateBtw, description: canCreateBtw ? undefined : t('btw.requiresClaude'), onSelect: () => { if (sessionId && session) actions?.createBtw(sessionId, getSessionTitle(session)); } }]} />}
+      tabs={[...tabs.map(tab => ({ id: tab.id, label: tab.kind === 'builtin' ? t(tab.labelKey) : tab.label,
         icon: tab.kind === 'builtin' ? <tab.icon className="h-[18px] w-[18px] shrink-0" /> : <PluginIcon pluginName={tab.pluginName} iconFile={tab.iconFile} className="flex h-[18px] w-[18px] shrink-0 items-center justify-center [&>svg]:h-full [&>svg]:w-full" />,
-      }))} />
+      })), ...(panel?.btwTabs ?? []).map(tab => ({ id: tab.id, label: tab.label, icon: <MessageCircle className="h-[18px] w-[18px]" />, showLabel: true, onClose: () => setClosingId(tab.id), closeLabel: t('btw.closeTab', { title: tab.label }) }))]} />
+    <Dialog open={Boolean(closing)} onOpenChange={open => { if (!open) setClosingId(null); }}>
+      <DialogContent className="w-[calc(100vw-2rem)] max-w-sm p-5" aria-labelledby={`${dialogId}-title`} aria-describedby={`${dialogId}-description`}>
+        <DialogTitle id={`${dialogId}-title`} className="not-sr-only text-base font-semibold">{t('btw.closeTitle')}</DialogTitle>
+        <p id={`${dialogId}-description`} className="mt-2 text-sm text-muted-foreground">{t('btw.closeDescription', { title: closing?.label })}</p>
+        <div className="mt-5 flex justify-end gap-2">
+          <Button variant="outline" onClick={() => setClosingId(null)}>{t('btw.cancel')}</Button>
+          <Button variant="destructive" onClick={() => { if (closingId) actions?.closeBtw(closingId); setClosingId(null); }}>{t('btw.confirmClose')}</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   </div>;
 }

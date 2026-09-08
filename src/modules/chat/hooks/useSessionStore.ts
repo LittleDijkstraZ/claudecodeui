@@ -12,7 +12,7 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { acceptClaudeUsageSnapshot, isClaudeUsageSnapshot } from '@/modules/chat/utils/claudeUsageSnapshot';
 import { api } from '@/shared/api';
 import { hasSameUserMessageIdentity } from '@/shared/utils';
-import type { ChatMessageDelivery, LLMProvider, NormalizedMessage } from '@/shared/types';
+import type { AssistantStreamIdentity, ChatMessageDelivery, LLMProvider, NormalizedMessage } from '@/shared/types';
 import { createPendingUserMessages } from '@/modules/chat/utils/pendingUserMessages';
 import { removeOptimisticUserEchoes } from '@/modules/chat/utils/sessionMessageReconciliation';
 import {
@@ -125,9 +125,8 @@ async function requestSessionHistoryPage(
 }
 
 /**
- * Compute merged messages: server + realtime, deduped by id and adjacent
- * assistant echo (same trimmed text), so finalized stream rows do not stack
- * on top of the persisted copy before realtime is cleared.
+ * Historical clocks remain relevant only to legacy provider reconciliation.
+ * Claude uses the native transcript order and exact provider identities.
  */
 function readMessageTime(m: NormalizedMessage): number | null {
   const time = Date.parse(m.timestamp);
@@ -160,7 +159,7 @@ function getUserTurnOrdinalBefore(
     const user = [...preceding].reverse().find(candidate => candidate.kind === 'text' && candidate.role === 'user' && !candidate.isUnlocatedLocalCopy);
     const anchorIndex = user
       ? serverMessages.findIndex(candidate => hasSameUserMessageIdentity(user, candidate))
-      : serverMessages.findIndex(candidate => candidate.id === preceding.at(-1)?.id);
+      : serverMessages.findIndex(candidate => candidate.id === (message.livePreviousMessageId || preceding.at(-1)?.id));
     if (anchorIndex < 0) return null;
     return serverMessages.slice(0, anchorIndex + 1).filter(candidate => candidate.kind === 'text' && candidate.role === 'user').length - 1;
   }
@@ -227,9 +226,12 @@ function isAssistantTextEchoedInSameTurnOnServer(
   serverMessages: NormalizedMessage[],
   realtimeMessages: NormalizedMessage[],
 ): boolean {
-  // Native UUIDs already distinguish independent recorded answers, including
-  // repeated words. Only synthetic Claude stream rows need a prose fallback.
-  if (message.provider === 'claude' && message.kind !== 'stream_delta' && !message.id.startsWith('text_')) return false;
+  // Updated Claude streams use exact block identity. Older servers omitted it;
+  // keep only their existing anchored echo fallback until that remote upgrades.
+  if (message.provider === 'claude') {
+    if (serverMessages.some(candidate => hasSameAssistantIdentity(message, candidate))) return true;
+    if (!isLegacyClaudeStream(message)) return false;
+  }
   const assistantText = (message.content || '').trim();
   if (!assistantText) {
     return false;
@@ -250,18 +252,62 @@ function isAssistantTextEchoedInSameTurnOnServer(
     );
 }
 
+function isLegacyClaudeStream(message: NormalizedMessage): boolean {
+  return message.provider === 'claude' && (message.kind === 'stream_delta' || message.id.startsWith('text_'))
+    && !message.responseMessageId && !message.transcriptAnchorId && message.contentBlockIndex === undefined;
+}
+
+function hasSameAssistantIdentity(left: NormalizedMessage, right: NormalizedMessage): boolean {
+  const isAssistant = (message: NormalizedMessage) => message.kind === 'stream_delta'
+    || message.kind === 'text' && message.role === 'assistant';
+  if (!isAssistant(left) || !isAssistant(right) || left.provider !== right.provider || left.sessionId !== right.sessionId) return false;
+  if (left.id === right.id) return true;
+  if (left.provider !== 'claude' || !Number.isInteger(left.contentBlockIndex)
+    || left.contentBlockIndex !== right.contentBlockIndex) return false;
+  return Boolean(left.responseMessageId && left.responseMessageId === right.responseMessageId)
+    || Boolean(left.transcriptAnchorId && left.transcriptAnchorId === right.transcriptAnchorId);
+}
+
+/** Resolve observed local neighbors before native hydration retires their copies. */
+function preserveLiveOrderAnchors(server: NormalizedMessage[], realtime: NormalizedMessage[]): NormalizedMessage[] {
+  const nativeIds = new Map<string, string>();
+  for (const message of realtime) {
+    const native = server.find(candidate => candidate.id === message.id
+      || hasSameUserMessageIdentity(message, candidate) || hasSameAssistantIdentity(message, candidate));
+    if (native) nativeIds.set(message.id, native.id);
+  }
+  return realtime.map((message, index) => {
+    if (message.provider !== 'claude' || !(message.kind === 'stream_delta' || message.id.startsWith('text_'))) return message;
+    const nextObserved = realtime.slice(index + 1).find(candidate => nativeIds.has(candidate.id));
+    const previous = message.livePreviousMessageId && (nativeIds.get(message.livePreviousMessageId) ?? message.livePreviousMessageId);
+    const next = message.liveNextMessageId
+      ? nativeIds.get(message.liveNextMessageId) ?? message.liveNextMessageId
+      : nextObserved && nativeIds.get(nextObserved.id);
+    return previous === message.livePreviousMessageId && next === message.liveNextMessageId
+      ? message : { ...message, livePreviousMessageId: previous, liveNextMessageId: next };
+  });
+}
+
 /**
- * After `finalizeStreaming`, the client holds a synthetic assistant `text` row
- * while the sessions API soon returns the same reply with a different id.
- * Those sit back-to-back in merged order and look like duplicate bubbles until
- * A persisted-tail refresh reconciles realtime. Collapse same-text assistant rows and
- * stream_placeholder → text when content matches.
+ * Identified Claude copies require exact provider identity even when adjacent.
+ * Old remotes without stream identity retain the pre-existing adjacency fallback.
+ * Other providers keep their existing reconciliation contract.
  */
 function dedupeAdjacentAssistantEchoes(merged: NormalizedMessage[], serverIds: ReadonlySet<string> = new Set()): NormalizedMessage[] {
   const out: NormalizedMessage[] = [];
   for (const m of merged) {
     const prev = out[out.length - 1];
     if (prev) {
+      if (prev.provider === 'claude' && m.provider === 'claude' && !isLegacyClaudeStream(prev) && !isLegacyClaudeStream(m)) {
+        // Missing provider identity means uncertain output, not permission to
+        // erase a live answer with similar words from a different turn.
+        if (hasSameAssistantIdentity(prev, m) && !(serverIds.has(prev.id) && serverIds.has(m.id))) {
+          if (serverIds.has(m.id)) out[out.length - 1] = m;
+          continue;
+        }
+        out.push(m);
+        continue;
+      }
       const isSynthetic = (row: NormalizedMessage) => row.kind === 'stream_delta' || row.id.startsWith('text_');
       if ((serverIds.has(prev.id) && serverIds.has(m.id))
         || (prev.provider === 'claude' && m.provider === 'claude' && !isSynthetic(prev) && !isSynthetic(m))) {
@@ -311,7 +357,7 @@ function pruneRealtimeSupersededByServer(
   const serverIds = new Set(serverMessages.map((message) => message.id));
   const reconciledRealtimeMessages = new Set(removeOptimisticUserEchoes(serverMessages, realtimeMessages));
 
-  return realtimeMessages.filter((message) => {
+  const kept = realtimeMessages.filter((message) => {
     // An exact persisted user identity retires its copy even when a newer
     // receipt arrived during this read; receipt replay cannot undo confirmation.
     if (!reconciledRealtimeMessages.has(message)) return false;
@@ -348,6 +394,9 @@ function pruneRealtimeSupersededByServer(
 
     return true;
   });
+  const anchored = preserveLiveOrderAnchors(serverMessages, realtimeMessages);
+  const retained = new Set(kept);
+  return anchored.filter((_, index) => retained.has(realtimeMessages[index]));
 }
 
 function computeMerged(server: NormalizedMessage[], realtime: NormalizedMessage[], previous: NormalizedMessage[]): NormalizedMessage[] {
@@ -363,9 +412,12 @@ function computeMerged(server: NormalizedMessage[], realtime: NormalizedMessage[
   // Rows surviving history reconciliation are newer than that snapshot (or
   // not yet persisted). A same-ID live update must win over stale REST data.
   const realtimeById = new Map(reconciledRealtime.map(message => [message.id, message]));
-  const serverWithLiveUpdates = server.map(message => realtimeById.get(message.id) ?? message);
+  const serverWithLiveUpdates = server.map(message => {
+    const live = realtimeById.get(message.id) ?? reconciledRealtime.find(candidate => hasSameAssistantIdentity(message, candidate));
+    return live ? { ...message, ...live, id: message.id } : message;
+  });
   const extra = reconciledRealtime.filter((message) => {
-    if (serverIds.has(message.id)) {
+    if (serverIds.has(message.id) || server.some(candidate => hasSameAssistantIdentity(message, candidate))) {
       return false;
     }
     return true;
@@ -381,7 +433,11 @@ function computeMerged(server: NormalizedMessage[], realtime: NormalizedMessage[
   // them. Otherwise they remain at the live tail; never re-sort saved history.
   const serverIndex = new Map(server.map((message, index) => [message.id, index]));
   const extraById = new Map(extra.map(message => [message.id, message]));
-  const observed = [...previous, ...reconciledRealtime];
+  // The final SDK row replaces a stream's synthetic ID with its native ID.
+  // Preserve that row's observed position rather than appending it after a
+  // queued question whose optimistic ID has not yet hydrated.
+  const observed = [...previous.map(message => reconciledRealtime.find(candidate => hasSameAssistantIdentity(message, candidate)
+    || hasSameUserMessageIdentity(message, candidate)) ?? message), ...reconciledRealtime];
   const observedIds = new Set<string>();
   const sequence = observed.filter(message => {
     if (observedIds.has(message.id)) return false;
@@ -403,9 +459,13 @@ function computeMerged(server: NormalizedMessage[], realtime: NormalizedMessage[
       retainedCopies.unshift(live);
       continue;
     }
-    const bucket = beforeServer.get(nextServerIndex) ?? [];
+    const nextAnchor = live.liveNextMessageId && serverIndex.get(live.liveNextMessageId);
+    const previousAnchor = live.kind === 'text' && live.livePreviousMessageId && serverIndex.get(live.livePreviousMessageId);
+    const placement = typeof nextAnchor === 'number' ? nextAnchor
+      : typeof previousAnchor === 'number' ? previousAnchor + 1 : nextServerIndex;
+    const bucket = beforeServer.get(placement) ?? [];
     bucket.unshift(live);
-    beforeServer.set(nextServerIndex, bucket);
+    beforeServer.set(placement, bucket);
   }
   const ordered = serverWithLiveUpdates.flatMap((message, index) => [
     ...(beforeServer.get(index) ?? []), message,
@@ -817,7 +877,7 @@ export function useSessionStore(userId?: string | number | null) {
   const appendRealtime = useCallback((sessionId: string, msg: NormalizedMessage) => {
     const slot = getSlot(sessionId);
     if (msg.delivery && msg.clientMessageId && pendingUsers.isDismissed(sessionId, msg.clientMessageId)) return;
-    const normalizedMessage =
+    let normalizedMessage =
       msg.sessionId === sessionId
         ? msg
         : { ...msg, sessionId };
@@ -825,7 +885,9 @@ export function useSessionStore(userId?: string | number | null) {
     // replaces its optimistic bubble instead of adding a second copy.
     const existingIndex = normalizedMessage.clientMessageId
       ? slot.realtimeMessages.findIndex(message => message.clientMessageId === normalizedMessage.clientMessageId)
-      : slot.realtimeMessages.findIndex(message => Boolean(message.delivery) && hasSameUserMessageIdentity(message, normalizedMessage));
+      : slot.realtimeMessages.findIndex(message => message.id === normalizedMessage.id
+        || hasSameAssistantIdentity(message, normalizedMessage)
+        || Boolean(message.delivery) && hasSameUserMessageIdentity(message, normalizedMessage));
     let updated = [...slot.realtimeMessages];
     if (existingIndex >= 0) {
       const previous = updated[existingIndex];
@@ -841,6 +903,17 @@ export function useSessionStore(userId?: string | number | null) {
         deliveryError: normalizedMessage.delivery ? (keepDelivery ? previous.deliveryError : normalizedMessage.deliveryError) : undefined,
       };
     } else {
+      if (normalizedMessage.provider === 'claude' && normalizedMessage.id.startsWith('text_')) {
+        normalizedMessage = { ...normalizedMessage,
+          livePreviousMessageId: normalizedMessage.livePreviousMessageId
+            ?? slot.merged.filter(message => !message.isUnlocatedLocalCopy).at(-1)?.id };
+      }
+      if (!normalizedMessage.isUnlocatedLocalCopy) {
+        updated = updated.map(message => message.provider === 'claude'
+          && (message.kind === 'stream_delta' || message.id.startsWith('text_'))
+          && !message.liveNextMessageId && !hasSameAssistantIdentity(message, normalizedMessage)
+          ? { ...message, liveNextMessageId: normalizedMessage.id } : message);
+      }
       updated.push(normalizedMessage);
     }
     if (updated.length > MAX_REALTIME_MESSAGES) {
@@ -964,18 +1037,23 @@ export function useSessionStore(userId?: string | number | null) {
    * Update or create a streaming message (accumulated text so far).
    * Uses a well-known ID so subsequent calls replace the same message.
    */
-  const updateStreaming = useCallback((sessionId: string, accumulatedText: string, msgProvider: LLMProvider) => {
+  const updateStreaming = useCallback((sessionId: string, accumulatedText: string, msgProvider: LLMProvider, identity: AssistantStreamIdentity = {}) => {
     const slot = getSlot(sessionId);
     const streamId = `__streaming_${sessionId}`;
+    const idx = slot.realtimeMessages.findIndex(m => m.id === streamId);
+    const existing = slot.realtimeMessages[idx];
     const msg: NormalizedMessage = {
+      ...existing,
+      ...identity,
       id: streamId,
       sessionId,
       timestamp: new Date().toISOString(),
       provider: msgProvider,
       kind: 'stream_delta',
       content: accumulatedText,
+      livePreviousMessageId: existing ? existing.livePreviousMessageId
+        : slot.merged.filter(message => !message.isUnlocatedLocalCopy && message.id !== streamId).at(-1)?.id,
     };
-    const idx = slot.realtimeMessages.findIndex(m => m.id === streamId);
     if (idx >= 0) {
       slot.realtimeMessages = [...slot.realtimeMessages];
       slot.realtimeMessages[idx] = msg;

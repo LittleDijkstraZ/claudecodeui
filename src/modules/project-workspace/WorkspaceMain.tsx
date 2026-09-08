@@ -14,7 +14,7 @@ import type { AppTab, CodeEditorDiffInfo, CodeEditorFile, Project, ProjectSessio
 import { useUiPreferences } from '@/shared/context/UiPreferencesContext';
 import { useModalVisibility } from '@/shared/hooks/useModalVisibility';
 import { useFileOpenResolver } from '@/modules/project-workspace/hooks/useFileOpenResolver';
-import { SideChatPanel, WorkspacePanelLayout, useWorkspacePanelActions, useWorkspacePanels } from '@/modules/workspace-panels';
+import { BtwPanels, SideChatPanel, WorkspacePanelLayout, useWorkspacePanelActions, useWorkspacePanels } from '@/modules/workspace-panels';
 import WorkspaceTabs from '@/modules/project-workspace/WorkspaceTabs';
 import WorkspaceTitle from '@/modules/project-workspace/WorkspaceTitle';
 import MobileMenuButton from '@/modules/project-workspace/MobileMenuButton';
@@ -81,10 +81,6 @@ function WorkspaceMain({
     if (tab === 'chat') panelActions?.collapsePanel();
     else panelActions?.openPanel(tab);
   }, [panelActions]);
-  const toggleView = useCallback((tab: AppTab | WorkspacePanelTab) => {
-    if (tab === 'chat') panelActions?.collapsePanel();
-    else panelActions?.togglePanel(tab);
-  }, [panelActions]);
   // Existing command-palette and workspace shortcuts still request AppTab values.
   // Consume those requests as panel navigation without hiding or remounting chat.
   useEffect(() => {
@@ -94,6 +90,7 @@ function WorkspaceMain({
   const retained = (tab: WorkspacePanelTab) => Boolean(panel?.visited.has(tab));
   const title = panel?.tab === 'agents' ? t('workspacePanel.agentsAndWorkflows', { defaultValue: 'Agents & Workflows' })
     : panel?.tab === 'preferences' ? t('workspacePanel.preferences', { defaultValue: 'Preferences' })
+    : panel?.tab.startsWith('btw:') ? panel.btwTabs.find(tab => tab.id === panel.tab)?.label ?? 'BTW'
     : panel?.tab === 'sideChat' ? t('workspacePanel.sideChat', { defaultValue: 'Side chat' })
       : panel?.tab === 'git' ? t('workspacePanel.sourceControl', { defaultValue: 'Source Control' })
         : panel?.tab.startsWith('plugin:') ? panel.tab.slice(7)
@@ -117,7 +114,7 @@ function WorkspaceMain({
   // Chat is the persistent main surface; preferences is a setting, not a tool tab.
   const selectedTool = panel?.open && panel.tab !== 'preferences' ? panel.tab : 'chat';
   const hubControlsPanel = Boolean(window.__CLOUDCLI_EMBEDDED__ && !window.__CLOUDCLI_SIDE_CHAT__);
-  const toolNavigation = <WorkspaceTabs activeTab={selectedTool} sessionId={selectedSession?.id ?? null} setActiveTab={toggleView} onNavigation={selectView} shouldShowTasksTab={shouldShowTasksTab} shouldShowBrowserTab={shouldShowBrowserTab} />;
+  const toolNavigation = <WorkspaceTabs activeTab={selectedTool} sessionId={selectedSession?.id ?? null} session={selectedSession} setActiveTab={selectView} onNavigation={selectView} shouldShowTasksTab={shouldShowTasksTab} shouldShowBrowserTab={shouldShowBrowserTab} />;
   return <div className="flex h-full min-h-0 min-w-0 flex-col">
     <div className={`flex min-h-[52px] min-w-0 shrink-0 items-center gap-1 border-b border-border/60 bg-background ${hubControlsPanel ? 'px-14' : 'px-2'}`} data-testid="workspace-header">
       {!window.__CLOUDCLI_EMBEDDED__ && isMobile && selectedProject && <MobileMenuButton onMenuClick={onMenuClick} compact />}
@@ -137,6 +134,7 @@ function WorkspaceMain({
       {shouldShowTasksTab && retained('tasks') && <TaskMasterPanel isVisible={visible('tasks')} />}
       {shouldShowBrowserTab && retained('browser') && <div className={`h-full ${visible('browser') ? 'block' : 'hidden'}`}><BrowserUsePanel isVisible={visible('browser')} onShowSettings={onShowSettings} /></div>}
       {[...(panel?.visited ?? [])].filter(tab => tab.startsWith('plugin:')).map(tab => <div key={tab} className={`h-full ${visible(tab) ? 'block' : 'hidden'}`}><PluginTabContent pluginName={tab.slice(7)} selectedProject={selectedProject} selectedSession={selectedSession} /></div>)}
+      <BtwPanels />
       <SideChatPanel onNavigateToSession={onNavigateToSession} />
     </WorkspacePanelLayout>
   </div>;

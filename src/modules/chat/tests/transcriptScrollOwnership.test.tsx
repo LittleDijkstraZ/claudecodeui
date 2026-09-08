@@ -216,6 +216,30 @@ describe('deferred scroll-to-bottom', () => {
 });
 
 describe('search jump ownership', () => {
+  it('opens a matching compact summary before scrolling to its content', async () => {
+    const timestamp = '2026-01-01T00:00:00.000Z';
+    const messages = new Map<string, NormalizedMessage[]>([
+      [SESSION_A, [{ ...buildMessage(0, timestamp), isCompactSummary: true }]],
+    ]);
+    const store = createStore(messages);
+    const searchSession = { id: SESSION_A, __searchTargetSnippet: 'message 0', __searchTargetTimestamp: timestamp } as unknown as ProjectSession;
+    const { result, rerender } = await renderChatSessionState({ session: { id: SESSION_A } as ProjectSession, store });
+    const container = createContainer(5000, 500);
+    const row = document.createElement('div');
+    row.setAttribute('data-message-timestamp', String(result.current.chatMessages[0].timestamp));
+    const summary = document.createElement('details');
+    summary.setAttribute('data-compaction-summary', '');
+    row.appendChild(summary);
+    container.element.appendChild(row);
+    (result.current.scrollContainerRef as { current: HTMLDivElement | null }).current = container.element;
+    const statesAtScroll: boolean[] = [];
+    row.scrollIntoView = () => { statesAtScroll.push(summary.open); };
+    act(() => { rerender({ session: searchSession }); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(summary.open).toBe(true);
+    expect(statesAtScroll).toEqual([true]);
+  });
+
   it('does not follow the user into the next session', { timeout: 20_000 }, async () => {
     const messages = new Map<string, NormalizedMessage[]>([
       [SESSION_A, [buildMessage(0, '2026-01-01T00:00:00.000Z')]],

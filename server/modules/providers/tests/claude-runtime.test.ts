@@ -7,7 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import type { Options, Query, query, SpawnOptions } from '@anthropic-ai/claude-agent-sdk';
 
-import { createClaudeRuntime, mapCliOptionsToSDK } from '@/modules/providers/list/claude/claude-runtime.provider.js';
+import { acquireClaudeSideQuestionQuery, createClaudeRuntime, mapCliOptionsToSDK } from '@/modules/providers/list/claude/claude-runtime.provider.js';
 import { ClaudeSessionsProvider } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import type { AnyRecord, NormalizedMessage, ProviderModelsDefinition, ProviderRuntimeContext } from '@/shared/index.js';
 
@@ -107,6 +107,7 @@ function runtimeHarness(steps: (state: {
     isProviderInstalled: async () => true,
   };
   return {
+    acquireBtw: () => acquireClaudeSideQuestionQuery(appSessionId),
     events, inputs, queries: () => queryCount, interrupts: () => interrupts,
     enqueue: (command: string, clientMessageId: string, deliveryMode: 'queue' | 'interrupt' = 'queue') => runtime.enqueue!(appSessionId, command, { clientMessageId, deliveryMode }),
     options: () => sdkOptions,
@@ -567,4 +568,22 @@ test('a true API failure is not relabeled as an intentional interrupt', async ()
     yield notification(); yield result(); await inputDone;
   });
   await h.run();
+});
+
+
+test('native BTW holds the live query across foreground completion and releases only after the last side answer', async () => {
+  const h = runtimeHarness(async function* ({ inputClosed, inputDone }) {
+    yield { type: 'system', subtype: 'init', session_id: nativeSession };
+    const first = h.acquireBtw(); const second = h.acquireBtw();
+    assert.ok(first); assert.ok(second); assert.equal(first.query, second.query);
+    yield result();
+    await delay(0); assert.equal(inputClosed(), false);
+    first.release(); first.release();
+    await delay(0); assert.equal(inputClosed(), false);
+    second.release(); await inputDone;
+    assert.equal(inputClosed(), true);
+    assert.equal(h.acquireBtw(), null);
+  });
+  await h.run();
+  assert.equal(h.queries(), 1); assert.equal(h.interrupts(), 0);
 });

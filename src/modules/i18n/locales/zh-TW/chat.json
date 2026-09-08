@@ -276,6 +276,10 @@
     "nextTaskPrompt": "開始下一個任務"
   },
   "message": {
+    "compaction": {
+      "title": "上下文壓縮摘要",
+      "description": "這是 Claude 為壓縮後繼續對話產生的上下文，不是你傳送的訊息。"
+    },
     "editAndResend": "編輯並重新傳送",
     "forkFromHere": "從此處分支",
     "delivery": {

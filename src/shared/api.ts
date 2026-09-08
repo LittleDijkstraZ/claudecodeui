@@ -832,3 +832,8 @@ export const claudeExecutionSettingsApi = {
   update: (sessionId: string, settings: ClaudeSessionSettings) => authenticatedFetch(
     `/api/providers/claude/sessions/${encodeURIComponent(sessionId)}/execution-settings`, { method: 'PUT', body: JSON.stringify(settings) }),
 };
+
+/** Native ephemeral /btw answer on the selected session's owning remote. */
+export function askClaudeBtw(sessionId: string, question: string, signal: AbortSignal): Promise<{ answer: string }> {
+  return requestClaudeSessionAction(sessionId, '/btw', { question }, signal);
+}

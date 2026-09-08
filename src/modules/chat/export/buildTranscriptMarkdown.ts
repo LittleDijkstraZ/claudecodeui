@@ -103,6 +103,11 @@ export function buildTranscriptMarkdown(input: BuildTranscriptMarkdownInput): st
   for (const message of input.messages) {
     sections.push('');
 
+    if (message.isCompactSummary) {
+      sections.push('### Compaction summary', '', '_Automatically generated continuation context._', '', readString(message.content));
+      continue;
+    }
+
     if (message.isToolUse) {
       sections.push(renderToolCall(message, input.createDiff));
       continue;

@@ -672,16 +672,33 @@ export class ClaudeSessionsProvider implements IProviderSessions {
       return [];
     }
 
-    if (raw.type === 'content_block_delta' && raw.delta?.text) {
-      return [createNormalizedMessage({ kind: 'stream_delta', content: raw.delta.text, sessionId, provider: PROVIDER })];
-    }
-    if (raw.type === 'content_block_stop') {
-      return [createNormalizedMessage({ kind: 'stream_end', sessionId, provider: PROVIDER })];
+    if (raw.type === 'content_block_delta' && raw.delta?.text || raw.type === 'content_block_stop') {
+      return [createNormalizedMessage({
+        kind: raw.type === 'content_block_delta' ? 'stream_delta' : 'stream_end',
+        ...(raw.type === 'content_block_delta' ? { content: raw.delta.text } : {}),
+        ...(typeof raw.responseMessageId === 'string' && raw.responseMessageId ? { responseMessageId: raw.responseMessageId } : {}),
+        ...(Number.isInteger(raw.contentBlockIndex) && raw.contentBlockIndex >= 0 ? { contentBlockIndex: raw.contentBlockIndex } : {}),
+        sessionId, provider: PROVIDER,
+      })];
     }
 
     const messages: NormalizedMessage[] = [];
     const ts = raw.timestamp || new Date().toISOString();
     const baseId = raw.uuid || generateMessageId('claude');
+
+    // Compaction summaries are synthetic user-role input for Claude, not user
+    // prompts. Keep native classification before the string/block-array and
+    // isMeta branches so live replay and saved history share one artifact.
+    if (raw.isCompactSummary === true && raw.message?.role === 'user') {
+      const content = raw.message.content;
+      const summary = typeof content === 'string' ? content : Array.isArray(content)
+        ? content.flatMap((part: AnyRecord) => part?.type === 'text' && typeof part.text === 'string' ? [part.text] : []).join('\n')
+        : '';
+      return summary.trim() ? [createNormalizedMessage({
+        id: baseId, sessionId, timestamp: ts, provider: PROVIDER,
+        kind: 'text', role: 'assistant', content: summary, isCompactSummary: true,
+      })] : [];
+    }
 
     const taskNotification = readClaudeTaskNotification(raw);
     if (taskNotification) return [createNormalizedMessage({ id: baseId, sessionId, timestamp: ts, provider: PROVIDER,
@@ -788,28 +805,6 @@ export class ClaudeSessionsProvider implements IProviderSessions {
         }
       } else if (typeof raw.message.content === 'string') {
         const text = raw.message.content;
-
-        /**
-         * Claude stores compact summaries as synthetic "user" rows so the CLI
-         * can resume the next session turn with the summary in-context.
-         *
-         * For the web UI this is much more useful as assistant-authored summary
-         * text; otherwise it is both filtered by the generic internal-prefix
-         * check and visually mislabeled as a user message.
-         */
-        if (raw.isCompactSummary === true && text.trim()) {
-          messages.push(createNormalizedMessage({
-            id: baseId,
-            sessionId,
-            timestamp: ts,
-            provider: PROVIDER,
-            kind: 'text',
-            role: 'assistant',
-            content: text,
-            isCompactSummary: true,
-          }));
-          return messages;
-        }
 
         /**
          * Local slash commands are serialized as tagged text even though they
@@ -923,6 +918,10 @@ export class ClaudeSessionsProvider implements IProviderSessions {
     }
 
     if (raw.message?.role === 'assistant' && raw.message?.content) {
+      // SDK assistant rows can contain one block from a multi-block API reply.
+      // Their local array position cannot establish the stream's block index.
+      const responseIdentity = typeof raw.message.id === 'string' && raw.message.id
+        ? { responseMessageId: raw.message.id } : {};
       if (Array.isArray(raw.message.content)) {
         let partIndex = 0;
         for (const part of raw.message.content) {
@@ -935,6 +934,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
               kind: 'text',
               role: 'assistant',
               content: part.text,
+              ...responseIdentity,
             }));
           } else if (part.type === 'tool_use') {
             messages.push(createNormalizedMessage({
@@ -968,6 +968,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
           kind: 'text',
           role: 'assistant',
           content: raw.message.content,
+          ...responseIdentity,
         }));
       }
       return messages;

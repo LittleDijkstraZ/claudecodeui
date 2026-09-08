@@ -574,6 +574,13 @@ or settings covers the conversation.
 
 ## Continued history branches
 
+Native compaction summaries retain their explicit classification for both string
+and content-block records, including metadata-marked summaries. The transcript
+shows them as a collapsed continuation-context disclosure, without a human
+avatar, send status, edit, retry, or fork controls. Opening the disclosure or
+exporting retains the complete summary. Genuine user messages quoting the same
+words remain ordinary user messages; classification never relies on prose.
+
 History projection follows the latest verifiable main user prompt ancestry when a conversation continues an earlier edited branch. Late assistant, tool, synthetic or sidechain records alone do not reactivate an abandoned prompt. Normal prompt replacement and parallel tool output remain supported; the native transcript, resume anchor and cumulative usage records are never rewritten by this display repair.
 
 History pages select their main-transcript range before reading child Agent logs.
@@ -593,6 +600,16 @@ Claude history keeps the native transcript's append order after branch filtering
 A queued prompt's creation time can precede the answer it follows, so timestamps
 remain display metadata rather than a reason to reorder history or reject an
 older page. Live rows use observed row order and exact saved identities.
+
+Claude streaming text carries its API response and global content-block identity.
+When an authoritative SDK text row uniquely corresponds to a completed streamed
+block, the native row replaces the temporary copy; later history hydration can
+then match its native UUID. A saved record's local array position is never assumed
+to be a global stream index. Uncertain live output retains observed neighbors
+instead of moving behind later user prompts. Replayed text frames are scoped to
+their run and sequence, without treating status snapshots as text acknowledgements.
+Older servers without stream identities retain the existing scoped compatibility
+path; upgrading the remote backend is required for the new identity bridge.
 
 Reloaded browser copies whose native position is not present in the loaded page
 appear in a separate, collapsed retained-copies section. They do not reorder
@@ -632,3 +649,22 @@ Plugin installation offers Open plugin. Enabled entries share the right panel's 
 Plugin UI now mounts in its own same-origin document, preserving the selected remote’s HTTP/WebSocket routing and scoped storage while isolating accidental document/CSS changes from CloudCLI. This is a compatibility boundary for trusted installed plugins, not a security sandbox. Invalid optional manifest metadata (including object-valued authors) cannot crash Settings. A failed mount, missing entry, or stalled load retains host-owned error and retry controls; changed entry artifacts reload even when a plugin keeps its version number. Updates build and validate in hidden staging before promotion. Staged git/build/manifest failures retain the previous installed files and restart its prior backend. If the new backend fails readiness after promotion, the new plugin remains installed with a warning and retry controls; this is not an automatic rollback. Plugin sockets buffer bounded startup input and route through the selected SSH tunnel.
 
 The authenticated plugin loader still requires a built, self-contained single-file browser bundle. Relative module imports and sibling resources resolved through `import.meta.url` are not supported; these failures show a build compatibility hint and recovery controls. CloudCLI does not drop asset authentication or put account JWTs into plugin asset URLs to work around this boundary. Individual third-party plugins may still need their own build/runtime fixes.
+
+
+### Ephemeral BTW tabs
+
+The workspace tab strip ends with an extensible add menu (currently **New BTW**).
+Each BTW stays bound to the Claude conversation selected when it was created;
+its question and answer live only in that browser tab's memory. Closing asks for
+confirmation, cancels a pending answer, and discards the tab. Reloading also drops
+these ephemeral tabs. Re-selecting any tool tab keeps the panel open; use the
+explicit panel button to collapse it. Existing saved side-chat forks are unchanged.
+
+BTW calls the SDK's native `askSideQuestion` control request, not a prompt or a
+persisted side-chat fork. A live runtime is held until its side requests settle;
+an idle conversation uses a control-only resume with `forkSession: true` and
+`persistSession: false`, without hooks or tools. Responses are never broadcast
+into the main chat. SDK 0.3.263 contains this method at runtime but omits its public
+TypeScript declaration, so the narrow adapter checks availability and reports an
+unsupported remote instead of falling back to a normal prompt. Each tab asks one
+side question; create another BTW for another question.

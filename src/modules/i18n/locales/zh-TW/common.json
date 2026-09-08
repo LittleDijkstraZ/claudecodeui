@@ -277,5 +277,21 @@
     "loadingEarlierAgents": "正在載入更早的活動…",
     "loadEarlierAgentsReadOnly": "每次只讀取更早的一頁記錄，不會恢復或停止任務。",
     "loadEarlierAgents": "載入更早的對話活動"
+  },
+  "btw": {
+    "addTab": "新增分頁",
+    "new": "新增 BTW",
+    "requiresClaude": "請先選擇一個 Claude 對話",
+    "closeTab": "關閉 {{title}}",
+    "closeTitle": "關閉 BTW？",
+    "closeDescription": "關閉後將捨棄「{{title}}」，並取消尚未完成的回答，無法復原。",
+    "cancel": "取消",
+    "confirmClose": "關閉",
+    "description": "讀取原對話脈絡 · 不使用工具 · 不寫入對話歷史",
+    "empty": "在這裡順便問一句，不打斷主對話。",
+    "thinking": "思考中…",
+    "question": "BTW 問題",
+    "placeholder": "針對目前對話提個旁支問題…",
+    "send": "傳送 BTW"
   }
 }

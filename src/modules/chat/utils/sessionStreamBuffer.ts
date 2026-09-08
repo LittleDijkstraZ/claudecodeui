@@ -1,4 +1,4 @@
-import type { LLMProvider } from '@/shared/types';
+import type { AssistantStreamIdentity, LLMProvider } from '@/shared/types';
 import type { SessionStore } from '@/modules/chat/hooks/useSessionStore';
 
 type StreamingStore = Pick<SessionStore, 'updateStreaming' | 'finalizeStreaming'>;
@@ -12,12 +12,16 @@ type SessionStream = {
   content: string;
   provider: LLMProvider;
   timer: number | null;
+  identity: AssistantStreamIdentity;
 }
 
 type StreamEvent = {
   kind?: unknown;
   content?: unknown;
   provider?: unknown;
+  responseMessageId?: unknown;
+  transcriptAnchorId?: unknown;
+  contentBlockIndex?: unknown;
 };
 
 const browserTimers: StreamTimers = {
@@ -32,14 +36,24 @@ const browserTimers: StreamTimers = {
 export function createSessionStreamBuffer(store: StreamingStore, timers = browserTimers) {
   const streams = new Map<string, SessionStream>();
 
-  function append(sessionId: string, text: string, provider: LLMProvider) {
+  function readIdentity(event: StreamEvent): AssistantStreamIdentity {
+    return {
+      ...(typeof event.responseMessageId === 'string' && event.responseMessageId ? { responseMessageId: event.responseMessageId } : {}),
+      ...(typeof event.transcriptAnchorId === 'string' && event.transcriptAnchorId ? { transcriptAnchorId: event.transcriptAnchorId } : {}),
+      ...(typeof event.contentBlockIndex === 'number' && Number.isInteger(event.contentBlockIndex) && event.contentBlockIndex >= 0
+        ? { contentBlockIndex: event.contentBlockIndex } : {}),
+    };
+  }
+
+  function append(sessionId: string, text: string, provider: LLMProvider, identity: AssistantStreamIdentity) {
     if (!sessionId || !text) return;
 
     let stream = streams.get(sessionId);
     if (!stream) {
-      stream = { content: '', provider, timer: null };
+      stream = { content: '', provider, timer: null, identity };
       streams.set(sessionId, stream);
     }
+    stream.identity = { ...stream.identity, ...identity };
     stream.content += text;
 
     if (stream.timer === null) {
@@ -47,19 +61,19 @@ export function createSessionStreamBuffer(store: StreamingStore, timers = browse
       pending.timer = timers.schedule(() => {
         pending.timer = null;
         if (streams.get(sessionId) === pending) {
-          store.updateStreaming(sessionId, pending.content, pending.provider);
+          store.updateStreaming(sessionId, pending.content, pending.provider, pending.identity);
         }
       }, 100);
     }
   }
 
-  function finish(sessionId: string | null) {
+  function finish(sessionId: string | null, identity: AssistantStreamIdentity = {}) {
     if (!sessionId) return;
     const stream = streams.get(sessionId);
     if (!stream) return;
 
     if (stream.timer !== null) timers.cancel(stream.timer);
-    store.updateStreaming(sessionId, stream.content, stream.provider);
+    store.updateStreaming(sessionId, stream.content, stream.provider, { ...stream.identity, ...identity });
     store.finalizeStreaming(sessionId);
     streams.delete(sessionId);
   }
@@ -77,12 +91,12 @@ export function createSessionStreamBuffer(store: StreamingStore, timers = browse
       if (sessionId && typeof event.content === 'string') {
         const provider = event.provider === 'claude' || event.provider === 'cursor'
           || event.provider === 'codex' || event.provider === 'opencode' ? event.provider : fallbackProvider;
-        append(sessionId, event.content, provider);
+        append(sessionId, event.content, provider, readIdentity(event));
       }
       return true;
     }
     if (event.kind === 'stream_end' || event.kind === 'complete') {
-      finish(sessionId);
+      finish(sessionId, readIdentity(event));
       return event.kind === 'stream_end';
     }
     return false;

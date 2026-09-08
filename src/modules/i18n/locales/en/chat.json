@@ -288,6 +288,10 @@
     "nextTaskPrompt": "Start the next task"
   },
   "message": {
+    "compaction": {
+      "title": "Compaction summary",
+      "description": "Claude generated this context to continue after compaction. It is not a message you sent."
+    },
     "editAndResend": "Edit and resend",
     "forkFromHere": "Fork from here",
     "delivery": {

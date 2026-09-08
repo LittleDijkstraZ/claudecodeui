@@ -1,6 +1,7 @@
 import express from 'express';
 import type { Request } from 'express';
 
+import { claudeBtwService } from '@/modules/claude-session-actions/claude-btw.service.js';
 import { claudeSessionActionsService } from '@/modules/claude-session-actions/claude-session-actions.service.js';
 import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/index.js';
 import type { ClaudeSessionRewindMode } from '@/shared/index.js';
@@ -27,11 +28,24 @@ function rewindInput(request: Request) {
 }
 
 /** Used by the server and route tests to expose authenticated actions on this remote's Claude sessions. */
-export function createClaudeSessionActionsRouter(service = claudeSessionActionsService) {
+export function createClaudeSessionActionsRouter(service = claudeSessionActionsService, btw = claudeBtwService) {
   const router = express.Router();
   router.get('/:id/capabilities', asyncHandler(async (req, res) => {
     userId(req);
     res.json(createApiSuccessResponse(await service.capabilities(identifier(req.params.id))));
+  }));
+  router.post('/:id/btw', asyncHandler(async (req, res) => {
+    userId(req);
+    const input = body(req, ['question']);
+    if (typeof input.question !== 'string' || !input.question.trim() || input.question.length > 16000 || input.question.includes('\0')) invalid('Question must contain 1–16000 characters.');
+    const controller = new AbortController();
+    const cancel = () => controller.abort();
+    const timeout = setTimeout(cancel, 120_000);
+    res.on('close', cancel);
+    try {
+      const result = await btw(identifier(req.params.id), input.question.trim(), controller.signal);
+      if (!res.destroyed) res.json(createApiSuccessResponse(result));
+    } finally { clearTimeout(timeout); res.off('close', cancel); }
   }));
   router.post('/:id/fork', asyncHandler(async (req, res) => {
     userId(req);

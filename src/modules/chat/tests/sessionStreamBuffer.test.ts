@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
+
 import { test } from 'vitest';
 
-import type { LLMProvider } from '@/shared/types';
-
+import type { AssistantStreamIdentity, LLMProvider } from '@/shared/types';
 import { createSessionStreamBuffer } from '@/modules/chat/utils/sessionStreamBuffer';
 
 function fixture() {
@@ -193,4 +193,21 @@ test('event dispatch rejects malformed text and uses the fallback for an unknown
   f.buffer.handleEvent({ kind: 'stream_delta', content: 'Valid', provider: 'unknown' }, 'a', 'cursor');
   f.end('a');
   assert.deepEqual(f.updates, [{ sessionId: 'a', content: 'Valid', provider: 'cursor' }]);
+});
+
+test('stream completion retains exact response/block identity and adds the native anchor when it arrives late', () => {
+  const updates: Array<{ content: string; identity?: AssistantStreamIdentity }> = [];
+  const buffer = createSessionStreamBuffer({
+    updateStreaming(_sessionId, content, _provider, identity) { updates.push({ content, identity }); },
+    finalizeStreaming() {},
+  }, { schedule: () => 1, cancel() {} });
+  buffer.handleEvent({ kind: 'stream_delta', content: 'First ', responseMessageId: 'api-a', contentBlockIndex: 2 }, 'a', 'claude');
+  buffer.handleEvent({ kind: 'stream_delta', content: 'block' }, 'a', 'claude');
+  buffer.handleEvent({ kind: 'stream_end', transcriptAnchorId: 'native-a' }, 'a', 'claude');
+  buffer.handleEvent({ kind: 'stream_delta', content: 'Second block', responseMessageId: 'api-a', contentBlockIndex: 3 }, 'a', 'claude');
+  buffer.handleEvent({ kind: 'stream_end' }, 'a', 'claude');
+  assert.deepEqual(updates, [
+    { content: 'First block', identity: { responseMessageId: 'api-a', contentBlockIndex: 2, transcriptAnchorId: 'native-a' } },
+    { content: 'Second block', identity: { responseMessageId: 'api-a', contentBlockIndex: 3 } },
+  ]);
 });

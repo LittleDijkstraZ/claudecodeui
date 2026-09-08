@@ -421,5 +421,21 @@
     "taskDetailsNotRecorded": "The available conversation records do not provide task details.",
     "loadingEarlierAgents": "Loading earlier activity…",
     "loadEarlierAgentsReadOnly": "Loads one earlier page of saved records. It does not resume or stop tasks."
+  },
+  "btw": {
+    "addTab": "Add tab",
+    "new": "New BTW",
+    "requiresClaude": "Select a Claude conversation first",
+    "closeTab": "Close {{title}}",
+    "closeTitle": "Close BTW?",
+    "closeDescription": "“{{title}}” will be discarded and any pending answer cancelled. It cannot be restored.",
+    "cancel": "Cancel",
+    "confirmClose": "Close",
+    "description": "Uses the source conversation’s context · No tools · Not saved to chat history",
+    "empty": "Ask a side question without interrupting the main conversation.",
+    "thinking": "Thinking…",
+    "question": "BTW question",
+    "placeholder": "Ask about the current conversation…",
+    "send": "Send BTW"
   }
 }

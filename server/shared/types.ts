@@ -313,6 +313,18 @@ export type NormalizedMessage = {
    * has to survive a reload — never a value this app synthesized.
    */
   transcriptAnchorId?: string;
+  /**
+   * Native API response identifier when supplied by the provider. One response
+   * may contain several transcript rows or content blocks; this is not a unique
+   * display-row id and must never be used as a transcript/edit anchor.
+   */
+  responseMessageId?: string;
+  /**
+   * Zero-based block index within responseMessageId, only when the provider
+   * reports it explicitly. A saved row's local content-array position is not
+   * necessarily the API index, so missing values must remain unknown.
+   */
+  contentBlockIndex?: number;
   sessionId: string;
   timestamp: string;
   provider: LLMProvider;

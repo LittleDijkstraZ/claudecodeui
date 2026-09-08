@@ -1,4 +1,4 @@
-import { memo, useMemo, useRef } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { GitBranchIcon, PencilIcon } from 'lucide-react';
 
@@ -52,6 +52,33 @@ type MessageComponentProps = {
 
 const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write', 'ApplyPatch']);
 
+function CompactSummary({ message, revealTarget, isExporting }: {
+  message: ChatMessage; revealTarget?: MessageRevealTarget; isExporting: boolean;
+}) {
+  const { t } = useTranslation('chat');
+  // Native continuation context stays collapsed until deliberately opened or
+  // revealed by a transcript jump; it is never presented as a human send.
+  const [expanded, setExpanded] = useState(false);
+  const revealRequestId = revealTarget?.requestId;
+  useEffect(() => {
+    if (revealRequestId !== undefined) setExpanded(true);
+  }, [revealRequestId]);
+  const open = expanded || isExporting;
+  return (
+    <details open={open} onToggle={event => setExpanded(event.currentTarget.open)}
+      className="rounded-lg border border-border/60 px-3 py-2 text-xs text-muted-foreground"
+      data-compaction-summary>
+      <summary className="cursor-pointer select-none py-1">
+        {t('message.compaction.title')}
+      </summary>
+      {open && <div className="mt-2 min-w-0 space-y-3">
+        <p>{t('message.compaction.description')}</p>
+        <Markdown className="prose prose-sm max-w-none break-words dark:prose-invert">{message.content}</Markdown>
+      </div>}
+    </details>
+  );
+}
+
 /**
  * Rendered by chat's ChatMessagesPane and ToolGroupContainer to draw one
  * transcript entry — user turn, assistant turn, or a tool call and its result.
@@ -59,7 +86,7 @@ const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write', 'ApplyPatch']);
 const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, showRawParameters, showThinking, selectedProject, provider, onEditMessage, onDismissPendingMessage, onRetryPendingMessage, onForkFromMessage, revealTarget }: MessageComponentProps) => {
   const { t } = useTranslation('chat');
   const workspaceActions = useWorkspacePanelActions();
-  const isGrouped = prevMessage && prevMessage.type === message.type &&
+  const isGrouped = prevMessage && !prevMessage.isCompactSummary && !message.isCompactSummary && prevMessage.type === message.type &&
     ((prevMessage.type === 'assistant') ||
       (prevMessage.type === 'user') ||
       (prevMessage.type === 'tool') ||
@@ -110,9 +137,11 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
       data-tool-id={isExporting ? undefined : message.toolId ?? message.toolCallId}
       data-message-timestamp={message.timestamp || undefined}
       tabIndex={-1}
-      className={`chat-message ${message.type} ${isGrouped ? 'grouped' : ''} ${message.type === 'user' ? 'flex justify-end px-3 sm:px-0' : 'px-3 sm:px-0'}`}
+      className={`chat-message ${message.isCompactSummary ? 'system' : message.type} ${isGrouped ? 'grouped' : ''} ${message.type === 'user' && !message.isCompactSummary ? 'flex justify-end px-3 sm:px-0' : 'px-3 sm:px-0'}`}
     >
-      {message.type === 'user' ? (
+      {message.isCompactSummary ? (
+        <CompactSummary message={message} revealTarget={matchingRevealTarget} isExporting={isExporting} />
+      ) : message.type === 'user' ? (
         /* User turn on the right: claude.ai-style attachment cards above the bubble */
         <div className="flex w-full items-end space-x-0 sm:w-auto sm:max-w-[85%] sm:space-x-3 md:max-w-md lg:max-w-lg xl:max-w-xl">
           <div className="flex min-w-0 flex-1 flex-col items-end gap-2 sm:flex-initial">

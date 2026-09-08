@@ -335,5 +335,21 @@
     "taskDetailsNotRecorded": "当前对话记录未提供这些任务的详情。",
     "loadingEarlierAgents": "正在加载更早的活动…",
     "loadEarlierAgentsReadOnly": "每次只读取更早的一页记录，不会恢复或停止任务。"
+  },
+  "btw": {
+    "addTab": "新建标签页",
+    "new": "新建 BTW",
+    "requiresClaude": "请先选择一个 Claude 对话",
+    "closeTab": "关闭 {{title}}",
+    "closeTitle": "关闭 BTW？",
+    "closeDescription": "关闭后将丢弃「{{title}}」，并取消尚未完成的回答，无法恢复。",
+    "cancel": "取消",
+    "confirmClose": "关闭",
+    "description": "读取原对话上下文 · 不使用工具 · 不写入对话历史",
+    "empty": "在这里顺便问一句，不打断主对话。",
+    "thinking": "思考中…",
+    "question": "BTW 问题",
+    "placeholder": "针对当前对话提个旁支问题…",
+    "send": "发送 BTW"
   }
 }

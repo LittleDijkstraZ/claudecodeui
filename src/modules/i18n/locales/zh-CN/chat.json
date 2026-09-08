@@ -266,6 +266,10 @@
     "nextTaskPrompt": "开始下一个任务"
   },
   "message": {
+    "compaction": {
+      "title": "上下文压缩摘要",
+      "description": "这是 Claude 为压缩后继续对话生成的上下文，不是你发送的消息。"
+    },
     "editAndResend": "编辑并重新发送",
     "forkFromHere": "从此处派生",
     "delivery": {

@@ -176,3 +176,154 @@ test('a receipt replay during an older snapshot cannot resurrect a confirmed cop
   await act(async () => { await view.result.current.fetchFromServer('session-a', { limit: 1 }); });
   expect(view.result.current.getMessages('session-a')).toEqual([tail]);
 });
+
+test('a full SDK reply bridges its live global block index to the native row before saved local-index history arrives', async () => {
+  const view = renderHook(() => useSessionStore('user'));
+  const prompt = row('send-a_text_0', 'user', '2026-09-08T12:00:00Z');
+  prompt.transcriptAnchorId = 'send-a';
+  act(() => view.result.current.appendRealtime('session-a', local('send-a', prompt.timestamp)));
+  sessionMessages.mockResolvedValueOnce(page([prompt]));
+  await act(async () => { await view.result.current.fetchFromServer('session-a'); });
+  // Thinking used global index 0; this text used global index 1. The SDK final
+  // record stores only this text block, so its saved local part index is 0.
+  const identity = { responseMessageId: 'api-answer-a', contentBlockIndex: 1 };
+  act(() => {
+    view.result.current.updateStreaming('session-a', 'One recorded answer.', 'claude', identity);
+    view.result.current.finalizeStreaming('session-a');
+    view.result.current.appendRealtime('session-a', local('send-b', prompt.timestamp));
+  });
+  const answer = { ...row('native-a_text_0', 'assistant', prompt.timestamp), responseMessageId: identity.responseMessageId, content: 'One recorded answer.' };
+  // The backend maps a structurally unambiguous completed stream to its full
+  // SDK row. Only this live confirmation carries the global stream index.
+  act(() => view.result.current.appendRealtime('session-a', { ...answer, contentBlockIndex: 1 }));
+  expect(ids(view.result.current.getMessages('session-a'))).toEqual([prompt.id, answer.id, 'client_send-b']);
+  const later = { ...row('send-b_text_0', 'user', prompt.timestamp), transcriptAnchorId: 'send-b' };
+  sessionMessages.mockResolvedValueOnce(page([prompt, answer, later]));
+  await act(async () => { await view.result.current.fetchFromServer('session-a'); });
+  expect(ids(view.result.current.getMessages('session-a'))).toEqual([prompt.id, answer.id, later.id]);
+  expect(view.result.current.getSessionSlot('session-a')?.realtimeMessages).toEqual([]);
+});
+
+test('saved history never treats a local array index as the global stream block index', async () => {
+  const view = renderHook(() => useSessionStore('user'));
+  const first = { ...row('native-first_text_0', 'assistant', '2026-09-08T12:00:00Z'),
+    responseMessageId: 'api-multiple-blocks', content: 'Earlier block.' };
+  sessionMessages.mockResolvedValueOnce(page([first]));
+  await act(async () => { await view.result.current.fetchFromServer('session-a'); });
+  act(() => {
+    view.result.current.updateStreaming('session-a', 'Later block.', 'claude', { responseMessageId: first.responseMessageId, contentBlockIndex: 2 });
+    view.result.current.finalizeStreaming('session-a');
+  });
+  sessionMessages.mockResolvedValueOnce(page([first]));
+  await act(async () => { await view.result.current.fetchFromServer('session-a'); });
+  expect(view.result.current.getMessages('session-a').map(message => message.content)).toEqual(['Earlier block.', 'Later block.']);
+  const second = { ...first, id: 'native-second_text_0', content: 'Later block.' };
+  act(() => view.result.current.appendRealtime('session-a', { ...second, contentBlockIndex: 2 }));
+  sessionMessages.mockResolvedValueOnce(page([first, second]));
+  await act(async () => { await view.result.current.fetchFromServer('session-a'); });
+  expect(ids(view.result.current.getMessages('session-a'))).toEqual([first.id, second.id]);
+  expect(view.result.current.getSessionSlot('session-a')?.realtimeMessages).toEqual([]);
+});
+
+test('unidentified live output stays before the later hydrated user instead of replaying at the tail', async () => {
+  const view = renderHook(() => useSessionStore('user'));
+  const answer = { ...row('native-a_text_0', 'assistant', '2026-09-08T12:00:00Z'), content: 'Same words, uncertain identity.' };
+  sessionMessages.mockResolvedValueOnce(page([answer]));
+  await act(async () => { await view.result.current.fetchFromServer('session-a'); });
+  const uncertain = { ...answer, id: 'text_unconfirmed_block', contentBlockIndex: undefined, responseMessageId: 'api-uncertain' };
+  act(() => {
+    view.result.current.appendRealtime('session-a', uncertain);
+    view.result.current.appendRealtime('session-a', local('later-send', answer.timestamp));
+  });
+  expect(ids(view.result.current.getMessages('session-a'))).toEqual([answer.id, uncertain.id, 'client_later-send']);
+  const later = { ...row('later-send_text_0', 'user', answer.timestamp), transcriptAnchorId: 'later-send' };
+  sessionMessages.mockResolvedValueOnce(page([answer, later]));
+  await act(async () => { await view.result.current.fetchFromServer('session-a'); });
+  expect(ids(view.result.current.getMessages('session-a'))).toEqual([answer.id, uncertain.id, later.id]);
+  // Navigation and another native snapshot cannot make the uncertain earlier
+  // output appear to answer the new question. Its content is not discarded.
+  act(() => view.result.current.setActiveSession('other-session'));
+  sessionMessages.mockResolvedValueOnce(page([answer, later]));
+  await act(async () => { await view.result.current.fetchFromServer('session-a'); });
+  expect(ids(view.result.current.getMessages('session-a'))).toEqual([answer.id, uncertain.id, later.id]);
+  expect(view.result.current.getSessionSlot('session-a')?.realtimeMessages[0].content).toBe(uncertain.content);
+});
+
+test('an older remote retains its bounded echo behavior without relocating an unanchored copy after a new question', async () => {
+  const view = renderHook(() => useSessionStore('user'));
+  const answer = { ...row('native-legacy_text_0', 'assistant', '2026-09-08T12:00:00Z'), content: 'Legacy streamed answer.' };
+  sessionMessages.mockResolvedValueOnce(page([answer]));
+  await act(async () => { await view.result.current.fetchFromServer('session-a'); });
+  act(() => {
+    view.result.current.appendRealtime('session-a', { ...answer, id: 'text_legacy' });
+    view.result.current.appendRealtime('session-a', local('later-send', answer.timestamp));
+  });
+  expect(ids(view.result.current.getMessages('session-a'))).toEqual([answer.id, 'client_later-send']);
+  const later = { ...row('later-send_text_0', 'user', answer.timestamp), transcriptAnchorId: 'later-send' };
+  sessionMessages.mockResolvedValueOnce(page([answer, later]));
+  await act(async () => { await view.result.current.fetchFromServer('session-a'); });
+  expect(ids(view.result.current.getMessages('session-a'))).toEqual([answer.id, later.id]);
+  // No saved user anchor is present in this partial page. Legacy adjacency
+  // may hide the echo but cannot erase the uncertain underlying live output.
+  expect(view.result.current.getSessionSlot('session-a')?.realtimeMessages[0].content).toBe(answer.content);
+});
+
+test('an older remote hydrates a normal first streamed answer without adding a duplicate', async () => {
+  const view = renderHook(() => useSessionStore('user'));
+  const prompt = row('native-user', 'user', '2026-09-08T12:00:00Z');
+  sessionMessages.mockResolvedValueOnce(page([prompt]));
+  await act(async () => { await view.result.current.fetchFromServer('session-a'); });
+  act(() => {
+    view.result.current.updateStreaming('session-a', 'Legacy answer.', 'claude');
+    view.result.current.finalizeStreaming('session-a');
+  });
+  const answer = { ...row('native-answer_text_0', 'assistant', prompt.timestamp), content: 'Legacy answer.' };
+  sessionMessages.mockResolvedValueOnce(page([prompt, answer]));
+  await act(async () => { await view.result.current.fetchFromServer('session-a'); });
+  expect(ids(view.result.current.getMessages('session-a'))).toEqual([prompt.id, answer.id]);
+});
+
+test('equal prose from distinct API responses or different blocks is never used to retire Claude output', async () => {
+  const view = renderHook(() => useSessionStore('user'));
+  const recorded = { ...row('native_text_0', 'assistant', '2026-09-08T12:00:00Z'), responseMessageId: 'api-a', contentBlockIndex: 0, content: 'Repeated.' };
+  sessionMessages.mockResolvedValueOnce(page([recorded]));
+  await act(async () => { await view.result.current.fetchFromServer('session-a'); });
+  act(() => {
+    view.result.current.appendRealtime('session-a', { ...recorded, id: 'text_other_response', responseMessageId: 'api-b' });
+    view.result.current.appendRealtime('session-a', { ...recorded, id: 'text_other_block', contentBlockIndex: 1 });
+  });
+  sessionMessages.mockResolvedValueOnce(page([recorded]));
+  await act(async () => { await view.result.current.fetchFromServer('session-a'); });
+  expect(ids(view.result.current.getMessages('session-a'))).toEqual([recorded.id, 'text_other_response', 'text_other_block']);
+});
+
+test('a native full reply replaces its exact streaming block and a replay cannot create another row', async () => {
+  const view = renderHook(() => useSessionStore('user'));
+  const identity = { responseMessageId: 'api-a', contentBlockIndex: 2 };
+  act(() => {
+    view.result.current.updateStreaming('session-a', 'Complete answer', 'claude', identity);
+    view.result.current.finalizeStreaming('session-a');
+  });
+  const full = { ...row('native_text_2', 'assistant', '2026-09-08T12:00:00Z'), ...identity, content: 'Complete answer' };
+  act(() => {
+    view.result.current.appendRealtime('session-a', full);
+    view.result.current.appendRealtime('session-a', full);
+  });
+  expect(view.result.current.getMessages('session-a')).toHaveLength(1);
+  expect(view.result.current.getMessages('session-a')[0]).toMatchObject(full);
+});
+
+test('exact identity merges a new live update over an older in-flight history snapshot without losing its suffix', async () => {
+  const view = renderHook(() => useSessionStore('user'));
+  const identity = { responseMessageId: 'api-a', contentBlockIndex: 0 };
+  act(() => view.result.current.updateStreaming('session-a', 'Prefix', 'claude', identity));
+  let resolvePage!: (value: ReturnType<typeof page>) => void;
+  sessionMessages.mockImplementationOnce(() => new Promise(resolve => { resolvePage = resolve; }));
+  let request!: Promise<unknown>;
+  await act(async () => { request = view.result.current.fetchFromServer('session-a'); await Promise.resolve(); });
+  act(() => view.result.current.updateStreaming('session-a', 'Prefix and newer suffix', 'claude', identity));
+  const saved = { ...row('native_text_0', 'assistant', '2026-09-08T12:00:00Z'), ...identity, content: 'Prefix' };
+  await act(async () => { resolvePage(page([saved])); await request; });
+  expect(view.result.current.getMessages('session-a')).toHaveLength(1);
+  expect(view.result.current.getMessages('session-a')[0]).toMatchObject({ id: saved.id, content: 'Prefix and newer suffix' });
+});

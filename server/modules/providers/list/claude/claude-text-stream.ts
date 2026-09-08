@@ -45,7 +45,8 @@ export function createClaudeTextStream(normalizeComplete: (raw: unknown, session
         if (block.type === 'text') {
             if (!block.text.length) return [];
             block.displayed.push({ signature: signature({kind: 'text', role: 'assistant', content: block.text}), consumed: false });
-            return normalizeComplete({ type: 'content_block_stop' }, sessionId);
+            return normalizeComplete({ type: 'content_block_stop', responseMessageId: current?.id,
+                contentBlockIndex: block.index }, sessionId);
         }
         // Only show non-text blocks once the SDK has actually completed them.
         // An error/early final snapshot must not turn incomplete tool JSON into a tool call.
@@ -99,7 +100,8 @@ export function createClaudeTextStream(normalizeComplete: (raw: unknown, session
                 const text = event.content_block.text;
                 if (type === 'text' && typeof text === 'string' && text.length) {
                     block.text += text;
-                    output.push(...normalizeComplete({ type: 'content_block_delta', delta: { text } }, sessionId));
+                    output.push(...normalizeComplete({ type: 'content_block_delta', delta: { text },
+                        responseMessageId: current?.id, contentBlockIndex: block.index }, sessionId));
                 }
                 return output;
             }
@@ -117,7 +119,8 @@ export function createClaudeTextStream(normalizeComplete: (raw: unknown, session
                 const text = event.delta.text;
                 if (typeof text !== 'string' || !text.length) return [];
                 activeBlock.text += text;
-                return normalizeComplete({ type: 'content_block_delta', delta: { text } }, sessionId);
+                return normalizeComplete({ type: 'content_block_delta', delta: { text },
+                    responseMessageId: current?.id, contentBlockIndex: activeBlock.index }, sessionId);
             }
             if (event.type === 'content_block_stop') {
                 return activeBlock?.index === event.index ? end(sessionId, true) : [];
@@ -139,13 +142,33 @@ export function createClaudeTextStream(normalizeComplete: (raw: unknown, session
         const output = finishesCurrent || message?.type === 'result' ? end(sessionId) : [];
         const record = isMainAssistant ? records.get(message.message?.id) : null;
         const complete = normalizeComplete(message, sessionId);
+        // A completed SDK row supplies the durable transcript id. Its content
+        // array can contain only one block from a larger API response, so never
+        // infer the API index from that array or guess FIFO across pending blocks.
+        const pendingTextBlocks = record ? [...record.blocks.values()].filter(block =>
+            block.type === 'text' && block.closed && block.displayed.some(displayed => !displayed.consumed)) : [];
+        const singleTextBlock = pendingTextBlocks.length === 1 ? pendingTextBlocks[0] : null;
+        const hasNativeTextIdentity = isMainAssistant && typeof message.uuid === 'string' && Boolean(message.uuid);
+        const hasSingleTextRow = complete.filter(item => item.kind === 'text' && item.role === 'assistant').length === 1;
         for (const item of complete) {
-            // Suppress only an exact, completed, already displayed text block from this message.
-            // Keep mismatches and all tool/thinking messages so final authoritative output is never lost.
             const key = signature(item);
             const duplicate = record && key
                 ? [...record.blocks.values()].flatMap(b => b.displayed).find(d => !d.consumed && d.signature === key)
                 : null;
+            if (hasNativeTextIdentity && item.kind === 'text' && item.role === 'assistant') {
+                // Only one eligible block within the exact API response makes
+                // this link structural. Text equality is an integrity check,
+                // not a way to choose among repeated or ambiguous blocks.
+                const knownBlock = hasSingleTextRow && singleTextBlock && duplicate
+                    && singleTextBlock.displayed.includes(duplicate) ? singleTextBlock : null;
+                // An ambiguous text match must not reduce the pending set and
+                // accidentally make a later row look structurally unique.
+                if (knownBlock && duplicate) duplicate.consumed = true;
+                output.push(knownBlock ? { ...item, contentBlockIndex: knownBlock.index } : item);
+                continue;
+            }
+            // Non-text and legacy rows retain the existing completed-block
+            // suppression; incomplete or mismatching output stays visible.
             if (duplicate) duplicate.consumed = true;
             else output.push(item);
         }

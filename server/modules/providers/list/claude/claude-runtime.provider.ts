@@ -60,6 +60,9 @@ type ActiveSession = {
   writer: ProviderRuntimeWriter | null;
   releaseInput: (() => void) | null;
   enqueue?: (command: string, options: AnyRecord) => Promise<boolean>;
+  sideQuestions?: number;
+  sideQuestionsSettled?: () => void;
+  canAskSideQuestion?: () => boolean;
   abortPromise?: Promise<boolean>;
   aborted?: boolean;
 };
@@ -618,6 +621,7 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
   // True while the process is being held open for background work, so a later
   // `result` can be recognised as that work reporting back.
   let heldForBackgroundWork = false;
+  let heldOnlyForSideQuestions = false;
 
   if (sessionKey() && getSession(sessionKey()!)?.status === 'active') throw new Error('Claude already owns this session. Send through its existing input stream.');
   let foreground = true;
@@ -657,7 +661,16 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
   const registerInput = () => {
     if (!sessionKey() || !queryInstance) return;
     addSession(sessionKey()!, queryInstance, ws, () => { releasePromptStream(); emitRuntimeState(); });
-    getSession(sessionKey()!)!.enqueue = enqueueInput;
+    const session = getSession(sessionKey()!)!;
+    session.enqueue = enqueueInput;
+    session.canAskSideQuestion = () => streamStarted && inputQueue.isOpen();
+    session.sideQuestionsSettled = () => {
+      if (heldOnlyForSideQuestions && !foreground && !backgroundWork.hasPendingWorkflow() && !inputQueue.hasPending()) {
+        heldOnlyForSideQuestions = false;
+        releasePromptStream();
+        emitRuntimeState();
+      }
+    };
     // The active query now owns this reservation. Its final frame may trigger
     // the next send before this async invocation's finally block settles.
     releaseStartingReservation();
@@ -673,6 +686,7 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
       idleReleaseTimer = null;
       // An active Workflow or a submitted message is not an idle process. Never kill either to free the composer.
       if (backgroundWork.hasPendingWorkflow() || inputQueue.hasPending() || foreground) return;
+      if (getSession(sessionKey()!)?.sideQuestions) { scheduleRelease(); return; }
       releasePromptStream();
       emitRuntimeState();
     }, dependencies.waitCeilingMs);
@@ -1091,7 +1105,8 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
             userId: ws.userId || null, provider: 'claude', sessionId: sessionKey(), sessionName: sessionSummary,
           });
         }
-        if (!abortPending && (backgroundWork.hasPendingWorkflow() || inputQueue.hasPending() || turn.holdInput)) {
+        heldOnlyForSideQuestions = !backgroundWork.hasPendingWorkflow() && !inputQueue.hasPending() && !turn.holdInput;
+        if (!abortPending && (backgroundWork.hasPendingWorkflow() || inputQueue.hasPending() || turn.holdInput || getSession(sessionKey()!)?.sideQuestions)) {
           heldForBackgroundWork = true;
           // Workflow lifetimes are explicit; silence is not permission to stop them.
           if (!backgroundWork.hasPendingWorkflow() && !inputQueue.hasPending()) scheduleRelease();
@@ -1288,4 +1303,18 @@ export const claudeRuntime = createClaudeRuntime();
 /** Used by session actions to reject rewinds while Claude still owns a live or background query. */
 export function isClaudeSessionActive(sessionId: string): boolean {
   return startingSessions.has(sessionId) || activeSessions.get(sessionId)?.status === 'active';
+}
+
+/** Used by session actions to keep the existing runtime alive for an independent native /btw request. */
+export function acquireClaudeSideQuestionQuery(sessionId: string) {
+  const session = getSession(sessionId);
+  if (!session || session.status !== 'active' || session.aborted || !session.canAskSideQuestion?.()) return null;
+  session.sideQuestions = (session.sideQuestions ?? 0) + 1;
+  let released = false;
+  return { query: session.instance, release: () => {
+    if (released) return;
+    released = true;
+    session.sideQuestions = Math.max(0, (session.sideQuestions ?? 1) - 1);
+    if (!session.sideQuestions) session.sideQuestionsSettled?.();
+  } };
 }

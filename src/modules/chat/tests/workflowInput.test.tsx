@@ -341,6 +341,35 @@ test('new run identity resets an old sequence cursor; late old receipts and comp
   expect(view.result.current.store.getMessages('session-a').at(-1)?.delivery).toBe('delivered');
 });
 
+test('replayed text frames cannot append or finalize an answer twice, while a new run can restart its sequence', () => {
+  const view = handlers();
+  const delta: ServerEvent = { kind: 'stream_delta', sessionId: 'session-a', runId: 'run-a', runStartedAt: 100,
+    seq: 1, content: 'One answer', responseMessageId: 'api-a', contentBlockIndex: 0 };
+  const end: ServerEvent = { ...delta, kind: 'stream_end', seq: 2, content: undefined };
+  view.emit(delta);
+  view.emit(delta);
+  view.emit(end);
+  view.emit(delta);
+  view.emit(end);
+  expect(view.result.current.store.getMessages('session-a').map(message => message.content)).toEqual(['One answer']);
+  view.emit({ ...delta, runId: 'run-b', runStartedAt: 200, responseMessageId: 'api-b', content: 'Another answer' });
+  view.emit({ ...end, runId: 'run-b', runStartedAt: 200, responseMessageId: 'api-b' });
+  expect(view.result.current.store.getMessages('session-a').map(message => message.content)).toEqual(['One answer', 'Another answer']);
+});
+
+test('status watermark snapshots do not consume text sequence frames or suppress delivery receipts', () => {
+  const view = handlers();
+  const base = { sessionId: 'session-a', runId: 'run-a', runStartedAt: 100 };
+  view.emit({ ...base, kind: 'status', seq: 10, text: 'snapshot' });
+  view.emit({ ...base, kind: 'stream_delta', seq: 1, content: 'Answer', responseMessageId: 'api-a', contentBlockIndex: 0 });
+  view.emit({ ...base, kind: 'stream_end', seq: 2 });
+  view.emit({ ...receipt('queued'), ...base, seq: 2 });
+  view.emit({ ...receipt('delivered'), ...base, seq: 2 });
+  const rows = view.result.current.store.getMessages('session-a');
+  expect(rows.filter(message => message.role === 'assistant').map(message => message.content)).toEqual(['Answer']);
+  expect(rows.find(message => message.clientMessageId)?.delivery).toBe('delivered');
+});
+
 
 test.each([undefined, false])('retry reaches remote admission with a new UUID despite stale capability %s, preserving another edit draft', async acceptsInput => {
   const view = composer({ startedAt: 100, statusText: null, canInterrupt: true, acceptsInput });

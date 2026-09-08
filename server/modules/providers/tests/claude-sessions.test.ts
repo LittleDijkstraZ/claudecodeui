@@ -33,6 +33,72 @@ const SESSION_ID = 'claude-session-1';
 const AGENT_ID = 'a1b2c3d4e5f60718';
 const AGENT_TOOL_USE_ID = 'toolu_agent_1';
 
+test('native compact summaries preserve their classification for string, block-array and meta rows', () => {
+  const provider = new ClaudeSessionsProvider();
+  const summary = 'This session is being continued from a previous conversation.\nSynthetic summary fixture.';
+  for (const content of [summary, [{ type: 'text', text: summary.split('\n')[0] }, { type: 'text', text: summary.split('\n')[1] }]]) {
+    for (const isMeta of [false, true]) {
+      const raw = { type: 'user', uuid: 'native-compact-fixture', timestamp: '2026-09-08T20:38:02Z',
+        isCompactSummary: true, isMeta, message: { role: 'user', content } };
+      const original = JSON.stringify(raw);
+      const messages = provider.normalizeMessage(raw, SESSION_ID);
+      assert.equal(messages.length, 1, 'A native summary is one artifact regardless of text block count.');
+      assert.equal(messages[0].role, 'assistant');
+      assert.equal(messages[0].isCompactSummary, true);
+      assert.equal(messages[0].content, summary);
+      assert.equal(messages[0].id, raw.uuid);
+      assert.equal(messages[0].timestamp, raw.timestamp);
+      assert.equal(messages[0].transcriptAnchorId, undefined, 'A synthetic summary is not an editable user prompt.');
+      assert.equal(JSON.stringify(raw), original, 'Normalization does not mutate native metadata or content.');
+    }
+  }
+});
+
+test('ordinary user text quoting a compact-summary prefix remains a genuine anchored user message', () => {
+  const provider = new ClaudeSessionsProvider();
+  const text = 'This session is being continued from a previous conversation. Please explain this quoted text.';
+  for (const content of [text, [{ type: 'text', text }]]) {
+    const [message] = provider.normalizeMessage({ type: 'user', uuid: 'quoted-user-fixture',
+      message: { role: 'user', content } }, SESSION_ID);
+    assert.equal(message.role, 'user');
+    assert.equal(message.content, text);
+    assert.equal(message.isCompactSummary, undefined);
+    assert.equal(message.transcriptAnchorId, 'quoted-user-fixture');
+  }
+});
+
+test('saved assistant text preserves API identity without inventing global block indices from split rows', () => {
+  const provider = new ClaudeSessionsProvider();
+  const rows = [
+    { type: 'assistant', uuid: 'native-first-block', message: { id: 'same-api-reply', role: 'assistant', content: [{ type: 'text', text: 'First' }] } },
+    { type: 'assistant', uuid: 'native-second-block', message: { id: 'same-api-reply', role: 'assistant', content: [{ type: 'text', text: 'Second' }] } },
+    { type: 'assistant', uuid: 'native-string-row', message: { id: 'string-api-reply', role: 'assistant', content: 'String form' } },
+    { type: 'assistant', uuid: 'native-no-api-row', message: { role: 'assistant', content: [{ type: 'text', text: 'Legacy' }] } },
+  ];
+  const messages = rows.flatMap(raw => provider.normalizeMessage(raw, SESSION_ID));
+  assert.deepEqual(messages.map(message => [message.id, message.responseMessageId]), [
+    ['native-first-block_0', 'same-api-reply'], ['native-second-block_0', 'same-api-reply'],
+    ['native-string-row', 'string-api-reply'], ['native-no-api-row_0', undefined],
+  ]);
+  assert.ok(messages.every(message => message.contentBlockIndex === undefined));
+  assert.ok(messages.every(message => message.transcriptAnchorId === undefined));
+});
+
+test('stream identity accepts exact zero-based indices and leaves unavailable metadata absent', () => {
+  const provider = new ClaudeSessionsProvider();
+  for (const type of ['content_block_delta', 'content_block_stop']) {
+    const [valid] = provider.normalizeMessage({ type, delta: { text: 'fixture' }, responseMessageId: 'api-zero', contentBlockIndex: 0 }, SESSION_ID);
+    assert.equal(valid.responseMessageId, 'api-zero');
+    assert.equal(valid.contentBlockIndex, 0);
+    assert.equal(valid.transcriptAnchorId, undefined);
+    for (const contentBlockIndex of [undefined, null, -1, 1.5, '0']) {
+      const [unknown] = provider.normalizeMessage({ type, delta: { text: 'fixture' }, responseMessageId: '', contentBlockIndex }, SESSION_ID);
+      assert.equal(unknown.responseMessageId, undefined);
+      assert.equal(unknown.contentBlockIndex, undefined);
+    }
+  }
+});
+
 /**
  * Writes the transcript pair current Claude versions produce for one async
  * subagent: the parent session, and the agent's own transcript plus sidecar
