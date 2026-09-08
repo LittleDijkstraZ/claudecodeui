@@ -9,6 +9,8 @@ import type {
   ProjectSession,
   LLMProvider,
   NormalizedMessage,
+  ClaudeSessionMutationEvent,
+  ChatRunCursor,
 } from '@/shared/types';
 import { showCompletionTitleIndicator } from '@/modules/chat/utils/pageTitleNotification';
 import { playChatCompletionSound, playNotificationSound, readSessionRuntimeState } from '@/shared/utils';
@@ -39,6 +41,7 @@ type UseChatRealtimeHandlersArgs = {
    * frame; read wherever a `chat.subscribe` is sent (session open, reconnect).
    */
   lastSeqRef: MutableRefObject<Map<string, number>>;
+  lastRunRef?: MutableRefObject<Map<string, ChatRunCursor>>;
   /** When each session's `chat.subscribe` was last sent; guards stale idle acks. */
   statusCheckSentAtRef: MutableRefObject<Map<string, number>>;
   onSessionProcessing?: MarkSessionProcessing;
@@ -71,6 +74,7 @@ export function useChatRealtimeHandlers({
   pendingPermissionRequests,
   setPendingPermissionRequests,
   lastSeqRef,
+  lastRunRef,
   statusCheckSentAtRef,
   onSessionProcessing,
   onSessionIdle,
@@ -78,6 +82,11 @@ export function useChatRealtimeHandlers({
   requestLatestMessages,
   sessionStore,
 }: UseChatRealtimeHandlersArgs) {
+  // Reconnect cursors are owned by an execution, not just the stable conversation ID.
+  const localRunRef = useRef(new Map<string, ChatRunCursor>());
+  const runCursors = lastRunRef || localRunRef;
+  // Ignore late frames from runs already replaced while this chat surface remains mounted.
+  const retiredRuns = useRef(new Set<string>());
   // Session switches can send `chat.subscribe` before this effect has a chance
   // to rebind the websocket listener. Read the visible session id from a ref
   // so a fast `chat_subscribed` ack is matched against the current view, not
@@ -132,6 +141,10 @@ export function useChatRealtimeHandlers({
           kind: 'text', role: 'user',
           timestamp: typeof msg.timestamp === 'string' ? msg.timestamp : new Date().toISOString(),
           clientMessageId: msg.clientMessageId,
+          runId: typeof msg.runId === 'string' ? msg.runId : undefined,
+          responseMessageId: typeof msg.responseMessageId === 'string' ? msg.responseMessageId : undefined,
+          executionId: typeof msg.executionId === 'string' ? msg.executionId : undefined,
+          providerSessionId: typeof msg.providerSessionId === 'string' ? msg.providerSessionId : undefined,
           transcriptAnchorId: typeof msg.transcriptAnchorId === 'string' ? msg.transcriptAnchorId : undefined,
           content: msg.content,
           images: Array.isArray(msg.images) ? msg.images as NormalizedMessage['images'] : undefined,
@@ -142,6 +155,12 @@ export function useChatRealtimeHandlers({
       }
       sessionStore.updateMessageDelivery(sid, msg.clientMessageId, delivery, typeof msg.error === 'string' ? msg.error : undefined);
     };
+    const mutationListener = (event: Event) => {
+      const detail = (event as CustomEvent<ClaudeSessionMutationEvent>).detail;
+      if (detail?.phase === 'committed' && detail.result?.contextChanged) sessionStore.quarantineContextInputs(detail.sessionId, detail.result.backupSessionId || undefined, detail.result.contextRevision);
+      else if (detail?.phase === 'failed') sessionStore.settleUnconfirmedMessages(detail.sessionId, Date.now(), 'The context change was not confirmed. Review the conversation before retrying this input.');
+    };
+    window.addEventListener('cloudcli:session-mutation', mutationListener);
     const handleEvent = (msg: ServerEvent) => {
       if (!msg.kind) {
         return;
@@ -149,6 +168,26 @@ export function useChatRealtimeHandlers({
 
       const activeViewSessionId = activeViewSessionIdRef.current;
       const sid = (typeof msg.sessionId === 'string' && msg.sessionId) || activeViewSessionId;
+
+      if (sid && typeof msg.runId === 'string' && msg.runId) {
+        const key = `${sid}:${msg.runId}`;
+        const previous = runCursors.current.get(sid);
+        if (retiredRuns.current.has(key)) return;
+        if (previous?.runId !== msg.runId) {
+          if (previous?.startedAt && typeof msg.runStartedAt === 'number' && msg.runStartedAt < previous.startedAt) return;
+          if (previous) retiredRuns.current.add(`${sid}:${previous.runId}`);
+          if (retiredRuns.current.size > 1000) retiredRuns.current.delete(retiredRuns.current.values().next().value!);
+          // Finish only the old text prefix; this is not a run-completion UI event.
+          streamBuffer.handleEvent({ kind: 'complete' }, sid, provider);
+          runCursors.current.set(sid, { runId: msg.runId, startedAt: typeof msg.runStartedAt === 'number' ? msg.runStartedAt : undefined });
+          lastSeqRef.current.set(sid, 0);
+          for (const copy of sessionStore.getMessages(sid)) {
+            if (copy.delivery === 'queued' && copy.clientMessageId && copy.runId && copy.runId !== msg.runId) {
+              sessionStore.updateMessageDelivery(sid, copy.clientMessageId, 'failed', 'The execution that owned this input is no longer current. Delivery is unconfirmed; review the conversation before retrying.');
+            }
+          }
+        }
+      }
 
       // Record replay progress for every sequenced live event.
       if (sid && typeof msg.seq === 'number') {
@@ -176,7 +215,7 @@ export function useChatRealtimeHandlers({
         case 'chat_subscribed': {
           // Ack for chat.subscribe: authoritative processing state plus any
           // pending tool-permission prompts for the run.
-          if (!sid) return;
+          if (!sid || msg.sessionId !== sid) return;
           // The server retains the latest delivery receipt even for a completed
           // run. Consume only receipt-shaped entries for this exact session.
           if (Array.isArray(msg.messageReceipts)) {
@@ -192,6 +231,9 @@ export function useChatRealtimeHandlers({
           } else {
             // Idle ack: ignore it if a newer request started after the
             // subscribe was sent — the ack describes the older state.
+            const checkedAt = statusCheckSentAtRef.current.get(sid);
+            if (checkedAt !== undefined) sessionStore.settleUnconfirmedMessages(sid, checkedAt,
+              'No active Claude process confirms this send. Delivery is unconfirmed; review the conversation before retrying.');
             onSessionIdle?.(sid, {
               ifStartedBefore: statusCheckSentAtRef.current.get(sid),
             });
@@ -237,8 +279,14 @@ export function useChatRealtimeHandlers({
         }
 
         // Sidebar/global events — owned by useProjectsState.
-        case 'session_activity': // Metadata-only observer event; never a transcript message.
-        case 'session_context_reset': // History replacement is owned by ChatInterface.
+        case 'session_activity': return; // Metadata-only observer event; never a transcript message.
+        case 'session_context_reset': {
+          if (sid) {
+            sessionStore.quarantineContextInputs(sid, typeof msg.backupSessionId === 'string' ? msg.backupSessionId : undefined, typeof msg.contextRevision === 'string' ? msg.contextRevision : undefined);
+            window.dispatchEvent(new CustomEvent('cloudcli:context-replaced', { detail: { sessionId: sid, contextRevision: msg.contextRevision } }));
+          }
+          return; // History replacement is owned by ChatInterface.
+        }
         case 'session_upserted':
         case 'loading_progress':
           return;
@@ -260,7 +308,7 @@ export function useChatRealtimeHandlers({
       // --- All other messages: route to store ---
       const shouldPersist =
         msg.kind !== 'complete'
-        && msg.kind !== 'status'
+        && (msg.kind !== 'status' || msg.workflow === true || msg.text === 'execution_conflict')
         && msg.kind !== 'permission_request'
         && msg.kind !== 'permission_resolved'
         && msg.kind !== 'permission_cancelled';
@@ -353,7 +401,9 @@ export function useChatRealtimeHandlers({
         }
 
         case 'status': {
-          if (msg.text === 'native_commands_changed') {
+          if (msg.workflow === true || msg.text === 'execution_conflict') {
+            // Background progress and launch conflicts do not become foreground activity.
+          } else if (msg.text === 'native_commands_changed') {
             if (sid) window.dispatchEvent(new CustomEvent('cloudcli-native-commands-changed', { detail: { sessionId: sid } }));
           } else if (msg.text === 'foreground_complete') {
             if (!sid) break;
@@ -363,7 +413,7 @@ export function useChatRealtimeHandlers({
             if (foregroundCompletionKeys.current.size > 1000) foregroundCompletionKeys.current.delete(foregroundCompletionKeys.current.values().next().value!);
             if (sid === activeViewSessionId) void requestLatestMessages(sid, isActiveRef.current);
           } else if (msg.text === 'message_delivery') {
-            if (sid) applyMessageReceipt(msg, sid);
+            if (sid && msg.sessionId === sid) applyMessageReceipt(msg, sid);
           } else if (msg.text === 'claude_runtime_state') {
             if (sid) onSessionProcessing?.(sid, { ...readSessionRuntimeState(msg), statusText: null });
           } else if (msg.text === 'token_budget' && msg.tokenBudget) {
@@ -388,7 +438,8 @@ export function useChatRealtimeHandlers({
       }
     };
 
-    return subscribe(handleEvent);
+    const unsubscribe = subscribe(handleEvent);
+    return () => { unsubscribe(); window.removeEventListener('cloudcli:session-mutation', mutationListener); };
   }, [
     subscribe,
     provider,
@@ -399,6 +450,7 @@ export function useChatRealtimeHandlers({
     setPendingPermissionRequests,
     streamBuffer,
     lastSeqRef,
+    runCursors,
     statusCheckSentAtRef,
     onSessionProcessing,
     onSessionIdle,

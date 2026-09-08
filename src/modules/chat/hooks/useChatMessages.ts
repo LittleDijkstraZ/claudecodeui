@@ -7,7 +7,7 @@ import type { ChatMessage,NormalizedMessage,SubagentActivity } from '@/shared/ty
 import { formatUsageLimitText } from '@/modules/chat/utils/chatFormatting';
 
 function formatToolResultContent(content: unknown): string {
-  const text = typeof content === 'string' ? content : JSON.stringify(content);
+  const text = typeof content === 'string' ? content : JSON.stringify(content) ?? '';
   const toolUseErrorMatch = /^<tool_use_error>([\s\S]*)<\/tool_use_error>$/.exec(text.trim());
   return toolUseErrorMatch ? toolUseErrorMatch[1] : text;
 }
@@ -33,6 +33,24 @@ type CachedMessageProjection = {
 // work while only the active streaming record changes. Weak keys let entries
 // disappear automatically after their source records are no longer retained.
 const projectionCache = new WeakMap<NormalizedMessage, CachedMessageProjection>();
+
+// Sparse replay pairs recur on every stream update; retain their merged object
+// identity so unrelated prose does not invalidate cached tool projections.
+const resultMergeCache = new WeakMap<NormalizedMessage, WeakMap<NormalizedMessage, NormalizedMessage>>();
+
+function mergeRecordedToolResult(previous: NormalizedMessage | undefined, incoming: NormalizedMessage): NormalizedMessage {
+  if (!previous || !previous.toolUseResult) return incoming;
+  const existing = resultMergeCache.get(previous)?.get(incoming);
+  if (existing) return existing;
+  const metadata = incoming.toolUseResult && typeof incoming.toolUseResult === 'object'
+    ? { ...previous.toolUseResult as object, ...incoming.toolUseResult as object }
+    : incoming.toolUseResult ?? previous.toolUseResult;
+  const merged = { ...previous, ...incoming, toolUseResult: metadata };
+  let cache = resultMergeCache.get(previous);
+  if (!cache) { cache = new WeakMap(); resultMergeCache.set(previous, cache); }
+  cache.set(incoming, merged);
+  return merged;
+}
 
 /**
  * Parses a background-agent `<task-notification>` block.
@@ -123,6 +141,8 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
             tool.toolResult = {
               content: formatToolResultContent(msg.content ?? ''),
               isError: Boolean(msg.isError),
+              timestamp: msg.timestamp,
+              toolUseResult: msg.toolUseResult ?? tool.toolResult?.toolUseResult,
             };
             lastSubagentSourceByParent.set(parentId, msg);
           }
@@ -154,7 +174,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
     }
 
     if (msg.kind === 'tool_result' && msg.toolId) {
-      toolResultMap.set(msg.toolId, msg);
+      toolResultMap.set(msg.toolId, mergeRecordedToolResult(toolResultMap.get(msg.toolId), msg));
     }
   }
 
@@ -269,7 +289,8 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
           ? {
               content: formatToolResultContent(tr.content),
               isError: Boolean(tr.isError),
-              toolUseResult: (tr as any).toolUseResult,
+              timestamp: tr.timestamp,
+              toolUseResult: tr.toolUseResult,
             }
           : null;
 

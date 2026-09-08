@@ -1,7 +1,7 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
-import type { ChatMessage, Project, ProjectSession, SessionRuntimeState, SubagentInfo } from '@/shared/types';
+import type { ChatMessage, NormalizedMessage, Project, ProjectSession, SessionRuntimeState, SubagentInfo } from '@/shared/types';
 
 //----------------- DEPLOYMENT MODE ------------
 
@@ -245,9 +245,30 @@ export function getSubagentStatus(message: ChatMessage): SubagentInfo['status'] 
 /** Reads only validated runtime fields from websocket/poll snapshots; missing fields never grant live input capability. */
 export function readSessionRuntimeState(value: Record<string, unknown>): SessionRuntimeState {
   return {
+    ...(typeof value.foregroundTurnId === 'string' && value.foregroundTurnId ? { foregroundTurnId: value.foregroundTurnId } : {}),
+    ...(typeof value.foregroundStartedAt === 'string' && Number.isFinite(Date.parse(value.foregroundStartedAt)) ? { foregroundStartedAt: value.foregroundStartedAt } : {}),
     ...(value.phase === 'foreground' || value.phase === 'background' ? { phase: value.phase } : {}),
     ...(typeof value.acceptsInput === 'boolean' ? { acceptsInput: value.acceptsInput } : {}),
     ...(typeof value.backgroundTasks === 'number' && Number.isSafeInteger(value.backgroundTasks) && value.backgroundTasks >= 0 ? { backgroundTasks: value.backgroundTasks } : {}),
     ...(typeof value.executionId === 'string' && value.executionId ? { executionId: value.executionId } : {}),
   };
 }
+
+//----------------- USER MESSAGE IDENTITY ------------
+
+/** Chat reconciliation and its local outbox compare native/client identities only, never prompt text.
+ * A native anchor is accepted only from a provider row or explicit remote receipt. Different
+ * sessions/providers cannot share identity; normalized block IDs may differ within one native row.
+ */
+export function hasSameUserMessageIdentity(left: NormalizedMessage, right: NormalizedMessage): boolean {
+  if (left.kind !== 'text' || right.kind !== 'text' || left.role !== 'user' || right.role !== 'user'
+    || left.sessionId !== right.sessionId || left.provider !== right.provider) return false;
+  if (left.clientMessageId && right.clientMessageId && left.clientMessageId !== right.clientMessageId) return false;
+  if (left.transcriptAnchorId && right.transcriptAnchorId && left.transcriptAnchorId !== right.transcriptAnchorId) return false;
+  const responseIds = [left.responseMessageId, ...(left.responseMessageIds || [])].filter(Boolean);
+  if ([right.responseMessageId, ...(right.responseMessageIds || [])].some(id => Boolean(id) && responseIds.includes(id))) return true;
+  const leftIds = [left.clientMessageId, left.transcriptAnchorId, left.id].filter(Boolean);
+  return [right.clientMessageId, right.transcriptAnchorId, right.id].some(id => Boolean(id) && leftIds.includes(id));
+}
+
+// ---------------------------

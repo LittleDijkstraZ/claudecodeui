@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ArrowDownIcon } from 'lucide-react';
 
@@ -11,6 +11,7 @@ import PermissionContext from '@/modules/chat/context/PermissionContext';
 import { api } from '@/shared/api';
 import type {
   ChatMessage,
+  ChatRunCursor,
   ConversationFileChange,
   MessageRevealTarget,
   RewindResult,
@@ -30,6 +31,7 @@ import {
   useSessionProtectionActions,
 } from '@/shared/context/SessionProtectionContext';
 import ChatMessagesPane from '@/modules/chat/transcript/ChatMessagesPane';
+import { TerminalConflictNotice } from '@/modules/chat/composer/TerminalConflictNotice';
 import ChatComposer from '@/modules/chat/composer/ChatComposer';
 import CommandResultModal from '@/modules/chat/modals/CommandResultModal';
 import { ClaudeSessionActionsProvider } from '@/modules/chat/session-actions/ClaudeSessionActionsProvider';
@@ -100,6 +102,8 @@ function ChatInterface({
   // on every sequenced frame, read whenever a `chat.subscribe` is sent so the
   // server replays only the events this client actually missed.
   const lastSeqRef = useRef(new Map<string, number>());
+  // The sequence watermark must reset when the same conversation starts a different execution.
+  const lastRunRef = useRef(new Map<string, ChatRunCursor>());
 
   const {
     provider,
@@ -178,10 +182,16 @@ function ChatInterface({
     onSessionIdle,
     statusCheckSentAtRef,
     lastSeqRef,
+    lastRunRef,
     sessionStore,
   });
 
   const viewedSessionId = selectedSession?.id ?? currentSessionId ?? null;
+  const viewedContextSession = useRef(viewedSessionId);
+  useLayoutEffect(() => {
+    viewedContextSession.current = viewedSessionId;
+    return () => { viewedContextSession.current = null; };
+  }, [viewedSessionId]);
   const appliedContextRevisions = useRef(new Map<string, Promise<void>>());
   // Invalidate action capabilities after the server replaces a conversation context.
   const [contextRevision, setContextRevision] = useState(0);
@@ -194,12 +204,15 @@ function ChatInterface({
     if (pending) return pending;
     const reload = (async () => {
       lastSeqRef.current.delete(result.sessionId);
+      lastRunRef.current.delete(result.sessionId);
       await sessionStore.resetHistory(result.sessionId);
-      if (result.sessionId !== viewedSessionId) return;
+      if (result.sessionId !== viewedContextSession.current) return;
       setContextRefreshError(null);
       const slot = await sessionStore.fetchFromServer(result.sessionId, { limit: SESSION_MESSAGES_PAGE_SIZE });
+      if (result.sessionId !== viewedContextSession.current) return;
       if (!slot || slot.status === 'error') throw new Error(t('sessionActions.refreshFailed'));
       await requestLatestMessages(result.sessionId, true);
+      if (result.sessionId !== viewedContextSession.current) return;
       setContextRevision(value => value + 1);
       scrollToBottomAndReset();
     })();
@@ -207,12 +220,14 @@ function ChatInterface({
     if (appliedContextRevisions.current.size > 50) appliedContextRevisions.current.delete(appliedContextRevisions.current.keys().next().value!);
     void reload.catch(() => appliedContextRevisions.current.delete(key));
     return reload;
-  }, [sessionStore, viewedSessionId, requestLatestMessages, scrollToBottomAndReset, t]);
+  }, [sessionStore, requestLatestMessages, scrollToBottomAndReset, t]);
 
   useEffect(() => subscribe(event => {
     if (event.kind !== 'session_context_reset' || !event.sessionId || typeof event.contextRevision !== 'string') return;
     void reloadRewoundSession({ sessionId: event.sessionId, contextChanged: true, contextRevision: event.contextRevision })
-      .catch(reason => setContextRefreshError(reason instanceof Error ? reason.message : String(reason)));
+      .catch(reason => {
+        if (event.sessionId === viewedContextSession.current) setContextRefreshError(reason instanceof Error ? reason.message : String(reason));
+      });
   }), [subscribe, reloadRewoundSession]);
 
   const changeTurns = useMemo(() => deriveConversationChanges(chatMessages), [chatMessages]);
@@ -247,7 +262,8 @@ function ChatInterface({
   }, [loadOlderMessages, scrollContainerRef, viewedSessionId]);
   useEffect(() => { agentHistorySession.current = viewedSessionId; setAgentHistoryError(null); }, [viewedSessionId]);
 
-  const agentMessages = useMemo(() => chatMessages.filter(message => message.isSubagentContainer), [chatMessages]);
+  const agentMessages = useMemo(() => chatMessages.filter(message => message.isSubagentContainer || message.toolName === 'Workflow'), [chatMessages]);
+  const taskRecords = viewedSessionId ? sessionStore.getMessages(viewedSessionId) : undefined;
   const revealAgentOrigin = useCallback((messageKey: string) => {
     workspaceActions?.collapsePanel();
     if (!revealMessage(messageKey)) { setChangeJumpError(viewedSessionId); return; }
@@ -255,11 +271,11 @@ function ChatInterface({
   }, [revealMessage, viewedSessionId, workspaceActions]);
   useEffect(() => {
     workspaceActions?.publishAgents({
-      sessionId: viewedSessionId, project: selectedProject, messages: agentMessages,
+      sessionId: viewedSessionId, project: selectedProject, messages: agentMessages, records: taskRecords, activity: sessionActivity,
       hasEarlierMessages: hasMoreMessages, isLoadingEarlierMessages: isLoadingMoreMessages,
       loadEarlierMessages: loadEarlierAgentActivity, historyError: agentHistoryError, revealOrigin: revealAgentOrigin, onFileOpen,
     });
-  }, [workspaceActions, viewedSessionId, selectedProject, agentMessages, hasMoreMessages, isLoadingMoreMessages, loadEarlierAgentActivity, agentHistoryError, revealAgentOrigin, onFileOpen]);
+  }, [workspaceActions, viewedSessionId, selectedProject, agentMessages, taskRecords, sessionActivity, hasMoreMessages, isLoadingMoreMessages, loadEarlierAgentActivity, agentHistoryError, revealAgentOrigin, onFileOpen]);
 
   const jumpToChange = useCallback((change: ConversationFileChange) => {
     setChangeJumpError(null);
@@ -351,6 +367,7 @@ function ChatInterface({
     showCostModal,
     editingAnchorId,
     beginEditMessage,
+    retryUnconfirmedMessage,
     cancelEditMessage,
   } = useChatComposerState({
     selectedProject,
@@ -391,6 +408,7 @@ function ChatInterface({
       sessions: [{
         sessionId: selectedSession.id,
         lastSeq: lastSeqRef.current.get(selectedSession.id) ?? 0,
+        runId: lastRunRef.current.get(selectedSession.id)?.runId,
       }],
     });
   }, [isActive, requestLatestMessages, selectedProject, selectedSession, sendMessage]);
@@ -405,6 +423,7 @@ function ChatInterface({
     pendingPermissionRequests,
     setPendingPermissionRequests,
     lastSeqRef,
+    lastRunRef,
     statusCheckSentAtRef,
     onSessionProcessing,
     onSessionIdle,
@@ -593,6 +612,7 @@ function ChatInterface({
           // offered when the session is idle — a half-truncated transcript with
           // a live stream writing into it is not recoverable.
           onDismissPendingMessage={(message) => { if (viewedSessionId && message.clientMessageId) sessionStore.dismissPendingUserMessage(viewedSessionId, message.clientMessageId); }}
+          onRetryPendingMessage={retryUnconfirmedMessage}
           onEditMessage={supportsMessageEditing && !isProcessing ? beginEditMessage : undefined}
           onForkFromMessage={supportsSessionForking ? handleForkFromMessage : undefined}
           onLoadFullTranscript={loadFullTranscript}
@@ -632,7 +652,8 @@ function ChatInterface({
           {sessionStore.pendingMessageStorageFailed && <p role="alert" className="mx-auto mb-2 max-w-[54.25rem] px-3 text-xs text-amber-700 dark:text-amber-300">
             {t('message.delivery.storageFailed')}
           </p>}
-          <ChatComposer
+          <TerminalConflictNotice records={taskRecords} sessionId={viewedSessionId} />
+      <ChatComposer
           modelDetails={<ModelIdentitySummary provider={provider} sessionId={viewedSessionId} selectedModel={currentProviderModel} revision={`${isProcessing}-${chatMessages.length}`} continuesExecution={sessionActivity?.acceptsInput === true} />}
           pendingPermissionRequests={pendingPermissionRequests}
           handlePermissionDecision={handlePermissionDecision}

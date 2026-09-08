@@ -11,9 +11,12 @@ type PanelState = {
   agents: WorkspaceAgentsSnapshot | null;
   agentReveal: WorkspaceAgentReveal | null;
   sideChatCount: number;
+  terminalReveal: { sessionId: string; executionId?: string; providerSessionId?: string; requestId: number } | null;
 };
 type PanelActions = {
   openPanel: (tab: WorkspacePanelTab) => void;
+  revealTerminal: (target: { sessionId: string; executionId?: string; providerSessionId?: string }) => void;
+  togglePanel: (tab: WorkspacePanelTab) => void;
   setPanelOpen: (open: boolean) => void;
   collapsePanel: () => void;
   toggleMaximized: () => void;
@@ -36,8 +39,14 @@ export function WorkspacePanelsProvider({ children }: { children: ReactNode }) {
   // Make retained side chats reachable from the ordinary workspace view controls.
   const [sideChatCount, setSideChatCount] = useState(0);
   const requestSequence = useRef(0);
+  const [terminalReveal, setTerminalReveal] = useState<PanelState['terminalReveal']>(null);
   const openPanel = useCallback((tab: WorkspacePanelTab) => {
     setPanel(current => ({ ...current, open: true, tab, visited: new Set(current.visited).add(tab) }));
+  }, []);
+  const togglePanel = useCallback((tab: WorkspacePanelTab) => {
+    setPanel(current => current.open && current.tab === tab
+      ? { ...current, open: false, maximized: false }
+      : { ...current, open: true, tab, visited: new Set(current.visited).add(tab) });
   }, []);
   const collapsePanel = useCallback(() => setPanel(current => ({ ...current, open: false, maximized: false })), []);
   const setPanelOpen = useCallback((open: boolean) => setPanel(current => current.open === open ? current : {
@@ -49,8 +58,12 @@ export function WorkspacePanelsProvider({ children }: { children: ReactNode }) {
     setAgentReveal({ messageKey, toolId, requestId: ++requestSequence.current });
     openPanel('agents');
   }, [openPanel]);
-  const actions = useMemo(() => ({ openPanel, setPanelOpen, collapsePanel, toggleMaximized, openAgent, publishAgents: setAgents, setSideChatCount }), [openPanel, setPanelOpen, collapsePanel, toggleMaximized, openAgent]);
-  const state = useMemo(() => ({ ...panel, agents, agentReveal, sideChatCount }), [panel, agents, agentReveal, sideChatCount]);
+  const revealTerminal = useCallback((target: { sessionId: string; executionId?: string; providerSessionId?: string }) => {
+    setTerminalReveal({ ...target, requestId: ++requestSequence.current });
+    openPanel('shell');
+  }, [openPanel]);
+  const actions = useMemo(() => ({ openPanel, revealTerminal, togglePanel, setPanelOpen, collapsePanel, toggleMaximized, openAgent, publishAgents: setAgents, setSideChatCount }), [openPanel, revealTerminal, togglePanel, setPanelOpen, collapsePanel, toggleMaximized, openAgent]);
+  const state = useMemo(() => ({ ...panel, agents, agentReveal, sideChatCount, terminalReveal }), [panel, agents, agentReveal, sideChatCount, terminalReveal]);
   return <WorkspacePanelActionsContext.Provider value={actions}><WorkspacePanelStateContext.Provider value={state}>{children}</WorkspacePanelStateContext.Provider></WorkspacePanelActionsContext.Provider>;
 }
 

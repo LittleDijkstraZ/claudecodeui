@@ -6,6 +6,7 @@ import express from 'express';
 import { WebSocket, WebSocketServer } from 'ws';
 
 import { createHubGroupStore } from './remote-hub-state.js';
+import { createOAuthCallbackRelay } from './oauth-callback-relay.js';
 
 /** Standalone local router consumed by the hub entry and fixture tests. It never imports provider runtimes or project filesystem services. */
 export function createRemoteHub(options: {
@@ -22,6 +23,7 @@ export function createRemoteHub(options: {
   });
   if (new Set(remotes.map(remote => remote.id)).size !== remotes.length || remotes.length === 0) throw new Error('Unique remote connections required');
   const groups = createHubGroupStore(options.stateDirectory, remotes.map(remote => remote.id));
+  const oauthCallbacks = createOAuthCallbackRelay(remotes);
   const app = express();
   app.disable('x-powered-by');
   const server = http.createServer(app);
@@ -37,6 +39,16 @@ export function createRemoteHub(options: {
     next();
   });
   app.get('/hub-api/config', (_req, res) => res.json({ remotes }));
+  app.post('/hub-api/oauth-callback', express.json({ limit: '2kb' }), async (req, res) => {
+    if (req.headers.origin !== origin || !req.is('application/json')) { res.sendStatus(403); return; }
+    try { res.json(await oauthCallbacks.register(String(req.body?.remoteId ?? ''), String(req.body?.attemptId ?? ''), String(req.headers.authorization ?? ''))); }
+    catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'Use manual callback entry.' }); }
+  });
+  app.delete('/hub-api/oauth-callback', express.json({ limit: '2kb' }), async (req, res) => {
+    if (req.headers.origin !== origin || !req.is('application/json')) { res.sendStatus(403); return; }
+    try { await oauthCallbacks.cancel(String(req.body?.remoteId ?? ''), String(req.body?.attemptId ?? ''), String(req.headers.authorization ?? '')); res.json({ released: true }); }
+    catch { res.status(409).json({ error: 'Callback listener will expire automatically.' }); }
+  });
   app.get('/health', (_req, res) => res.json({ status: 'ok', mode: 'remote-hub', localExecution: false }));
   app.get('/hub-api/groups', (_req, res) => res.json(groups.read()));
   app.put('/hub-api/groups', express.json({ limit: '2mb' }), (req, res) => {
@@ -110,5 +122,5 @@ export function createRemoteHub(options: {
     res.setHeader('Cache-Control', 'no-store');
     res.type('html').send(readFileSync(join(options.dist, 'index.html'), 'utf8').replace('<head>', `<head>${bootstrap}`));
   });
-  return { server, close: () => { for (const client of wsServer.clients) client.terminate(); wsServer.close(); server.close(); } };
+  return { server, close: () => { oauthCallbacks.close(); for (const client of wsServer.clients) client.terminate(); wsServer.close(); server.close(); } };
 }

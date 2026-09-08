@@ -136,17 +136,20 @@ function extractChanges(tool: ToolRecord): RecordedChange[] {
     // Successful SDK outputs may contain user-adjusted content; those take precedence.
     const newContent = firstString(metadata.content, metadata.userModified === true ? undefined : input.content);
     const oldContent = firstString(metadata.originalFile, metadata.type === 'create' ? '' : undefined);
-    if (newContent === undefined && patch === undefined && metadata.userModified !== true) return [];
     if (oldContent !== undefined && oldContent === newContent) return [];
-    return [{ filePath: path, operation: 'write', oldContent, newContent, patch }];
+    // A successful Write at a known path is still a recorded file change when
+    // compacted/truncated history no longer contains enough content to count it.
+    return [{ filePath: path, operation: 'write', oldContent, newContent, patch,
+      lineCountUnavailable: oldContent === undefined || newContent === undefined }];
   }
   if (name === 'multiedit') {
-    const edits = Array.isArray(metadata.edits) ? metadata.edits : metadata.userModified === true ? [] : input.edits;
-    if (!Array.isArray(edits)) return patch ? [{ filePath: path, operation: 'edit', patch }] : [];
+    const edits = Array.isArray(metadata.edits) ? metadata.edits : metadata.userModified === true ? undefined : input.edits;
+    if (!Array.isArray(edits)) return [{ filePath: path, operation: 'edit', patch, lineCountUnavailable: true }];
     return edits.flatMap((value): RecordedChange[] => {
       const edit = asRecord(value);
       const oldContent = firstString(edit.old_string, edit.oldString);
       const newContent = firstString(edit.new_string, edit.newString);
+      if (oldContent === undefined || newContent === undefined) return [{ filePath: path, operation: 'edit', patch, lineCountUnavailable: true }];
       return oldContent !== undefined && newContent !== undefined && oldContent !== newContent
         ? [{ filePath: path, operation: 'edit', oldContent, newContent, lineCountUnavailable: edit.replace_all === true || edit.replaceAll === true }]
         : [];
@@ -156,9 +159,9 @@ function extractChanges(tool: ToolRecord): RecordedChange[] {
     const oldContent = firstString(metadata.oldString, metadata.old_string, metadata.userModified === true ? undefined : input.old_string, metadata.userModified === true ? undefined : input.oldString);
     const newContent = firstString(metadata.newString, metadata.new_string, metadata.userModified === true ? undefined : input.new_string, metadata.userModified === true ? undefined : input.newString);
     if (oldContent !== undefined && oldContent === newContent) return [];
-    if ((oldContent === undefined || newContent === undefined) && patch === undefined && metadata.userModified !== true) return [];
     return [{ filePath: path, operation: name === 'edit' ? 'edit' : 'patch', oldContent, newContent, patch,
-      lineCountUnavailable: input.replace_all === true || input.replaceAll === true || metadata.replaceAll === true || metadata.replace_all === true,
+      lineCountUnavailable: oldContent === undefined || newContent === undefined
+        || input.replace_all === true || input.replaceAll === true || metadata.replaceAll === true || metadata.replace_all === true,
     }];
   }
   return [];
@@ -167,7 +170,30 @@ function extractChanges(tool: ToolRecord): RecordedChange[] {
 function isRealUserTurn(message: ChatMessage): boolean {
   return message.type === 'user' && !message.isLocalCommand && !message.isLocalCommandStdout
     && !message.isCompactSummary && !message.isTaskNotification
+    && (!message.delivery || message.delivery === 'delivered')
     && !/^\s*<task-notification(?:\s|>)/.test(message.content ?? '');
+}
+
+function userTurnIdentities(message: ChatMessage): string[] {
+  // Exact native/client identities join an optimistic receipt to its saved
+  // echo. Identical text and timestamps alone must never collapse real prompts.
+  return [message.transcriptAnchorId, message.clientMessageId, message.id, message.messageId]
+    .filter((value): value is string => typeof value === 'string' && Boolean(value.trim()));
+}
+
+function mergeToolRecord(previous: ToolRecord, incoming: Omit<ToolRecord, 'turn'>): ToolRecord {
+  const previousInput = asRecord(previous.input), incomingInput = asRecord(incoming.input);
+  const input = Object.keys(previousInput).length || Object.keys(incomingInput).length
+    ? { ...previousInput, ...incomingInput }
+    : incoming.input ?? previous.input;
+  const previousMetadata = asRecord(previous.result?.toolUseResult), incomingMetadata = asRecord(incoming.result?.toolUseResult);
+  // A final result can be enriched by a later saved snapshot. Sparse snapshots
+  // must not discard the exact arguments and checkpoint metadata already seen.
+  const result = incoming.result ? { ...previous.result, ...incoming.result,
+    ...(Object.keys(previousMetadata).length || Object.keys(incomingMetadata).length
+      ? { toolUseResult: { ...previousMetadata, ...incomingMetadata } } : {}),
+  } : previous.result;
+  return { ...previous, ...incoming, input, result, turn: previous.turn };
 }
 
 function explicitMessageIdentity(message: ChatMessage): string | undefined {
@@ -182,18 +208,27 @@ export function deriveConversationChanges(messages: ChatMessage[]): Conversation
   const turns: ConversationChangeTurn[] = [];
   const tools = new Map<string, ToolRecord>();
   const turnOccurrences = new Map<string, number>();
+  const userTurns = new Map<string, ConversationChangeTurn>();
   let currentTurn: ConversationChangeTurn | undefined;
   let earlierTurn: ConversationChangeTurn | undefined;
 
   messages.forEach((message, messageIndex) => {
     const sourceMessageKey = getIntrinsicMessageKey(message);
     if (isRealUserTurn(message)) {
-      const key = sourceMessageKey ?? `unidentified-${messageIndex}`;
+      const identities = userTurnIdentities(message);
+      const existingTurn = identities.map(identity => userTurns.get(identity)).find(Boolean);
+      if (existingTurn) {
+        identities.forEach(identity => userTurns.set(identity, existingTurn));
+        // A late echo of an older prompt does not select that older turn again.
+        return;
+      }
+      const key = identities[0] ?? sourceMessageKey ?? `unidentified-${messageIndex}`;
       const occurrence = turnOccurrences.get(key) ?? 0;
       turnOccurrences.set(key, occurrence + 1);
       const prompt = (message.displayText || message.content || '').replace(/\s+/g, ' ').trim();
       currentTurn = { id: `turn-${key}-${occurrence}`, label: prompt.slice(0, 100) || 'Conversation turn', timestamp: message.timestamp, changes: [] };
       turns.push(currentTurn);
+      identities.forEach(identity => userTurns.set(identity, currentTurn!));
     }
     // A missing key cannot be linked truthfully to the rendered conversation.
     if (!sourceMessageKey) return;
@@ -204,7 +239,7 @@ export function deriveConversationChanges(messages: ChatMessage[]): Conversation
       if (previous) {
         // Replayed pending arguments must not erase a known result. A later final
         // result can enrich/replace an earlier event without moving its user turn.
-        if (!isPending(record) || isPending(previous)) tools.set(record.identity, { ...record, turn: previous.turn });
+        if (!isPending(record) || isPending(previous)) tools.set(record.identity, mergeToolRecord(previous, record));
         return;
       }
       if (!currentTurn) {

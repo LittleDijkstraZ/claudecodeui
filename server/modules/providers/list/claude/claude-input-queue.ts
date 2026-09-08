@@ -2,7 +2,7 @@ import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 
 import type { AnyRecord } from '@/shared/index.js';
 
-type Entry = { images?: unknown; files?: unknown; id: string; command: string; timestamp: string; delivery: 'queued' | 'delivered' | 'failed'; processed: boolean; initial: boolean };
+type Entry = { responseMessageId?: string; transcriptAnchorId?: string; images?: unknown; files?: unknown; id: string; command: string; timestamp: string; delivery: 'queued' | 'delivered' | 'failed'; processed: boolean; initial: boolean };
 
 /** The Claude runtime owns one pushable stdin iterable for the entire native process. */
 export function createClaudeInputQueue(onDelivery: (entry: Entry, error?: string) => void) {
@@ -31,7 +31,7 @@ export function createClaudeInputQueue(onDelivery: (entry: Entry, error?: string
       commit(messages: SDKUserMessage[]) {
         if (settled) return; settled = true; preparing--;
         if (closed) { entry.delivery = 'failed'; entry.processed = true; onDelivery(entry, 'Claude closed before this message could be submitted.'); return; }
-        reserved.messages = messages.map(message => ({ ...message, uuid: id as SDKUserMessage['uuid'], timestamp: entry.timestamp, priority: 'next' }));
+        reserved.messages = messages.map(message => ({ ...message, uuid: id as SDKUserMessage['uuid'], timestamp: entry.timestamp, priority: 'next', origin: { kind: 'human' } }));
         notify();
       },
       fail(error: string) {
@@ -50,13 +50,29 @@ export function createClaudeInputQueue(onDelivery: (entry: Entry, error?: string
   const observe = (message: AnyRecord) => {
     if (message.parent_tool_use_id || message.isSidechain || message.isSynthetic) return;
     const ids = new Set<string>();
-    if (message.type === 'user' && typeof message.uuid === 'string' && !message.tool_use_result) ids.add(message.uuid);
-    if (typeof message.user_message_uuid === 'string') ids.add(message.user_message_uuid);
-    if (Array.isArray(message.user_message_uuids)) for (const id of message.user_message_uuids) if (typeof id === 'string') ids.add(id);
+    const consumedIds = new Set<string>();
+    const isUserEcho = message.type === 'user' && !message.tool_use_result && !(Array.isArray(message.message?.content) && message.message.content.some((block: AnyRecord) => block.type === 'tool_result'));
+    if (isUserEcho && typeof message.uuid === 'string') ids.add(message.uuid);
+    if (typeof message.user_message_uuid === 'string') consumedIds.add(message.user_message_uuid);
+    if (Array.isArray(message.user_message_uuids)) for (const id of message.user_message_uuids) if (typeof id === 'string') consumedIds.add(id);
+    for (const id of consumedIds) ids.add(id);
     for (const id of ids) {
       const entry = entries.get(id);
       if (!entry || entry.delivery === 'failed') continue;
-      if (entry.delivery !== 'delivered') { entry.delivery = 'delivered'; onDelivery(entry); }
+      // A consumption acknowledgement is not itself a saved user row. Bind a
+      // checkpoint anchor only when an actual user echo supplies its UUID.
+      const anchor = isUserEcho && typeof message.uuid === 'string'
+        && (message.uuid === id || consumedIds.size === 1 && consumedIds.has(id) && !entries.has(message.uuid))
+        ? message.uuid : undefined;
+      const responseId = message.type === 'assistant' ? message.message?.id : message.type === 'stream_event' && message.event?.type === 'message_start' ? message.event.message?.id : undefined;
+      // A batched reply acknowledges every input, but cannot identify one saved
+      // user row. Never use that shared response to collapse distinct sends.
+      const newResponse = consumedIds.size === 1 && !entry.responseMessageId && typeof responseId === 'string' ? responseId : undefined;
+      const changed = entry.delivery !== 'delivered' || Boolean(anchor && anchor !== entry.transcriptAnchorId) || Boolean(newResponse);
+      if (newResponse) entry.responseMessageId = newResponse;
+      if (anchor) entry.transcriptAnchorId = anchor;
+      entry.delivery = 'delivered';
+      if (changed) onDelivery(entry);
       if (message.type === 'result') entry.processed = true;
     }
     // The first query result is the initial turn on older hosts that omit input UUIDs.
@@ -78,6 +94,6 @@ export function createClaudeInputQueue(onDelivery: (entry: Entry, error?: string
       const ids = new Set([message.user_message_uuid, ...(Array.isArray(message.user_message_uuids) ? message.user_message_uuids : [])]);
       return [...ids].flatMap(id => typeof id === 'string' && entries.has(id) ? [entries.get(id)!.command] : []);
     },
-    ownsUserEcho: (message: AnyRecord) => message.type === 'user' && !message.parent_tool_use_id && !message.isSidechain && !message.isSynthetic && !message.tool_use_result && entries.has(message.uuid) && !(Array.isArray(message.message?.content) && message.message.content.some((block: AnyRecord) => block.type === 'tool_result')),
+    ownsUserEcho: (message: AnyRecord) => message.type === 'user' && !message.parent_tool_use_id && !message.isSidechain && !message.isSynthetic && !message.tool_use_result && (entries.has(message.uuid) || [...entries.values()].some(entry => entry.transcriptAnchorId === message.uuid)) && !(Array.isArray(message.message?.content) && message.message.content.some((block: AnyRecord) => block.type === 'tool_result')),
   };
 }

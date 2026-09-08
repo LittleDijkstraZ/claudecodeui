@@ -18,6 +18,8 @@ import type { QueuedSendOptions } from '@/shared/types';
 
 /** A queued message as it is stored: text plus the send options it was composed under. */
 export type StoredQueuedMessage = {
+  /** A rewind backup retains this draft for review and must never dispatch it automatically. */
+  rewindPaused?: boolean;
   content: string;
   options?: QueuedSendOptions;
   /** Legacy image-only descriptors retained for queued draft compatibility. */

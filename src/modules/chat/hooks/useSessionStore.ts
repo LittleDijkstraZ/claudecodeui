@@ -11,6 +11,7 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 
 import { acceptClaudeUsageSnapshot, isClaudeUsageSnapshot } from '@/modules/chat/utils/claudeUsageSnapshot';
 import { api } from '@/shared/api';
+import { hasSameUserMessageIdentity } from '@/shared/utils';
 import type { ChatMessageDelivery, LLMProvider, NormalizedMessage } from '@/shared/types';
 import { createPendingUserMessages } from '@/modules/chat/utils/pendingUserMessages';
 import { removeOptimisticUserEchoes } from '@/modules/chat/utils/sessionMessageReconciliation';
@@ -49,6 +50,8 @@ export type SessionSlot = {
   hasMore: boolean;
   offset: number;
   tokenUsage: unknown;
+  /** Last committed context reset prevents duplicate HTTP/WS notifications moving newer inputs. */
+  contextRevision?: string;
 };
 
 const EMPTY: NormalizedMessage[] = [];
@@ -776,7 +779,7 @@ export function useSessionStore(userId?: string | number | null) {
 
   const appendRealtime = useCallback((sessionId: string, msg: NormalizedMessage) => {
     const slot = getSlot(sessionId);
-    if (msg.clientMessageId && pendingUsers.isDismissed(sessionId, msg.clientMessageId)) return;
+    if (msg.delivery && msg.clientMessageId && pendingUsers.isDismissed(sessionId, msg.clientMessageId)) return;
     const normalizedMessage =
       msg.sessionId === sessionId
         ? msg
@@ -785,15 +788,18 @@ export function useSessionStore(userId?: string | number | null) {
     // replaces its optimistic bubble instead of adding a second copy.
     const existingIndex = normalizedMessage.clientMessageId
       ? slot.realtimeMessages.findIndex(message => message.clientMessageId === normalizedMessage.clientMessageId)
-      : -1;
+      : slot.realtimeMessages.findIndex(message => Boolean(message.delivery) && hasSameUserMessageIdentity(message, normalizedMessage));
     let updated = [...slot.realtimeMessages];
     if (existingIndex >= 0) {
       const previous = updated[existingIndex];
       const keepDelivery = previous.delivery === 'delivered' || (previous.delivery === 'failed' && normalizedMessage.delivery === 'queued');
       updated[existingIndex] = {
-        ...previous, ...normalizedMessage, id: previous.id,
-        delivery: keepDelivery ? previous.delivery : normalizedMessage.delivery,
-        deliveryError: keepDelivery ? previous.deliveryError : normalizedMessage.deliveryError,
+        ...previous, ...normalizedMessage, id: normalizedMessage.delivery ? previous.id : normalizedMessage.id,
+        transcriptAnchorId: normalizedMessage.transcriptAnchorId || previous.transcriptAnchorId,
+        responseMessageId: normalizedMessage.responseMessageId || previous.responseMessageId,
+        runId: normalizedMessage.runId || previous.runId,
+        delivery: normalizedMessage.delivery ? (keepDelivery ? previous.delivery : normalizedMessage.delivery) : undefined,
+        deliveryError: normalizedMessage.delivery ? (keepDelivery ? previous.deliveryError : normalizedMessage.deliveryError) : undefined,
       };
     } else {
       updated.push(normalizedMessage);
@@ -809,6 +815,7 @@ export function useSessionStore(userId?: string | number | null) {
       if (saved) pendingUsers.remember(sessionId, saved);
       pendingUsers.confirm(sessionId, slot.serverMessages);
     }
+    if (!normalizedMessage.delivery && normalizedMessage.role === 'user') pendingUsers.confirm(sessionId, [normalizedMessage]);
     slot.realtimeMessages = updated;
     recomputeMergedIfNeeded(slot);
     notify(sessionId);
@@ -829,11 +836,47 @@ export function useSessionStore(userId?: string | number | null) {
     if (changed) { pendingUsers.confirm(sessionId, slot.serverMessages); recomputeMergedIfNeeded(slot); notify(sessionId); }
   }, [getSlot, notify, pendingUsers]);
 
+  /** An authoritative idle snapshot closes only copies submitted before that snapshot was requested.
+   * This covers process restarts and expired server receipt buffers without timing out a live queue.
+   */
+  const settleUnconfirmedMessages = useCallback((sessionId: string, before: number, reason: string, executionId?: string) => {
+    if (!Number.isFinite(before)) return;
+    const slot = getSlot(sessionId);
+    for (const message of [...slot.realtimeMessages]) {
+      if (message.delivery !== 'queued' || !message.clientMessageId || pendingUsers.observedAt(sessionId, message.clientMessageId) > before) continue;
+      if (executionId && message.executionId !== executionId) continue;
+      updateMessageDelivery(sessionId, message.clientMessageId, 'failed', reason);
+    }
+  }, [getSlot, pendingUsers, updateMessageDelivery]);
+
+  /** Rewind moves retained copies with their old branch; this changes local storage only, never sends input. */
+  const quarantineContextInputs = useCallback((sessionId: string, backupSessionId?: string, contextRevision?: string) => {
+    const slot = getSlot(sessionId);
+    if (contextRevision && slot.contextRevision === contextRevision) return;
+    if (contextRevision) slot.contextRevision = contextRevision;
+    const copies = pendingUsers.restore(sessionId);
+    for (const copy of copies) {
+      const retained = { ...copy, sessionId: backupSessionId || sessionId,
+        delivery: copy.delivery === 'delivered' ? 'delivered' as const : 'failed' as const,
+        deliveryError: 'This input belongs to the previous conversation context. It will not be resent automatically.' };
+      if (backupSessionId) {
+        pendingUsers.remember(backupSessionId, retained);
+        pendingUsers.dismiss(sessionId, copy.clientMessageId!);
+        const backup = getSlot(backupSessionId);
+        if (!backup.realtimeMessages.some(message => message.clientMessageId === copy.clientMessageId)) backup.realtimeMessages = [...backup.realtimeMessages, retained];
+        recomputeMergedIfNeeded(backup); notify(backupSessionId);
+      } else pendingUsers.remember(sessionId, retained);
+    }
+    slot.realtimeMessages = slot.realtimeMessages.filter(message => !message.delivery || !message.clientMessageId);
+    if (!backupSessionId) slot.realtimeMessages = [...slot.realtimeMessages, ...pendingUsers.restore(sessionId)];
+    recomputeMergedIfNeeded(slot); notify(sessionId);
+  }, [getSlot, notify, pendingUsers]);
+
   /** Removes only this browser's retained copy, never the provider transcript or execution. */
   const dismissPendingUserMessage = useCallback((sessionId: string, clientMessageId: string) => {
     pendingUsers.dismiss(sessionId, clientMessageId);
     const slot = getSlot(sessionId);
-    slot.realtimeMessages = slot.realtimeMessages.filter(message => message.clientMessageId !== clientMessageId);
+    slot.realtimeMessages = slot.realtimeMessages.filter(message => !message.delivery || message.clientMessageId !== clientMessageId);
     recomputeMergedIfNeeded(slot); notify(sessionId);
   }, [getSlot, notify, pendingUsers]);
 
@@ -969,6 +1012,8 @@ export function useSessionStore(userId?: string | number | null) {
     fetchMore,
     appendRealtime,
     updateMessageDelivery,
+    settleUnconfirmedMessages,
+    quarantineContextInputs,
     dismissPendingUserMessage,
     truncateAt,
     refreshLatestFromServer,
@@ -980,7 +1025,7 @@ export function useSessionStore(userId?: string | number | null) {
     getMessages,
     getSessionSlot,
   }), [
-    pendingMessageStorageFailed, fetchFromServer, fetchMore, appendRealtime, updateMessageDelivery, dismissPendingUserMessage, truncateAt, refreshLatestFromServer,
+    pendingMessageStorageFailed, fetchFromServer, fetchMore, appendRealtime, updateMessageDelivery, settleUnconfirmedMessages, quarantineContextInputs, dismissPendingUserMessage, truncateAt, refreshLatestFromServer,
     setActiveSession, isStale, updateStreaming, finalizeStreaming,
     resetHistory, getMessages, getSessionSlot,
   ]);

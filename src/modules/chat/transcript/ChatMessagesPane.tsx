@@ -74,6 +74,8 @@ type ChatMessagesPaneProps = {
   onEditMessage?: (message: ChatMessage) => void;
   /** Removes an unconfirmed local copy, never a provider message or running input. */
   onDismissPendingMessage?: (message: ChatMessage) => void;
+  /** Explicitly retries an unconfirmed send with a new UUID; never automatic. */
+  onRetryPendingMessage?: (message: ChatMessage) => void;
   /** Branches the conversation into a new session ending at a message. */
   onForkFromMessage?: (message: ChatMessage) => void;
   /** Fetches the whole transcript for an export, which otherwise only sees the loaded page. */
@@ -123,6 +125,7 @@ function ChatMessagesPane({
   createDiff,
   onEditMessage,
   onDismissPendingMessage,
+  onRetryPendingMessage,
   onForkFromMessage,
   onLoadFullTranscript,
   onFileOpen,
@@ -333,6 +336,7 @@ function ChatMessagesPane({
                     provider={provider}
                     onEditMessage={onEditMessage}
                     onDismissPendingMessage={onDismissPendingMessage}
+                    onRetryPendingMessage={onRetryPendingMessage}
                     onForkFromMessage={onForkFromMessage}
                   />
                 </LazyMessageRow>

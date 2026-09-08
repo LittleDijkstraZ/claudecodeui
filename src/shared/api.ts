@@ -8,6 +8,7 @@ import {
 } from '@/shared/authToken';
 import { IS_PLATFORM } from '@/shared/utils';
 import { readVoiceConfig, voiceConfigHeaders } from '@/shared/voiceConfig';
+import type { McpAuthAttempt, ProviderMcpServer } from '@/shared/types';
 
 // Headers are a plain record rather than the full `HeadersInit` union so the
 // defaults below can be merged with a caller's headers by spreading.
@@ -129,6 +130,22 @@ const post = withBody('POST');
 const put = withBody('PUT');
 const patch = withBody('PATCH');
 const del = withBody('DELETE');
+
+/** MCP sign-in stays on the frame's fixed remote; only callback listening is delegated to the local Hub. */
+export const mcpAuthApi = {
+  start: (server: ProviderMcpServer) => post('/api/mcp-auth/attempts', { name: server.name, scope: server.scope, workspacePath: server.workspacePath }).then(readApiJson<McpAuthAttempt>),
+  read: (id: string) => get(`/api/mcp-auth/attempts/${encodeURIComponent(id)}`).then(readApiJson<McpAuthAttempt>),
+  callback: (id: string, callbackUrl: string) => post(`/api/mcp-auth/attempts/${encodeURIComponent(id)}/callback`, { callbackUrl }).then(readApiJson<McpAuthAttempt>),
+  cancel: async (id: string) => {
+    const attempt = await del(`/api/mcp-auth/attempts/${encodeURIComponent(id)}`).then(readApiJson<McpAuthAttempt>);
+    if (window.__REMOTE_ID__) await del('/hub-api/oauth-callback', { remoteId: window.__REMOTE_ID__, attemptId: id }).catch(() => {});
+    return attempt;
+  },
+  prepareLocalCallback: (id: string) => {
+    if (!window.__REMOTE_ID__) return Promise.reject(new Error('Use manual callback entry for this connection.'));
+    return post('/hub-api/oauth-callback', { remoteId: window.__REMOTE_ID__, attemptId: id }).then(readApiJson<{ ready: boolean }>);
+  },
+};
 
 // ─── URL builders ───────────────────────────────────────────────────────────
 // Exported for the consumers that cannot go through `authenticatedFetch`:
@@ -808,6 +825,8 @@ export function rewindClaudeSession(sessionId: string, messageId: string, mode: 
 
 /** Used by Chat/Shell configuration UI to read and update the owning remote session's next-launch settings. */
 export const claudeExecutionSettingsApi = {
+  identity: (sessionId: string, options: ApiRequestOptions = {}) => authenticatedFetch(
+    `/api/providers/claude/sessions/${encodeURIComponent(sessionId)}/identity`, options),
   read: (sessionId: string, executionId?: string | null, options: ApiRequestOptions = {}) => authenticatedFetch(
     `/api/providers/claude/sessions/${encodeURIComponent(sessionId)}/execution-settings${executionId ? `?executionId=${encodeURIComponent(executionId)}` : ''}`, options),
   update: (sessionId: string, settings: ClaudeSessionSettings) => authenticatedFetch(

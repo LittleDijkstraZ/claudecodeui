@@ -3,7 +3,7 @@ import type { MutableRefObject } from 'react';
 
 import { api } from '@/shared/api';
 import { acceptClaudeUsageSnapshot, isClaudeUsageSnapshot } from '@/modules/chat/utils/claudeUsageSnapshot';
-import type { MarkSessionIdle, SessionActivityMap,Project,ProjectSession,LLMProvider,NormalizedMessage,ChatMessage,DiffCalculator } from '@/shared/types';
+import type { ChatRunCursor, MarkSessionIdle, SessionActivityMap,Project,ProjectSession,LLMProvider,NormalizedMessage,ChatMessage,DiffCalculator } from '@/shared/types';
 import type { SessionStore } from '@/modules/chat/hooks/useSessionStore';
 import { SESSION_MESSAGES_PAGE_SIZE } from '@/modules/chat/utils/sessionMessagePagination';
 import { createMessageHistoryRefreshCoordinator } from '@/modules/chat/utils/messageHistoryRefreshCoordinator';
@@ -94,6 +94,7 @@ type UseChatSessionStateArgs = {
   statusCheckSentAtRef: MutableRefObject<Map<string, number>>;
   /** Highest live seq observed per session; sent as `lastSeq` on subscribe. */
   lastSeqRef: MutableRefObject<Map<string, number>>;
+  lastRunRef?: MutableRefObject<Map<string, ChatRunCursor>>;
   sessionStore: SessionStore;
 };
 
@@ -191,6 +192,7 @@ export function useChatSessionState({
   onSessionIdle,
   statusCheckSentAtRef,
   lastSeqRef,
+  lastRunRef,
   sessionStore,
 }: UseChatSessionStateArgs) {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(selectedSession?.id || null);
@@ -741,9 +743,10 @@ export function useChatSessionState({
       sessions: [{
         sessionId: selectedSession.id,
         lastSeq: lastSeqRef.current.get(selectedSession.id) ?? 0,
+        runId: lastRunRef?.current.get(selectedSession.id)?.runId,
       }],
     });
-  }, [lastSeqRef, selectedProject, selectedSession, sendMessage, statusCheckSentAtRef, ws]);
+  }, [lastSeqRef, lastRunRef, selectedProject, selectedSession, sendMessage, statusCheckSentAtRef, ws]);
 
   // Main session loading effect — store-based.
   //

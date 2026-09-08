@@ -340,6 +340,11 @@ async function dispatchRun(
   } catch (error) {
     failure = error instanceof Error ? error.message : String(error);
     console.error(`[Chat] Provider runtime "${provider}" failed`, { sessionId, error: failure });
+    if (provider === 'claude' && clientMessageId && run.messageReceipts.get(clientMessageId)?.delivery !== 'delivered') run.writer.send(createNormalizedMessage({
+      kind: 'status', text: 'message_delivery', sessionId, provider, clientMessageId,
+      delivery: 'failed', content: command, images: runtimeOptions.images, files: runtimeOptions.files,
+      timestamp: new Date().toISOString(), error: failure,
+    }));
     run.writer.send(createNormalizedMessage({ kind: 'error', content: failure, sessionId, provider }));
   } finally {
     // Safety net: a runtime that crashed (or resolved) without emitting its
@@ -538,6 +543,8 @@ function handleChatSubscribe(
       kind: 'chat_subscribed',
       sessionId,
       isProcessing,
+      runId: run?.runId,
+      runStartedAt: run?.startedAt,
       ...(run?.runtimeState ?? {}),
       lastSeq: run?.lastSeq ?? 0,
       pendingPermissions,
@@ -550,7 +557,7 @@ function handleChatSubscribe(
     // replaying them (e.g. after a page reload where the client's lastSeq is
     // 0) would duplicate messages the history fetch already returned.
     if (isProcessing) {
-      for (const event of chatRunRegistry.replayEvents(sessionId, lastSeq)) {
+      for (const event of chatRunRegistry.replayEvents(sessionId, (target as AnyRecord).runId === run?.runId ? lastSeq : 0)) {
         sendJson(ws, event);
       }
     }
@@ -614,6 +621,8 @@ export async function runDetachedChatTurn(
      * land mid-run, so the timer outranks whatever is running.
      */
     interruptActiveRun?: boolean;
+    /** Dispatcher snapshot prevents an already claimed input from crossing a context replacement. */
+    expectedProviderSessionId?: string | null;
   },
   dependencies: ChatWebSocketDependencies,
 ): Promise<{ started: boolean; error: string | null }> {
@@ -622,6 +631,9 @@ export async function runDetachedChatTurn(
     return { started: false, error: 'The session no longer exists.' };
   }
 
+  const contextMatches = () => input.expectedProviderSessionId === undefined || sessionsDb.getSessionById(input.sessionId)?.provider_session_id === input.expectedProviderSessionId;
+  const changedContext = { started: false, error: 'Conversation context changed before this queued message could start.' };
+  if (!contextMatches()) return changedContext;
   const provider = session.provider as LLMProvider;
   if (!dependencies.runtime.hasRuntime(provider)) {
     return { started: false, error: `Provider "${provider}" is not available.` };
@@ -638,12 +650,14 @@ export async function runDetachedChatTurn(
     // run's own dispatch settles later through completeRunIfCurrent, which is
     // scoped to that run and cannot touch the one started here.
     const aborted = await dependencies.runtime.abort(activeRun.provider, input.sessionId);
+    if (!contextMatches()) return changedContext;
     chatRunRegistry.completeRun(input.sessionId, {
       exitCode: aborted ? 0 : 1,
       aborted: true,
     });
   }
 
+  if (!contextMatches()) return changedContext;
   return dispatchRun(
     null,
     input.userId,

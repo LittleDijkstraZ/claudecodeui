@@ -58,6 +58,23 @@ export const claudeSessionActionsDb = {
         FROM sessions WHERE session_id = ?`).run(backupSessionId, `${source.custom_name || 'Conversation'} — before rewind`, sessionId);
       db.prepare(`INSERT INTO claude_session_branches (session_id, parent_session_id, source_message_id, kind)
         VALUES (?, ?, ?, 'rewind_backup')`).run(backupSessionId, sessionId, messageId);
+      // Unsent input belongs to the original native context. Retain it with
+      // that branch, but never let a timer submit it into the replacement.
+      const drafts = db.prepare('SELECT user_id, queued_message FROM session_drafts WHERE draft_scope = ?')
+        .all(sessionId) as Array<{ user_id: number; queued_message: string | null }>;
+      for (const draft of drafts) {
+        let queued = draft.queued_message;
+        try {
+          const value: unknown = queued ? JSON.parse(queued) : null;
+          if (value && typeof value === 'object' && !Array.isArray(value)) queued = JSON.stringify({ ...value, rewindPaused: true });
+        } catch { /* Keep unparseable saved content addressable on the original branch. */ }
+        db.prepare('UPDATE session_drafts SET draft_scope = ?, queued_message = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND draft_scope = ?')
+          .run(backupSessionId, queued, draft.user_id, sessionId);
+      }
+      db.prepare(`UPDATE scheduled_messages SET session_id = ?,
+        failure_reason = CASE WHEN status = 'pending' THEN 'Conversation was rewound; this message is retained on the original branch and will not be sent automatically.' ELSE failure_reason END,
+        status = CASE WHEN status = 'pending' THEN 'cancelled' ELSE status END, updated_at = CURRENT_TIMESTAMP
+        WHERE session_id = ?`).run(backupSessionId, sessionId);
       sessionsDb.assignProviderSessionId(sessionId, providerSessionId);
       db.prepare('UPDATE sessions SET jsonl_path = ? WHERE session_id = ?').run(jsonlPath, sessionId);
       return backupSessionId;

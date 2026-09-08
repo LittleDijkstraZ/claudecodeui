@@ -75,19 +75,20 @@ export const scheduledMessagesDb = {
    * the moment a message was due, and the next poll after it starts picks the
    * message up instead of skipping it. Doing it in one transaction is what
    * stops two overlapping polls from sending the same message twice.
+   * The dispatcher can leave mutation-locked sessions pending via canClaim.
    */
-  claimDue(now: Date): ScheduledMessageRow[] {
+  claimDue(now: Date, canClaim: (sessionId: string) => boolean = () => true): ScheduledMessageRow[] {
     const db = getConnection();
     const nowIso = now.toISOString();
 
     return db.transaction(() => {
-      const due = db
+      const due = (db
         .prepare(
           `SELECT ${COLUMNS} FROM scheduled_messages
            WHERE status = 'pending' AND scheduled_for <= ?
            ORDER BY scheduled_for ASC`
         )
-        .all(nowIso) as ScheduledMessageRow[];
+        .all(nowIso) as ScheduledMessageRow[]).filter(row => canClaim(row.session_id));
 
       for (const row of due) {
         db.prepare(

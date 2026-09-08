@@ -445,13 +445,13 @@ test('receipt replay keeps the latest delivery outside the buffer and does not d
     sessionsDb.createAppSession('receipt-latest', 'claude', '/workspace/demo');
     const run = chatRunRegistry.startRun({ appSessionId: 'receipt-latest', provider: 'claude', providerSessionId: null, connection: null, userId: 1 });
     assert.ok(run);
-    for (const delivery of ['queued', 'delivered', 'processed']) run.writer.send({ kind: 'status', provider: 'claude', text: 'message_delivery', clientMessageId: 'old-input', content: 'Original', delivery });
+    for (const delivery of ['queued', 'delivered', 'queued']) run.writer.send({ kind: 'status', provider: 'claude', text: 'message_delivery', clientMessageId: 'old-input', content: 'Original', delivery });
     for (let index = 0; index < 5_001; index += 1) run.writer.send({ kind: 'text', provider: 'claude', content: `stream ${index}` });
     run.writer.send({ kind: 'status', provider: 'claude', text: 'message_delivery', clientMessageId: 'new-input', content: 'New', delivery: 'queued' });
     run.writer.sendComplete({ exitCode: 0 });
     const replay = chatRunRegistry.replayEvents('receipt-latest', 0);
     assert.equal(run.status, 'completed');
-    assert.deepEqual(replay.filter(event => event.clientMessageId === 'old-input').map(event => event.delivery), ['processed']);
+    assert.deepEqual(replay.filter(event => event.clientMessageId === 'old-input').map(event => event.delivery), ['delivered']);
     assert.deepEqual(replay.filter(event => event.clientMessageId === 'new-input').map(event => event.delivery), ['queued', 'failed']);
     assert.equal(replay.at(-1)?.kind, 'complete');
     assert.equal(new Set(replay.map(event => event.seq)).size, replay.length);
@@ -502,5 +502,65 @@ test('completion fails unconfirmed input while preserving delivered receipts and
     assert.equal(run.messageReceipts.get('queued')?.content, 'queued prompt');
     assert.deepEqual(connection.frames.slice(-2).map(frame => frame.kind === 'complete' ? 'complete' : frame.delivery), ['failed', 'complete']);
     assert.equal(chatRunRegistry.replayEvents('receipt-exit', 0).filter(frame => frame.delivery === 'failed').length, 1);
+  });
+});
+
+
+test('an older completion eviction timer cannot remove a newer run or its delivery receipts', async context => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('eviction-owner', 'claude', '/workspace/demo');
+    const callbacks: Array<() => void> = [];
+    context.mock.method(globalThis, 'setTimeout', (callback: () => void) => { callbacks.push(callback); return { unref() {} }; });
+    const first = chatRunRegistry.startRun({ appSessionId: 'eviction-owner', provider: 'claude', providerSessionId: null, connection: null, userId: 1 })!;
+    first.writer.sendComplete({ exitCode: 0 });
+    const next = chatRunRegistry.startRun({ appSessionId: 'eviction-owner', provider: 'claude', providerSessionId: null, connection: null, userId: 1 })!;
+    next.writer.send({ kind: 'status', text: 'message_delivery', provider: 'claude', clientMessageId: 'new-send', delivery: 'queued', content: 'Fixture' });
+    next.writer.sendComplete({ exitCode: 0 });
+    callbacks[0]();
+    assert.equal(chatRunRegistry.getRun('eviction-owner'), next);
+    assert.equal(next.messageReceipts.get('new-send')?.delivery, 'failed');
+    callbacks[1]();
+    assert.equal(chatRunRegistry.getRun('eviction-owner'), undefined);
+    context.mock.restoreAll();
+  });
+});
+
+test('late admission receipts preserve exact native and response bindings and terminal explanation', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('receipt-binding', 'claude', '/workspace/demo');
+    const run = chatRunRegistry.startRun({ appSessionId: 'receipt-binding', provider: 'claude', providerSessionId: null, connection: null, userId: 1 })!;
+    const base = { kind: 'status', provider: 'claude', text: 'message_delivery', clientMessageId: 'client-send', content: 'Fixture' };
+    run.writer.send({ ...base, delivery: 'delivered', transcriptAnchorId: 'native-id', responseMessageId: 'api-id' });
+    run.writer.send({ ...base, delivery: 'queued' });
+    const retained = run.messageReceipts.get('client-send')!;
+    assert.equal(retained.delivery, 'delivered');
+    assert.equal(retained.transcriptAnchorId, 'native-id');
+    assert.equal(retained.responseMessageId, 'api-id');
+    run.writer.send({ ...base, clientMessageId: 'failed-send', delivery: 'failed', error: 'Input stream closed' });
+    run.writer.send({ ...base, clientMessageId: 'failed-send', delivery: 'queued' });
+    assert.equal(run.messageReceipts.get('failed-send')?.error, 'Input stream closed');
+  });
+});
+
+
+test('a forgotten or replaced run cannot publish late delivery into the replacement context', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('stale-writer', 'claude', '/workspace/demo');
+    const connection = new FakeConnection();
+    const first = chatRunRegistry.startRun({ appSessionId: 'stale-writer', provider: 'claude', providerSessionId: 'native-old', connection, userId: 1 })!;
+    first.writer.sendComplete({ exitCode: 0 });
+    chatRunRegistry.forgetCompletedRun('stale-writer');
+    const before = connection.frames.length;
+    const late = { kind: 'status', text: 'message_delivery', provider: 'claude', clientMessageId: 'old-send', delivery: 'delivered', content: 'Fixture' };
+    first.writer.send(late);
+    assert.equal(connection.frames.length, before);
+    const next = chatRunRegistry.startRun({ appSessionId: 'stale-writer', provider: 'claude', providerSessionId: 'native-new', connection, userId: 1 })!;
+    const afterStart = connection.frames.length;
+    first.writer.send(late);
+    assert.equal(connection.frames.length, afterStart);
+    assert.equal(next.lastSeq, 0);
+    assert.equal(next.messageReceipts.size, 0);
+    next.writer.send({ ...late, clientMessageId: 'new-send' });
+    assert.equal(next.messageReceipts.get('new-send')?.delivery, 'delivered');
   });
 });

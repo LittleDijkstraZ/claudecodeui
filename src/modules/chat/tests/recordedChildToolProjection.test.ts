@@ -1,11 +1,32 @@
 import assert from 'node:assert/strict';
+
 import { test } from 'vitest';
 
 import type { NormalizedMessage, SubagentActivity } from '@/shared/types';
-
 import { normalizedToChatMessages } from '@/modules/chat/hooks/useChatMessages';
+import { deriveConversationChanges } from '@/modules/chat/utils/conversationChanges';
+import { createConversationChangeStats } from '@/modules/chat/utils/conversationChangeStats';
+import { createCachedDiffCalculator } from '@/modules/chat/utils/messageTransforms';
 
 const timestamp = '2026-09-08T12:00:00.000Z';
+
+test('live child and sparse replayed top-level Write results preserve exact file creation evidence', () => {
+  const content = Array.from({ length: 318 }, (_, index) => `# fixture ${index}\n`).join('');
+  const result = { type: 'create', filePath: '/project/sandcheck.py', content };
+  const base = { sessionId: 'session-1', timestamp, provider: 'claude' as const };
+  const messages: NormalizedMessage[] = [
+    { ...base, id: 'prompt', kind: 'text', role: 'user', content: 'Create fixture' },
+    { ...base, id: 'parent', kind: 'tool_use', toolId: 'parent-tool', toolName: 'Agent', toolInput: {} },
+    { ...base, id: 'child-write', kind: 'tool_use', toolId: 'child-write', parentToolUseId: 'parent-tool', toolName: 'Write', toolInput: { file_path: result.filePath, content } },
+    { ...base, id: 'child-result', kind: 'tool_result', toolId: 'child-write', parentToolUseId: 'parent-tool', content: 'Created', toolUseResult: result },
+    { ...base, id: 'root-write', kind: 'tool_use', toolId: 'root-write', toolName: 'Write', toolInput: { file_path: '/project/root.py', content } },
+    { ...base, id: 'root-result', kind: 'tool_result', toolId: 'root-write', content: 'Created', toolUseResult: { ...result, filePath: '/project/root.py' } },
+    { ...base, id: 'root-result-replay', kind: 'tool_result', toolId: 'root-write', content: 'Created' },
+  ];
+  const changes = deriveConversationChanges(normalizedToChatMessages(messages)).flatMap(turn => turn.changes);
+  assert.deepEqual(changes.map(change => change.filePath), ['/project/sandcheck.py', '/project/root.py']);
+  assert.deepEqual(createConversationChangeStats(createCachedDiffCalculator())(changes), { added: 636, removed: 0, known: 2, unknown: 0 });
+});
 
 function toolMessage(toolName: string, extra: Partial<NormalizedMessage> = {}): NormalizedMessage {
   return {

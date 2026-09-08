@@ -140,7 +140,7 @@ export default function ConversationChangesBar({
   // Keep the changes review dialog open independently of streamed chat updates.
   const [isOpen, setIsOpen] = useState(false);
   // Select the current turn, an earlier turn, or all loaded changes for review.
-  const [scope, setScope] = useState('latest');
+  const [selectedScope, setScope] = useState('latest');
   // Limit initial file card rendering for conversations with many edits.
   const [visibleFiles, setVisibleFiles] = useState(40);
   const id = useId();
@@ -149,6 +149,10 @@ export default function ConversationChangesBar({
   const countStats = useMemo(() => createConversationChangeStats(createDiff), [createDiff]);
   const latestTurn = turns[turns.length - 1];
   const latestChangedTurn = [...turns].reverse().find((turn) => turn.changes.length > 0);
+  // Rewind or authoritative identity reconciliation can replace turn IDs.
+  // A vanished selection must not leave a false empty Review over fresh history.
+  const scope = selectedScope === 'latest' || selectedScope === 'all' || turns.some(turn => `turn:${turn.id}` === selectedScope)
+    ? selectedScope : 'latest';
   const latestFileCount = new Set(latestTurn?.changes.map((change) => change.filePath) ?? []).size;
   const allEditCount = turns.reduce((count, turn) => count + turn.changes.length, 0);
 

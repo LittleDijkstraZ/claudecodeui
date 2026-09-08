@@ -206,6 +206,7 @@ type PluginCardProps = {
   confirmingUninstall: boolean;
   onCancelUninstall: () => void;
   updateError: string | null;
+  onOpen: () => void;
 };
 
 function PluginCard({
@@ -218,6 +219,7 @@ function PluginCard({
   confirmingUninstall,
   onCancelUninstall,
   updateError,
+  onOpen,
 }: PluginCardProps) {
   const { t } = useTranslation('settings');
   const accentColor = plugin.enabled
@@ -320,6 +322,13 @@ function PluginCard({
         </div>
 
         {/* Confirm uninstall banner */}
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <button type="button" disabled={!plugin.enabled} onClick={onOpen} className="inline-flex min-h-9 items-center gap-1.5 rounded border border-border px-3 py-1.5 text-sm hover:bg-accent disabled:opacity-50">
+            <ExternalLink className="h-3.5 w-3.5" />{t('pluginSettings.openPlugin', { defaultValue: 'Open plugin' })}
+          </button>
+          {!plugin.enabled && <span className="text-xs text-muted-foreground">{t('pluginSettings.enableToOpen', { defaultValue: 'Enable this plugin to open it.' })}</span>}
+        </div>
+        {plugin.serverError && <p role="alert" className="mt-2 text-xs text-destructive">{plugin.serverError}</p>}
         {confirmingUninstall && (
           <div className="mt-3 flex items-center justify-between gap-3 rounded border border-red-200 bg-red-50 px-3 py-2 dark:border-red-800/50 dark:bg-red-950/30">
             <span className="text-sm text-red-600 dark:text-red-400">
@@ -454,7 +463,7 @@ function PluginRecommendationCard({
 /** Rendered by the settings module as its Plugins tab, for installing, updating and toggling plugins. */
 export default function PluginSettingsTab() {
   const { t } = useTranslation('settings');
-  const { plugins, loading, installPlugin, uninstallPlugin, updatePlugin, togglePlugin } =
+  const { plugins, loading, pluginsError, refreshPlugins, installPlugin, uninstallPlugin, updatePlugin, togglePlugin } =
     usePlugins();
 
   const [gitUrl, setGitUrl] = useState('');
@@ -464,6 +473,9 @@ export default function PluginSettingsTab() {
   const [confirmUninstall, setConfirmUninstall] = useState<string | null>(null);
   const [updatingPlugins, setUpdatingPlugins] = useState<Set<string>>(new Set());
   const [updateErrors, setUpdateErrors] = useState<Record<string, string>>({});
+  // Keep installation confirmation and its direct entry visible after the recommendation card disappears.
+  const [installedPluginName, setInstalledPluginName] = useState<string | null>(null);
+  const openPlugin = (name: string) => window.dispatchEvent(new CustomEvent('cloudcli:plugin-open', { detail: { name } }));
 
   const handleUpdate = async (name: string) => {
     setUpdatingPlugins((prev) => new Set(prev).add(name));
@@ -471,6 +483,8 @@ export default function PluginSettingsTab() {
     const result = await updatePlugin(name);
     if (!result.success) {
       setUpdateErrors((prev) => ({ ...prev, [name]: result.error || t('pluginSettings.updateFailed') }));
+    } else if (result.warning) {
+      setUpdateErrors((prev) => ({ ...prev, [name]: result.warning! }));
     }
     setUpdatingPlugins((prev) => { const next = new Set(prev); next.delete(name); return next; });
   };
@@ -482,6 +496,8 @@ export default function PluginSettingsTab() {
     const result = await installPlugin(gitUrl.trim());
     if (result.success) {
       setGitUrl('');
+      setInstalledPluginName(result.pluginName ?? null);
+      if (result.warning) setInstallError(result.warning);
     } else {
       setInstallError(result.error || t('pluginSettings.installFailed'));
     }
@@ -496,6 +512,9 @@ export default function PluginSettingsTab() {
       const result = await installPlugin(recommendation.repoUrl);
       if (!result.success) {
         setInstallError(result.error || t('pluginSettings.installFailed'));
+      } else {
+        setInstalledPluginName(result.pluginName ?? null);
+        if (result.warning) setInstallError(result.warning);
       }
     } finally {
       setInstallingRecommendation(null);
@@ -542,6 +561,8 @@ export default function PluginSettingsTab() {
       const r = await togglePlugin(plugin.name, enabled);
       if (!r.success) {
         setInstallError(r.error || t('pluginSettings.toggleFailed'));
+      } else if (r.warning) {
+        setInstallError(r.warning);
       }
     };
 
@@ -557,6 +578,7 @@ export default function PluginSettingsTab() {
         confirmingUninstall={confirmUninstall === plugin.name}
         onCancelUninstall={() => setConfirmUninstall(null)}
         updateError={updateErrors[plugin.name] ?? null}
+        onOpen={() => openPlugin(plugin.name)}
       />
     );
   };
@@ -608,6 +630,15 @@ export default function PluginSettingsTab() {
       {installError && (
         <p className="-mt-4 text-sm text-red-500">{installError}</p>
       )}
+      {installedPluginName && <div role="status" className="flex flex-wrap items-center gap-2 rounded border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm">
+        <span>{t('pluginSettings.installedSuccess', { defaultValue: 'Plugin installed.' })}</span>
+        <button type="button" className="rounded px-2 py-1 font-medium text-primary hover:bg-accent disabled:opacity-50" disabled={!plugins.some(plugin => plugin.name === installedPluginName && plugin.enabled)} onClick={() => openPlugin(installedPluginName)}>{t('pluginSettings.openPlugin', { defaultValue: 'Open plugin' })}</button>
+        {!plugins.some(plugin => plugin.name === installedPluginName) && <span className="text-xs text-muted-foreground">
+          {t('pluginSettings.installedEntryPending', { defaultValue: 'Installation succeeded. Refresh this remote’s plugin list to confirm its entry.' })}
+          <button type="button" className="ml-2 underline" onClick={() => void refreshPlugins()}>{t('pluginSettings.refreshPlugins', { defaultValue: 'Refresh plugins' })}</button>
+        </span>}
+      </div>}
+      {pluginsError && <div role="alert" className="rounded border border-destructive/30 p-3 text-sm text-destructive">{pluginsError}<button type="button" className="ml-2 underline" onClick={() => void refreshPlugins()}>{t('pluginSettings.refreshPlugins', { defaultValue: 'Refresh plugins' })}</button></div>}
 
       <p className="-mt-4 flex items-start gap-1.5 text-xs leading-snug text-muted-foreground/50">
         <ShieldAlert className="mt-px h-3 w-3 flex-shrink-0" />

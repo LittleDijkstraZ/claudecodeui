@@ -1,4 +1,4 @@
-import { scheduledMessagesDb, sessionDraftsDb } from '@/modules/database/index.js';
+import { scheduledMessagesDb, sessionDraftsDb, sessionsDb } from '@/modules/database/index.js';
 import type { QueuedSessionMessageRecord, ScheduledMessageRow } from '@/modules/database/index.js';
 import { chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
 import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
@@ -55,6 +55,7 @@ function readQueuedMessage(value: unknown): StoredQueuedMessage | null {
 async function sendClaimedQueuedMessage(
   candidate: QueuedSessionMessageRecord,
   runtime: ProviderRuntimeGateway,
+  expectedProviderSessionId: string | null,
 ): Promise<void> {
   const message = readQueuedMessage(candidate.queuedMessage);
   if (!message) {
@@ -67,6 +68,7 @@ async function sendClaimedQueuedMessage(
       sessionId: candidate.sessionId,
       userId: candidate.userId,
       content: message.content,
+      expectedProviderSessionId,
       options: { ...message.options, attachments: message.attachments },
     },
     { runtime },
@@ -87,14 +89,14 @@ export async function dispatchQueuedMessages(runtime: ProviderRuntimeGateway): P
   let claimed = 0;
 
   await Promise.all(candidates.map(async (candidate) => {
-    if (chatRunRegistry.isProcessing(candidate.sessionId)) {
+    if (chatRunRegistry.isProcessing(candidate.sessionId) || chatRunRegistry.isSessionMutating(candidate.sessionId)) {
       return;
     }
     if (!sessionDraftsDb.claimQueuedMessage(candidate)) {
       return;
     }
     claimed += 1;
-    await sendClaimedQueuedMessage(candidate, runtime);
+    await sendClaimedQueuedMessage(candidate, runtime, sessionsDb.getSessionById(candidate.sessionId)?.provider_session_id ?? null);
   }));
 
   return claimed;
@@ -103,6 +105,7 @@ export async function dispatchQueuedMessages(runtime: ProviderRuntimeGateway): P
 async function sendClaimedMessage(
   row: ScheduledMessageRow,
   runtime: ProviderRuntimeGateway,
+  expectedProviderSessionId: string | null,
 ): Promise<void> {
   try {
     const result = await runDetachedChatTurn(
@@ -110,6 +113,7 @@ async function sendClaimedMessage(
         sessionId: row.session_id,
         userId: row.user_id,
         content: row.content,
+        expectedProviderSessionId,
         options: readOptions(row.options),
         // The user picked this time on purpose; a run that happens to be going
         // is aborted so the scheduled message lands when it was due, instead
@@ -143,15 +147,16 @@ export async function dispatchDueScheduledMessages(
 ): Promise<number> {
   // Claimed before any of them runs, so a long turn cannot let the next poll
   // pick the same message up again.
-  const due = scheduledMessagesDb.claimDue(now);
+  const due = scheduledMessagesDb.claimDue(now, sessionId => !chatRunRegistry.isSessionMutating(sessionId));
   if (due.length === 0) {
     return 0;
   }
 
   // Sequentially: a session can only have one run at a time, and two due
   // messages for the same session must not race each other into it.
+  const contexts = new Map(due.map(row => [row.id, sessionsDb.getSessionById(row.session_id)?.provider_session_id ?? null]));
   for (const row of due) {
-    await sendClaimedMessage(row, runtime);
+    await sendClaimedMessage(row, runtime, contexts.get(row.id) ?? null);
   }
 
   return due.length;

@@ -3,6 +3,8 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import readline from 'node:readline';
 
+import { readClaudeTaskNotification } from '@/modules/providers/list/claude/claude-task-notifications.js';
+
 import type { IProviderSessions } from '@/shared/interfaces.js';
 import type {
   AnyRecord,
@@ -349,6 +351,54 @@ function isUserPromptRow(row: AnyRecord): boolean {
   return isPromptText(content);
 }
 
+/** Attach API response IDs to the exact native user ancestor, without inspecting prompt content for equality.
+ * The SDK consumption receipt carries the same API message.id as JSONL assistant rows. Ambiguous
+ * or incomplete graphs deliberately provide no binding; a sibling/child response cannot claim a send.
+ * This annotates freshly read objects only, never the transcript on disk or its branch selection.
+ */
+function attachUserResponseIdentities(rows: AnyRecord[]): void {
+  const byId = new Map<string, AnyRecord>();
+  const ambiguous = new Set<string>();
+  for (const row of rows) {
+    if (typeof row.uuid !== 'string') continue;
+    const prior = byId.get(row.uuid);
+    if (prior && (prior.parentUuid !== row.parentUuid || prior.type !== row.type)) ambiguous.add(row.uuid);
+    byId.set(row.uuid, row);
+  }
+  const owners = new Map<string, string | null>();
+  const ancestorCache = new Map<string, string | null>();
+  const ancestor = (id: string): string | null => {
+    const visited = new Set<string>();
+    let cursor: unknown = id;
+    let owner: string | null = null;
+    while (typeof cursor === 'string' && !visited.has(cursor) && !ambiguous.has(cursor)) {
+      if (ancestorCache.has(cursor)) { owner = ancestorCache.get(cursor)!; break; }
+      visited.add(cursor);
+      const row = byId.get(cursor);
+      if (!row || row.isSidechain || row.parent_tool_use_id || row.parentToolUseId) break;
+      if (isUserPromptRow(row)) { owner = cursor; break; }
+      cursor = row.parentUuid;
+    }
+    for (const visitedId of visited) ancestorCache.set(visitedId, owner);
+    return owner;
+  };
+  for (const row of rows) {
+    const responseId = row.type === 'assistant' ? row.message?.id : undefined;
+    if (typeof responseId !== 'string' || row.isSidechain || row.parent_tool_use_id || row.parentToolUseId || typeof row.parentUuid !== 'string') continue;
+    const owner = ancestor(row.parentUuid);
+    if (!owner) continue;
+    if (owners.has(responseId) && owners.get(responseId) !== owner) owners.set(responseId, null);
+    else if (!owners.has(responseId)) owners.set(responseId, owner);
+  }
+  const responses = new Map<string, string[]>();
+  for (const [responseId, owner] of owners) if (owner) {
+    const ids = responses.get(owner) || [];
+    if (ids.length < 256) ids.push(responseId);
+    responses.set(owner, ids);
+  }
+  for (const row of rows) if (typeof row.uuid === 'string' && responses.has(row.uuid)) row.cloudcliResponseMessageIds = responses.get(row.uuid);
+}
+
 /**
  * Selects edited prompt branches without hiding a later return to an older branch.
  * A new main user prompt is evidence of which saved ancestry the user continued;
@@ -425,6 +475,8 @@ async function getSessionMessages(
     const messages = dropSupersededPromptBranches(
       await readTranscriptRows(jsonLPath, providerSessionId),
     );
+
+    attachUserResponseIdentities(messages);
 
     const agentIds = new Set<string>();
     for (const message of messages) {
@@ -667,6 +719,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
       for (const message of messages) {
         if (message.role === 'user') {
           message.transcriptAnchorId = anchorId;
+          if (Array.isArray(raw?.cloudcliResponseMessageIds)) message.responseMessageIds = raw.cloudcliResponseMessageIds;
         }
       }
     }
@@ -691,6 +744,9 @@ export class ClaudeSessionsProvider implements IProviderSessions {
     const ts = raw.timestamp || new Date().toISOString();
     const baseId = raw.uuid || generateMessageId('claude');
 
+    const taskNotification = readClaudeTaskNotification(raw);
+    if (taskNotification) return [createNormalizedMessage({ id: baseId, sessionId, timestamp: ts, provider: PROVIDER,
+      kind: 'task_notification', ...taskNotification })];
     // The native boundary is the authoritative completion signal, also retained in JSONL history.
     if (raw.type === 'system' && raw.subtype === 'compact_boundary' && !raw.parent_tool_use_id && !raw.isSidechain) {
       return [createNormalizedMessage({ id: baseId, sessionId, timestamp: ts, provider: PROVIDER,

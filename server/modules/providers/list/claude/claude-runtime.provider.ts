@@ -615,18 +615,21 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
 
   if (sessionKey() && getSession(sessionKey()!)?.status === 'active') throw new Error('Claude already owns this session. Send through its existing input stream.');
   let foreground = true;
+  let foregroundTurnId = crypto.randomUUID();
+  let foregroundStartedAt = new Date().toISOString();
   let streamStarted = false;
   let streamGeneration = 0;
   let commandCatalogGeneration = 0;
   const pendingUsageSummaries = new Set<Promise<void>>();
   const inputQueue = createClaudeInputQueue((entry, error) => {
     ws.send(createNormalizedMessage({ kind: 'status', text: 'message_delivery', provider: 'claude', sessionId: sessionKey(),
-      clientMessageId: entry.id, transcriptAnchorId: entry.delivery === 'delivered' ? entry.id : undefined,
+      clientMessageId: entry.id, responseMessageId: entry.responseMessageId, transcriptAnchorId: entry.transcriptAnchorId, providerSessionId: capturedSessionId || undefined,
       delivery: entry.delivery, content: entry.command, images: entry.images, files: entry.files, timestamp: entry.timestamp, executionId, ...(error ? { error } : {}) }));
   });
   releasePromptStream = inputQueue.release;
   const emitRuntimeState = () => ws.send(createNormalizedMessage({ kind: 'status', text: 'claude_runtime_state', provider: 'claude', sessionId: sessionKey(),
-    phase: foreground ? 'foreground' : 'background', acceptsInput: streamStarted && inputQueue.isOpen(), backgroundTasks: backgroundWork.pendingCount(), executionId }));
+    phase: foreground ? 'foreground' : 'background', acceptsInput: streamStarted && inputQueue.isOpen(), backgroundTasks: backgroundWork.pendingCount(), executionId,
+    foregroundTurnId: foreground ? foregroundTurnId : undefined, foregroundStartedAt: foreground ? foregroundStartedAt : undefined }));
   const enqueueInput = async (command: string, next: AnyRecord): Promise<boolean> => {
     if (!streamStarted || !inputQueue.isOpen()) return false;
     claudeCommandCatalog.assertAllowed(command, capturedSessionId);
@@ -896,7 +899,7 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
       streamGeneration++;
       inputQueue.observe(message);
       if (!message.parent_tool_use_id && !message.isSidechain && (message.type === 'assistant' || message.type === 'stream_event' && message.event?.type === 'message_start')) {
-        if (!foreground) { foreground = true; emitRuntimeState(); }
+        if (!foreground) { foreground = true; foregroundTurnId = crypto.randomUUID(); foregroundStartedAt = new Date().toISOString(); emitRuntimeState(); }
       }
       // Capture session ID from first message
       if (message.session_id && !capturedSessionId) {
@@ -1013,7 +1016,7 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
           // A foreground result does not end the native runtime or its Workflow.
           for (const msg of textStream.finish(sid)) ws.send(msg);
           emitRuntimeState();
-          if (!lastResultFailed) ws.send(createNormalizedMessage({ kind: 'status', text: 'foreground_complete', provider: 'claude', sessionId: sid, executionId }));
+          if (!lastResultFailed) ws.send(createNormalizedMessage({ kind: 'status', text: 'foreground_complete', provider: 'claude', sessionId: sid, executionId, foregroundTurnId, foregroundStartedAt }));
           if (heldForBackgroundWork && !backgroundWork.hasPendingWorkflow() && !lastResultFailed) notifyBackgroundWorkCompleted({
             userId: ws.userId || null, provider: 'claude', sessionId: sessionKey(), sessionName: sessionSummary,
           });

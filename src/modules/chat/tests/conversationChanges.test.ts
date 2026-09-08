@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+
 import { test } from 'vitest';
 
 import type { ChatMessage } from '@/shared/types';
-
 import { deriveConversationChanges } from '@/modules/chat/utils/conversationChanges';
 import { getIntrinsicMessageKey } from '@/modules/chat/utils/messageKeys';
+import { createConversationChangeStats } from '@/modules/chat/utils/conversationChangeStats';
+import { createCachedDiffCalculator } from '@/modules/chat/utils/messageTransforms';
 
 const timestamp = '2026-09-07T12:00:00.000Z';
 let nextTool = 0;
@@ -306,4 +308,52 @@ test('malformed inputs and missing anchors are skipped without mutating the inpu
   const before = structuredClone(messages);
   assert.equal(allChanges(messages).length, 1);
   assert.deepEqual(messages, before);
+});
+
+test('pending and failed local copies cannot hide a successful 318-line Write behind an empty latest turn', () => {
+  const content = Array.from({ length: 318 }, (_, index) => `# synthetic line ${index + 1}\n`).join('');
+  const turns = deriveConversationChanges([
+    user('native-prompt_text_0', 'Create a check', { transcriptAnchorId: 'native-prompt' }),
+    tool('Write', { file_path: '/project/sandcheck.py', content }, { toolResult: { content: 'Created', toolUseResult: { type: 'create', content } } }),
+    user('client_native-prompt', 'Create a check', { clientMessageId: 'native-prompt', delivery: 'queued' }),
+    user('client_unconsumed', 'Follow-up not consumed', { clientMessageId: 'unconsumed', delivery: 'failed' }),
+  ]);
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0].changes[0].filePath, '/project/sandcheck.py');
+  assert.deepEqual(createConversationChangeStats(createCachedDiffCalculator())(turns[0].changes), { added: 318, removed: 0, known: 1, unknown: 0 });
+});
+
+test('exact saved and delivered prompt copies do not become new turns or move late tools to an older turn', () => {
+  const turns = deriveConversationChanges([
+    user('first_text_0', 'Continue', { transcriptAnchorId: 'first' }),
+    tool('Edit', editInput),
+    user('second', 'Continue'),
+    user('client_first', 'Continue', { clientMessageId: 'first', delivery: 'delivered' }),
+    tool('Write', { file_path: '/project/later.txt', content: 'Later work' }),
+  ]);
+  assert.equal(turns.length, 2);
+  assert.equal(turns[0].changes.length, 1);
+  assert.equal(turns[1].changes[0].filePath, '/project/later.txt');
+});
+
+test('sparse repeated tool snapshots preserve successful input and creation metadata', () => {
+  const write = tool('Write', { file_path: '/project/new.py', content: 'one\ntwo\n' }, {
+    toolResult: { content: 'Created', toolUseResult: { type: 'create', content: 'one\ntwo\n' } },
+  });
+  const changes = allChanges([write, { ...write, toolInput: undefined, toolResult: { content: 'Success' } }]);
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].newContent, 'one\ntwo\n');
+  assert.equal(changes[0].oldContent, '');
+});
+
+test('successful known paths stay in Review even when replacement content and line counts are unavailable', () => {
+  const changes = allChanges([
+    tool('Write', { file_path: '/project/new.py' }),
+    tool('Edit', { file_path: '/project/edited.py' }),
+    tool('MultiEdit', { file_path: '/project/multiple.py' }),
+    tool('MultiEdit', { file_path: '/project/partial.py', edits: [{ old_string: 'before' }] }),
+    tool('MultiEdit', { file_path: '/project/modified.py', edits: [{ old_string: 'before', new_string: 'proposed' }] }, { toolResult: { content: 'Success', toolUseResult: { userModified: true } } }),
+  ]);
+  assert.deepEqual(changes.map(change => change.filePath), ['/project/new.py', '/project/edited.py', '/project/multiple.py', '/project/partial.py', '/project/modified.py']);
+  assert.deepEqual(createConversationChangeStats(createCachedDiffCalculator())(changes), { added: 0, removed: 0, known: 0, unknown: 5 });
 });

@@ -1,3 +1,4 @@
+import { readClaudeSessionIdentity } from '@/modules/providers/services/claude-session-identity.service.js';
 import { claudeSessionConfiguration } from '@/modules/providers/services/claude-session-configuration.service.js';
 import express, { type Request, type Response } from 'express';
 
@@ -559,6 +560,9 @@ router.delete(
  * pass the default it would otherwise send, so a session that has not been
  * sent on yet resolves to that instead of the catalog default.
  */
+router.get('/claude/sessions/:sessionId/identity', asyncHandler(async (req, res) => {
+  res.json(createApiSuccessResponse(await readClaudeSessionIdentity(parseSessionId(req.params.sessionId))));
+}));
 router.get('/claude/sessions/:sessionId/execution-settings', asyncHandler(async (req, res) => {
   const data = await claudeSessionConfiguration.read(parseSessionId(req.params.sessionId), readOptionalQueryString(req.query.executionId));
   res.json(createApiSuccessResponse(data));

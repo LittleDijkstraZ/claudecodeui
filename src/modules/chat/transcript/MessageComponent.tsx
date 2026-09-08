@@ -41,6 +41,8 @@ type MessageComponentProps = {
   onEditMessage?: (message: ChatMessage) => void;
   /** Removes an unconfirmed local copy, never a provider message or running input. */
   onDismissPendingMessage?: (message: ChatMessage) => void;
+  /** Explicitly retries an unconfirmed send with a new UUID; never automatic. */
+  onRetryPendingMessage?: (message: ChatMessage) => void;
   /**
    * Branches the conversation into a new session ending at this message.
    * Absent when the provider cannot copy a transcript prefix.
@@ -54,7 +56,7 @@ const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write', 'ApplyPatch']);
  * Rendered by chat's ChatMessagesPane and ToolGroupContainer to draw one
  * transcript entry — user turn, assistant turn, or a tool call and its result.
  */
-const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, showRawParameters, showThinking, selectedProject, provider, onEditMessage, onDismissPendingMessage, onForkFromMessage, revealTarget }: MessageComponentProps) => {
+const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, showRawParameters, showThinking, selectedProject, provider, onEditMessage, onDismissPendingMessage, onRetryPendingMessage, onForkFromMessage, revealTarget }: MessageComponentProps) => {
   const { t } = useTranslation('chat');
   const workspaceActions = useWorkspacePanelActions();
   const isGrouped = prevMessage && prevMessage.type === message.type &&
@@ -161,7 +163,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                   )}
                   {!isExporting && <MessageSessionActions message={message} />}
                   <span>{formattedTime}</span>
-                  {!isExporting && <MessageDeliveryStatus message={message} onDismiss={onDismissPendingMessage ? () => onDismissPendingMessage(message) : undefined} />}
+                  {!isExporting && <MessageDeliveryStatus message={message} onRetry={onRetryPendingMessage ? () => onRetryPendingMessage(message) : undefined} onDismiss={onDismissPendingMessage ? () => onDismissPendingMessage(message) : undefined} />}
                 </div>
               </div>
             ) : (
@@ -169,7 +171,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
               <div className="flex items-center justify-end gap-1 text-xs text-muted-foreground">
                 {!isExporting && <MessageSessionActions message={message} />}
                 <span>{formattedTime}</span>
-                {!isExporting && <MessageDeliveryStatus message={message} onDismiss={onDismissPendingMessage ? () => onDismissPendingMessage(message) : undefined} />}
+                {!isExporting && <MessageDeliveryStatus message={message} onRetry={onRetryPendingMessage ? () => onRetryPendingMessage(message) : undefined} onDismiss={onDismissPendingMessage ? () => onDismissPendingMessage(message) : undefined} />}
               </div>
             )}
           </div>

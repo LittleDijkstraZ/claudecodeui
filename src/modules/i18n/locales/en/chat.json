@@ -141,13 +141,19 @@
       "alreadyWaitingHint": "Edit or remove the waiting message first",
       "notDelivered": "Not delivered to Claude",
       "remoteUnsupported": "This remote process does not report support for continued input. This draft waits until the entire current run finishes.",
-      "preparing": "The previous message is still preparing. Your new draft remains here; send it after preparation finishes."
+      "preparing": "The previous message is still preparing. Your new draft remains here; send it after preparation finishes.",
+      "paused": "Paused saved message",
+      "pausedHint": "Will not send automatically",
+      "retainedFiles": "Retained files: {{names}}. Select them again if you copy this text into a new send.",
+      "copyPaused": "Copy paused text to composer",
+      "copyPausedHint": "Copy text to composer; retained files stay here for review"
     },
     "commands": {
       "reported": "This session",
       "documented": "Documented default",
       "compactNeedsHistory": "/compact needs an existing conversation with prior messages. Send a normal message first."
-    }
+    },
+    "streamUnavailable": "Input unavailable; your draft will stay here"
   },
   "composer": {
     "ultracodeDescription": "xhigh reasoning with automatic workflows. Uses more API tokens.",
@@ -284,7 +290,9 @@
       "failed": "Delivery unconfirmed",
       "dismiss": "Remove local copy",
       "dismissHint": "Removes only this browser copy. It does not cancel submitted input or delete remote history.",
-      "storageFailed": "This browser could not save pending message copies. They remain visible now, but may not survive a reload."
+      "storageFailed": "This browser could not save pending message copies. They remain visible now, but may not survive a reload.",
+      "retry": "Retry as new message",
+      "retryHint": "Delivery was not confirmed. Review the conversation first; retrying sends a new message."
     }
   },
   "export": {
@@ -496,7 +504,14 @@
     "confirmRewind": "Restore this point",
     "refreshFailed": "The context was restored, but the updated history could not be loaded. Refresh this conversation before continuing.",
     "checkpointAfterRewind": "The restored context copy does not inherit earlier file checkpoints.",
-    "branchWhileRunning": "The main conversation is running. You can branch from a saved message; rewinding must wait until it stops."
+    "branchWhileRunning": "The main conversation is running. You can branch from a saved message; rewinding must wait until it stops.",
+    "target": "Selected message",
+    "targetIdentity": "Saved message identifier",
+    "backgroundImpact": "Rewind waits until this conversation and its background work stop. It does not interrupt tasks automatically. Sending an ordinary follow-up is a separate action and does not require rewinding.",
+    "pendingContextImpact": "Pending messages are paused during restoration. Copies from the previous context stay with the original branch for review; they are not sent automatically to the restored context.",
+    "pendingFilesImpact": "Pending messages are paused while files are restored. The conversation context stays unchanged; restoration does not resend pending messages.",
+    "restored": "The selected restoration has been applied.",
+    "openBackup": "Open the original conversation branch"
   },
   "usage": {
     "title": "Tokens and estimated cost",

@@ -1,5 +1,5 @@
 import { act, render, renderHook } from '@testing-library/react';
-import { beforeEach, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 import { useChatComposerState } from '@/modules/chat/hooks/useChatComposerState';
 import { useChatRealtimeHandlers } from '@/modules/chat/hooks/useChatRealtimeHandlers';
@@ -23,6 +23,7 @@ vi.mock('@/shared/api', () => {
 
 const PROJECT: Project = { projectId: 'remote-project', displayName: 'Remote project', fullPath: '/remote/work' };
 const BACKGROUND: SessionActivity = { startedAt: 100, statusText: null, canInterrupt: true, phase: 'background', acceptsInput: true, backgroundTasks: 2, executionId: 'execution-one' };
+afterEach(() => { vi.restoreAllMocks(); });
 beforeEach(() => { localStorage.clear(); resetChatDrafts(); uploadFiles.mockReset(); createSession.mockReset(); });
 
 function composer(activity: SessionActivity, connected = true, sessionId: string | null = 'session-a') {
@@ -58,11 +59,13 @@ test.each(['background', 'foreground'] as const)('a live %s query accepts multip
   expect(readQueuedMessage('session-a')).toBeNull();
 });
 
-test('an older server without live input capability retains its existing durable queue', async () => {
+test('a process without live input capability refuses a send without an automatic queue', async () => {
   const view = composer({ startedAt: 100, statusText: null, canInterrupt: true });
   await view.submit('wait for this run');
   expect(view.send).not.toHaveBeenCalled();
-  expect(readQueuedMessage('session-a')?.content).toBe('wait for this run');
+  expect(readQueuedMessage('session-a')).toBeNull();
+  expect(view.result.current.input).toBe('wait for this run');
+  expect(view.add.mock.calls.at(-1)?.[0].content).toContain('has not been queued');
 });
 
 test('a disconnected send is explicitly not delivered and never stops the Workflow', async () => {
@@ -73,7 +76,9 @@ test('a disconnected send is explicitly not delivered and never stops the Workfl
   expect(view.send.mock.calls).toHaveLength(1);
 });
 
-function handlers() {
+function handlers(checkedAt?: number) {
+  const lastSeqRef = { current: new Map<string, number>() };
+  const lastRunRef = { current: new Map<string, { runId: string; startedAt?: number }>() };
   let listener: (event: ServerEvent) => void = () => {};
   const subscribe = (next: typeof listener) => { listener = next; return () => {}; };
   const refresh = vi.fn(async () => {});
@@ -83,13 +88,13 @@ function handlers() {
     useChatRealtimeHandlers({
       isActive: true, subscribe, provider: 'claude', selectedSession: { id: 'session-a' }, currentSessionId: 'session-a',
       setTokenBudget: () => {}, pendingPermissionRequests: [], setPendingPermissionRequests: () => {},
-      lastSeqRef: { current: new Map() }, statusCheckSentAtRef: { current: new Map() },
+      lastSeqRef, lastRunRef, statusCheckSentAtRef: { current: checkedAt === undefined ? new Map() : new Map([['session-a', checkedAt]]) },
       onSessionProcessing: protection.markSessionProcessing, onSessionIdle: protection.markSessionIdle,
       requestLatestMessages: refresh, sessionStore: store,
     });
     return { store, protection };
   });
-  return { ...view, refresh, emit: (event: ServerEvent) => act(() => listener(event)) };
+  return { ...view, refresh, lastSeqRef, lastRunRef, emit: (event: ServerEvent) => act(() => listener(event)) };
 }
 
 const receipt = (delivery: string, sessionId = 'session-a'): ServerEvent => ({ kind: 'status', text: 'message_delivery', delivery, sessionId, clientMessageId: '16dfd601-35b0-409f-aec3-f6cb10b48441', content: 'question', timestamp: '2026-09-07T00:00:00Z' });
@@ -147,14 +152,14 @@ test('a foreground response refreshes the transcript once while keeping backgrou
   expect(view.refresh).toHaveBeenCalledTimes(2);
 });
 
-test('a second send to an older busy process never overwrites the waiting draft and stays in the input', async () => {
+test('repeated attempts to an unavailable stream remain unsent drafts', async () => {
   const view = composer({ startedAt: 100, statusText: null, canInterrupt: true });
   await view.submit('First waiting message');
   await view.submit('Second waiting message');
-  expect(readQueuedMessage('session-a')?.content).toBe('First waiting message');
+  expect(readQueuedMessage('session-a')).toBeNull();
   expect(view.result.current.input).toBe('Second waiting message');
   expect(view.send).not.toHaveBeenCalled();
-  expect(view.add.mock.calls.at(-1)?.[0].content).toMatch(/already waiting|已有一条|已有一則/);
+  expect(view.add.mock.calls.at(-1)?.[0].content).toContain('has not been queued');
 });
 
 test('a completed run subscription restores only matching valid delivery receipts without replaying arbitrary content', () => {
@@ -174,19 +179,15 @@ test('a completed run subscription restores only matching valid delivery receipt
 });
 
 
-test('a slow attachment reservation cannot be overwritten and does not erase newer composer text', async () => {
-  let release!: (value: unknown) => void;
-  uploadFiles.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+test('an unavailable stream does not upload attachments or create waiting copies', async () => {
   const view = composer({ startedAt: 100, statusText: null, canInterrupt: true });
-  await act(async () => { view.result.current.setInput('First with attachment'); view.result.current.setAttachedFiles([new File(['fixture'], 'fixture.txt')]); });
-  let pending!: Promise<void>;
-  await act(async () => { pending = view.result.current.handleSubmit({ preventDefault() {} } as never); await Promise.resolve(); });
-  await view.submit('New text typed during upload');
-  await act(async () => { release({ ok: true, json: async () => ({ attachments: [{ path: 'fixture.txt' }] }) }); await pending; });
-  expect(readQueuedMessage('session-a')?.content).toBe('First with attachment');
-  expect(view.result.current.input).toBe('New text typed during upload');
-  expect(uploadFiles).toHaveBeenCalledTimes(1);
-  expect(view.send).not.toHaveBeenCalled();
+  const file = new File(['fixture'], 'fixture.txt');
+  await act(async () => { view.result.current.setInput('Unsent attachment'); view.result.current.setAttachedFiles([file]); });
+  await act(async () => { await view.result.current.handleSubmit({ preventDefault() {} } as never); });
+  expect(uploadFiles).not.toHaveBeenCalled();
+  expect(view.result.current.input).toBe('Unsent attachment');
+  expect(view.result.current.attachedFiles).toEqual([file]);
+  expect(view.add.mock.calls.some(([message]) => message.delivery === 'queued')).toBe(false);
 });
 
 test('edit sends have a stable input UUID so disconnected edits retain a failed user copy', async () => {
@@ -239,10 +240,10 @@ test.each([true, false])('upload completion preserves a same-text draft in anoth
   await act(async () => { pending = view.result.current.handleSubmit({ preventDefault() {} } as never); await Promise.resolve(); });
   view.rerender({ sessionId: 'session-b' });
   await act(async () => { view.result.current.setInput('Same wording'); });
-  await act(async () => { release({ ok: true, json: async () => ({ attachments: [{ path: 'one.txt' }] }) }); await pending; });
+  await act(async () => { if (acceptsInput) release({ ok: true, json: async () => ({ attachments: [{ path: 'one.txt' }] }) }); await pending; });
   expect(view.result.current.input).toBe('Same wording');
   if (acceptsInput) expect(view.send.mock.calls[0][0]).toMatchObject({ sessionId: 'session-a' });
-  else expect(readQueuedMessage('session-a')?.content).toBe('Same wording');
+  else { expect(readQueuedMessage('session-a')).toBeNull(); expect(uploadFiles).not.toHaveBeenCalled(); }
 });
 
 test.each([true, false])('upload completion preserves attachments added without changing the text (acceptsInput=%s)', async acceptsInput => {
@@ -255,7 +256,7 @@ test.each([true, false])('upload completion preserves attachments added without 
   let pending!: Promise<void>;
   await act(async () => { pending = view.result.current.handleSubmit({ preventDefault() {} } as never); await Promise.resolve(); });
   await act(async () => { view.result.current.setAttachedFiles([first, second]); });
-  await act(async () => { release({ ok: true, json: async () => ({ attachments: [{ path: 'one.txt' }] }) }); await pending; });
+  await act(async () => { if (acceptsInput) release({ ok: true, json: async () => ({ attachments: [{ path: 'one.txt' }] }) }); await pending; });
   expect(view.result.current.input).toBe('Same wording');
   expect(view.result.current.attachedFiles).toEqual([first, second]);
 });
@@ -269,4 +270,69 @@ test('an editing anchor cannot carry into another conversation', async () => {
   await view.submit('New message B');
   expect(view.send.mock.calls[0][0]).toMatchObject({ type: 'chat.send', sessionId: 'session-b' });
   expect(view.send.mock.calls[0][0]).not.toHaveProperty('anchorId');
+});
+
+
+test('reconnect idle after a process restart settles old waiting copies and keeps newer sends untouched', () => {
+  const localClock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-07T00:00:00Z'));
+  const view = handlers(Date.parse('2026-09-07T00:00:01Z'));
+  view.emit({ ...receipt('queued'), timestamp: '2026-09-07T00:00:30Z' });
+  localClock.mockReturnValue(Date.parse('2026-09-07T00:00:02Z'));
+  view.emit({ ...receipt('queued'), clientMessageId: '33333333-3333-4333-8333-333333333333', timestamp: '2026-09-06T23:59:32Z' });
+  view.emit({ kind: 'chat_subscribed', sessionId: 'session-a', isProcessing: false, messageReceipts: [] });
+  expect(view.result.current.store.getMessages('session-a').map(message => message.delivery)).toEqual(['failed', 'queued']);
+});
+
+test('background progress is retained for the activity panel without overwriting foreground state', () => {
+  const view = handlers();
+  view.emit({ kind: 'status', text: 'claude_runtime_state', sessionId: 'session-a', phase: 'foreground', acceptsInput: true, executionId: 'exec', foregroundTurnId: 'turn1', foregroundStartedAt: '2026-09-07T00:00:00Z' });
+  view.emit({ kind: 'status', workflow: true, taskId: 'task-one', text: 'Background verification', status: 'running', sessionId: 'session-a' });
+  expect(view.result.current.store.getMessages('session-a').at(-1)?.text).toBe('Background verification');
+  expect(view.result.current.protection.processingSessions.get('session-a')).toMatchObject({ statusText: null, foregroundTurnId: 'turn1' });
+  view.emit({ kind: 'status', text: 'claude_runtime_state', sessionId: 'session-a', phase: 'background', acceptsInput: true, executionId: 'exec' });
+  expect(view.result.current.protection.processingSessions.get('session-a')?.foregroundStartedAt).toBeUndefined();
+});
+
+test('manual retry creates a fresh send without reusing an edit anchor or overwriting another draft', async () => {
+  const view = composer(BACKGROUND);
+  await act(async () => { view.result.current.beginEditMessage({ type: 'user', timestamp: 1, content: 'Draft to keep', transcriptAnchorId: 'old-anchor' }); });
+  await act(async () => view.result.current.retryUnconfirmedMessage({ type: 'user', timestamp: 1, content: 'Retry question', clientMessageId: '22222222-2222-4222-8222-222222222222', delivery: 'failed', files: [{ path: '/fixture/file.txt' }] }));
+  expect(view.send).toHaveBeenCalledTimes(1);
+  expect(view.send.mock.calls[0][0]).toMatchObject({ type: 'chat.send', content: 'Retry question' });
+  expect((view.send.mock.calls[0][0] as Record<string, unknown>).clientMessageId).not.toBe('22222222-2222-4222-8222-222222222222');
+  expect(view.result.current.input).toBe('Draft to keep');
+});
+
+test('rewind begun during an upload invalidates that preparation even if its HTTP outcome arrives first', async () => {
+  let release!: (value: unknown) => void;
+  uploadFiles.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+  const view = composer(BACKGROUND);
+  await act(async () => { view.result.current.setInput('Draft before rewind'); view.result.current.setAttachedFiles([new File(['x'], 'x.txt')]); });
+  let pending!: Promise<void>;
+  await act(async () => { pending = view.result.current.handleSubmit({ preventDefault() {} } as never); await Promise.resolve(); });
+  act(() => {
+    window.dispatchEvent(new CustomEvent('cloudcli:session-mutation', { detail: { sessionId: 'session-a', requestId: 'fixture', phase: 'started' } }));
+    window.dispatchEvent(new CustomEvent('cloudcli:session-mutation', { detail: { sessionId: 'session-a', requestId: 'fixture', phase: 'committed', result: { contextChanged: true } } }));
+  });
+  await act(async () => { release({ ok: true, json: async () => ({ attachments: [{ path: '/fixture/x.txt' }] }) }); await pending; });
+  expect(view.send).not.toHaveBeenCalled();
+  expect(view.result.current.input).toBe('Draft before rewind');
+});
+
+
+test('new run identity resets an old sequence cursor; late old receipts and completion cannot affect the newer run', () => {
+  const view = handlers();
+  view.emit({ ...receipt('queued'), runId: 'old-run', runStartedAt: 100, seq: 900 });
+  expect(view.lastSeqRef.current.get('session-a')).toBe(900);
+  view.emit({ kind: 'chat_subscribed', sessionId: 'session-a', runId: 'new-run', runStartedAt: 200, lastSeq: 3, isProcessing: true, ...BACKGROUND });
+  expect(view.lastSeqRef.current.get('session-a'), 'A subscribe watermark is not an acknowledgement of received frames').toBe(0);
+  const newId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  view.emit({ ...receipt('queued'), clientMessageId: newId, runId: 'new-run', runStartedAt: 200, seq: 1 });
+  view.emit({ ...receipt('delivered'), runId: 'old-run', runStartedAt: 100, seq: 999 });
+  view.emit({ kind: 'complete', sessionId: 'session-a', runId: 'old-run', runStartedAt: 100, seq: 1000 });
+  expect(view.lastSeqRef.current.get('session-a')).toBe(1);
+  expect(view.result.current.store.getMessages('session-a').map(message => message.delivery)).toEqual(['failed', 'queued']);
+  expect(view.result.current.protection.processingSessions.has('session-a')).toBe(true);
+  view.emit({ ...receipt('delivered'), clientMessageId: newId, runId: 'new-run', runStartedAt: 200, seq: 2 });
+  expect(view.result.current.store.getMessages('session-a').at(-1)?.delivery).toBe('delivered');
 });

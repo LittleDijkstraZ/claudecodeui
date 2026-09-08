@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Project, ProjectSession } from '@/shared/types';
+import { WorkspacePanelsProvider, useWorkspacePanelActions, useWorkspacePanels } from '@/modules/workspace-panels';
 import WorkspaceTerminals from '@/modules/project-workspace/WorkspaceTerminals';
 
 const events = vi.hoisted(() => ({ mounted: vi.fn(), unmounted: vi.fn(), terminated: vi.fn(), canTerminate: true, pendingTermination: null as Promise<boolean> | null }));
@@ -37,4 +38,20 @@ describe('remote terminal lifetime', () => {
     fireEvent.click(screen.getByLabelText('Close this terminal and stop its process')); fireEvent.click(screen.getByLabelText('Close this terminal and stop its process')); expect(events.terminated).toHaveBeenCalledTimes(1); expect(events.terminated).toHaveBeenCalledWith(agent.dataset.instance); expect(events.unmounted).not.toHaveBeenCalled(); expect(screen.getAllByTestId('terminal')).toHaveLength(3);
     await act(async () => resolveTermination(true)); expect(events.unmounted).toHaveBeenCalledWith(agent.dataset.instance); expect(screen.getAllByTestId('terminal')).toHaveLength(2);
   });
+});
+
+
+function ConflictHarness() {
+  const actions = useWorkspacePanelActions(); const panel = useWorkspacePanels();
+  return <><button onClick={() => actions?.revealTerminal({ sessionId: 'session-a', executionId: 'existing-remote' })}>View existing terminal</button>
+    {panel?.visited.has('shell') && <WorkspaceTerminals project={projectA} session={sessionA} visible={panel.open} />}</>;
+}
+it('viewing a conflicting terminal never creates a replacement Claude or plain terminal', () => {
+  render(<WorkspacePanelsProvider><ConflictHarness /></WorkspacePanelsProvider>);
+  fireEvent.click(screen.getByText('View existing terminal'));
+  expect(screen.queryByTestId('terminal')).toBeNull();
+  expect(screen.getByRole('status').textContent).toContain('original terminal');
+  expect(events.mounted).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByText('New terminal'));
+  expect(screen.getByTestId('terminal').dataset.plain).toBe('true');
 });

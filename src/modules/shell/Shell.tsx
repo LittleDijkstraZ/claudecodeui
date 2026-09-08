@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import '@xterm/xterm/css/xterm.css';
-import type { Project, ProjectSession, ShellTerminationRegistrar, ClaudeShellPermissionSelection, PermissionMode } from '@/shared/types';
-import { SessionExecutionSettings } from '@/modules/session-configuration';
+import type { Project, ProjectSession, ShellTerminationRegistrar, ShellExecutionBinding, ClaudeShellPermissionSelection, PermissionMode } from '@/shared/types';
+import { SessionExecutionSettings, SessionIdentityDetails } from '@/modules/session-configuration';
 import { useShellRuntime } from '@/modules/shell/hooks/useShellRuntime';
 import { sendSocketMessage } from '@/modules/shell/utils/socket';
 import { getSessionTitle } from '@/shared/utils';
@@ -40,6 +40,7 @@ type ShellProps = {
   /** Stable identity for an independently retained plain terminal. */
   terminalInstanceId?: string;
   onTerminateReady?: ShellTerminationRegistrar;
+  onExecutionBinding?: (binding: ShellExecutionBinding | null) => void;
 };
 
 /** Exported through the shell barrel: the standalone-shell module renders it as a full-page terminal and the task-master module embeds it in its setup modal to run TaskMaster's init command. */
@@ -55,6 +56,7 @@ export default function Shell({
   bindingLabel,
   terminalInstanceId,
   onTerminateReady,
+  onExecutionBinding,
 }: ShellProps) {
   const { t } = useTranslation('chat');
   const [isRestarting, setIsRestarting] = useState(false);
@@ -108,6 +110,8 @@ export default function Shell({
     onTerminateReady?.(terminateShell);
     return () => onTerminateReady?.(null);
   }, [onTerminateReady, terminateShell]);
+
+  useEffect(() => { onExecutionBinding?.(executionBinding); }, [executionBinding, onExecutionBinding]);
 
   // Check xterm.js buffer for CLI prompt patterns (❯ N. label)
   const checkBufferForPrompt = useCallback(() => {
@@ -323,7 +327,7 @@ export default function Shell({
 
   return (
     <div className="flex h-full w-full flex-col bg-gray-900">
-      {bindingLabel && <p className="shrink-0 truncate border-b border-gray-700 px-3 py-1 text-[10px] text-gray-300" title={bindingLabel}>{bindingLabel}</p>}
+      {bindingLabel && <div className="flex shrink-0 items-center border-b border-gray-700 px-3 text-[10px] text-gray-300"><p className="min-w-0 flex-1 truncate" title={bindingLabel}>{bindingLabel}</p>{!isPlainShell && <SessionIdentityDetails sessionId={selectedSession?.id ?? null} provider={selectedSession?.__provider || selectedSession?.provider} label={bindingLabel} binding={executionBinding} />}</div>}
       {!isPlainShell && <div className="shrink-0 border-b border-gray-700 bg-background px-2 py-1 text-foreground"><SessionExecutionSettings sessionId={selectedSession?.id ?? null} provider={selectedSession?.__provider ?? readSelectedProvider()} surface="shell" executionId={executionBinding?.executionId} /></div>}
       <ShellHeader
         isConnected={isConnected}

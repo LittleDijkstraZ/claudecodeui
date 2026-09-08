@@ -1,4 +1,5 @@
 import type { NormalizedMessage } from '@/shared/types';
+import { hasSameUserMessageIdentity } from '@/shared/utils';
 
 const LOCAL_USER_DEDUPE_WINDOW_MS = 5 * 60 * 1000;
 const LOCAL_USER_DEDUPE_CLOCK_SKEW_MS = 10_000;
@@ -42,14 +43,10 @@ function findServerEchoForLocalUser(
   serverMessages: NormalizedMessage[],
   claimedServerIds: Set<string>,
 ): NormalizedMessage | null {
-  // Queued multi-turn sends can repeat earlier text. A stamped client UUID
-  // provides identity, so only that exact persisted send can retire its echo.
-  if (localMessage.clientMessageId) {
-    return serverMessages.find(message => !claimedServerIds.has(message.id)
-      && message.kind === 'text' && message.role === 'user'
-      && (message.clientMessageId === localMessage.clientMessageId
-        || message.id === localMessage.clientMessageId
-        || message.transcriptAnchorId === localMessage.clientMessageId)) ?? null;
+  // Claude sends and confirmed native anchors have exact identity. In particular,
+  // an old identical prompt must not retire an unconfirmed copy after a restart.
+  if (localMessage.provider === 'claude' || localMessage.clientMessageId || localMessage.transcriptAnchorId) {
+    return serverMessages.find(message => hasSameUserMessageIdentity(localMessage, message)) ?? null;
   }
   const localFingerprint = userTurnFingerprint(localMessage);
   const localTime = readMessageTime(localMessage);

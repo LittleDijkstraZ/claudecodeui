@@ -122,6 +122,10 @@ test('mock SDK Workflow launch does not complete UI or close input; final follow
   assert.equal(h.events.filter(event => event.kind === 'complete').length, 1);
   assert.equal(h.events.at(-1)?.success, true);
   assert.equal(h.events.some(event => event.content === 'Final fixture answer'), true);
+  const foregroundTurns = new Set(h.events.filter(event => event.text === 'claude_runtime_state' && event.phase === 'foreground').map(event => event.foregroundTurnId));
+  assert.equal(foregroundTurns.size, 2, 'A background follow-up owns a new foreground timer within the same execution');
+  assert.equal(foregroundTurns.has(undefined), false);
+  assert.equal(h.events.filter(event => event.text === 'claude_runtime_state' && event.phase === 'background').every(event => event.foregroundStartedAt === undefined), true);
 });
 
 test('successor Workflow after a completed Workflow keeps the original UI run active', async () => {

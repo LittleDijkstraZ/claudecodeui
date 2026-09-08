@@ -9,6 +9,7 @@ import { I18nextProvider } from 'react-i18next';
 import { i18n as appI18n } from '@/modules/i18n';
 import type { ConversationChangeTurn, ConversationFileChange } from '@/shared/types';
 import ConversationChangesBar from '@/modules/chat/changes/ConversationChangesBar';
+import { deriveConversationChanges } from '@/modules/chat/utils/conversationChanges';
 
 const i18n = createInstance();
 await i18n.init({ lng: 'en', resources: { en: { chat: appI18n.getResourceBundle('en', 'chat') } }, interpolation: { escapeValue: false } });
@@ -66,4 +67,31 @@ test('an empty latest turn does not inherit earlier turn line counts', () => {
   ]);
   assert.equal(screen.queryByTestId('conversation-change-totals'), null);
   assert.match(screen.getByTestId('conversation-changes-bar').textContent ?? '', /1 earlier edit/);
+});
+
+test('Review keeps a successful file with unavailable line counts and ignores a trailing unconsumed bubble', () => {
+  const turns = deriveConversationChanges([
+    { type: 'user', id: 'saved', transcriptAnchorId: 'saved', timestamp: '2026-09-07', content: 'Create a file' },
+    { type: 'assistant', id: 'write', timestamp: '2026-09-07', isToolUse: true, toolName: 'Write', toolId: 'write', toolInput: { file_path: '/project/sandcheck.py' }, toolResult: { content: 'Created', isError: false } },
+    { type: 'user', id: 'client_unconsumed', clientMessageId: 'unconsumed', delivery: 'failed', timestamp: '2026-09-07', content: 'Not yet accepted' },
+  ]);
+  renderBar(turns);
+  const bar = screen.getByTestId('conversation-changes-bar');
+  assert.equal(within(bar).getByTestId('conversation-change-totals').textContent, '+?−?unknown');
+  fireEvent.click(within(bar).getByRole('button'));
+  assert.ok(screen.getByText('/project/sandcheck.py'));
+  assert.equal((screen.getByRole('combobox', { name: 'Changes to review' }) as HTMLSelectElement).value, 'latest');
+});
+
+test('an earlier selected turn that disappears after a rewind falls back to fresh latest history', () => {
+  const view = renderBar([
+    { id: 'old-selected', label: 'Old branch', timestamp: '2026-09-06', changes: [change()] },
+    { id: 'old-latest', label: 'Old latest', timestamp: '2026-09-07', changes: [] },
+  ]);
+  fireEvent.click(within(screen.getByTestId('conversation-changes-bar')).getByRole('button'));
+  fireEvent.change(screen.getByRole('combobox', { name: 'Changes to review' }), { target: { value: 'turn:old-selected' } });
+  view.rerender(<I18nextProvider i18n={i18n}><ConversationChangesBar turns={[{ id: 'fresh', label: 'Fresh branch', timestamp: '2026-09-07', changes: [change({ filePath: '/project/fresh.ts' })] }]}
+    isProcessing={false} hasEarlierMessages={false} isLoadingEarlierMessages={false} onLoadAllMessages={() => {}} onJumpToChange={() => {}} /></I18nextProvider>);
+  assert.equal((screen.getByRole('combobox', { name: 'Changes to review' }) as HTMLSelectElement).value, 'latest');
+  assert.ok(within(screen.getByRole('dialog')).getByRole('button', { name: '/project/fresh.ts 1 edit' }));
 });

@@ -1,4 +1,5 @@
 import { getConnection } from '@/modules/database/connection.js';
+import { sessionsDb } from '@/modules/database/repositories/sessions.db.js';
 
 /**
  * One chat scope's unsent state: the text still in the composer, plus the
@@ -84,7 +85,7 @@ export const sessionDraftsDb = {
         `SELECT drafts.user_id, drafts.draft_scope, drafts.queued_message
          FROM session_drafts AS drafts
          INNER JOIN sessions ON sessions.session_id = drafts.draft_scope
-         WHERE drafts.queued_message IS NOT NULL`
+         WHERE drafts.queued_message IS NOT NULL AND sessions.isArchived = 0`
       )
       .all() as QueuedMessageRow[];
 
@@ -93,7 +94,8 @@ export const sessionDraftsDb = {
       sessionId: row.draft_scope,
       queuedMessage: parseQueuedMessage(row.queued_message),
       claimToken: row.queued_message,
-    }));
+    })).filter(row => !(row.queuedMessage && typeof row.queuedMessage === 'object'
+      && (row.queuedMessage as { rewindPaused?: unknown }).rewindPaused === true));
   },
 
   /** Atomically removes a queued turn only if it has not been edited since listing. */
@@ -148,19 +150,27 @@ export const sessionDraftsDb = {
       return;
     }
 
-    db.prepare(
-      `INSERT INTO session_drafts (user_id, draft_scope, draft_text, queued_message, updated_at)
+    db.transaction(() => {
+      let queuedMessage = draft.queuedMessage;
+      const session = sessionsDb.getSessionById(scope);
+      if (session?.provider === 'claude' && queuedMessage && typeof queuedMessage === 'object' && !Array.isArray(queuedMessage)) {
+        const queued = queuedMessage as Record<string, unknown>;
+        // A draft PUT sent before rewind may arrive after the app ID has been
+        // remapped. Never authorize a legacy queue by its stable app ID alone.
+        // Preserve unbound/stale input for explicit review instead of sending.
+        if (typeof queued.providerSessionId !== 'string' || queued.providerSessionId !== session.provider_session_id) {
+          queuedMessage = { ...queued, rewindPaused: true };
+        }
+      }
+      db.prepare(
+        `INSERT INTO session_drafts (user_id, draft_scope, draft_text, queued_message, updated_at)
        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
        ON CONFLICT(user_id, draft_scope) DO UPDATE SET
          draft_text = excluded.draft_text,
          queued_message = excluded.queued_message,
          updated_at = CURRENT_TIMESTAMP`
-    ).run(
-      userId,
-      scope,
-      draft.text,
-      draft.queuedMessage === null ? null : JSON.stringify(draft.queuedMessage)
-    );
+      ).run(userId, scope, draft.text, queuedMessage === null ? null : JSON.stringify(queuedMessage));
+    })();
   },
 
   deleteDraft(userId: number, scope: string): void {

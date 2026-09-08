@@ -45,6 +45,7 @@ import {
 import providerRoutes from './modules/providers/provider.routes.js';
 import { createConversationGroupsRouter } from './modules/conversation-groups/index.js';
 import { createClaudeSessionActionsRouter } from './modules/claude-session-actions/index.js';
+import { createMcpAuthRouter } from './modules/mcp-auth/index.js';
 import { voiceRoutes } from './modules/voice/index.js';
 import {
     closeScheduledMessageDispatcher,
@@ -190,6 +191,7 @@ app.use('/api/user', authenticateToken, userRoutes);
 
 // Plugins API Routes (protected)
 app.use('/api/plugins', authenticateToken, pluginsRoutes);
+app.use('/api/mcp-auth', authenticateToken, createMcpAuthRouter());
 
 // Browser MCP bridge API (local token protected)
 app.use('/api/browser-use-mcp', browserUseMcpRoutes);

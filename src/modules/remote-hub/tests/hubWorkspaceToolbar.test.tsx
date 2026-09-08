@@ -10,9 +10,9 @@ describe('legacy remote tool navigation', () => {
     render(<HubWorkspaceToolbar machine="Alpha" title="Experiment" sidebarClosed={false} onSelect={select} onSettings={settings} navigation={{ sessionId: 'session-a', activeTab: 'chat', tabs: [{ id: 'chat', label: 'Chat' }, { id: 'shell', label: 'Shell' }, { id: 'files', label: 'Files' }, { id: 'preferences', label: 'Preferences' }] }} />);
     expect(screen.queryByRole('button', { name: 'Chat' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Preferences' })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Shell' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Shell' }));
     expect(select).toHaveBeenCalledWith('shell');
-    expect(screen.getByRole('button', { name: 'Files' }).textContent).toContain('Files');
+    expect(screen.getByRole('tab', { name: 'Files' }).textContent).toContain('Files');
     fireEvent.click(screen.getByRole('button', { name: 'Alpha 的设置' }));
     expect(settings).toHaveBeenCalledOnce();
   });

@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
 
+import { SessionIdentityDetails } from '@/modules/session-configuration';
 import { LLMProviderLogo } from '@/shared/ui';
 import type { AppTab, Project, ProjectSession } from '@/shared/types';
 import { usePlugins } from '@/modules/plugins';
@@ -85,6 +86,7 @@ export default function WorkspaceTitle({
           </div>
         )}
       </div>
+      {activeTab === 'chat' && selectedSession && <SessionIdentityDetails sessionId={selectedSession.id} provider={selectedSession.__provider || selectedSession.provider} label={getSessionTitle(selectedSession)} />}
     </div>
   );
 }

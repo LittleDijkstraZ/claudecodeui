@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Edit3, ExternalLink, Globe, Lock, Plus, Server, Terminal, Trash2, Users, Zap } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -7,7 +8,8 @@ import { ActionMenu, Badge, Button } from '@/shared/ui';
 import { MCP_GLOBAL_SUPPORTED_TRANSPORTS, MCP_PROVIDER_NAMES } from '@/shared/constants';
 import { useMcpServers } from '@/modules/mcp/hooks/useMcpServers';
 import { maskSecret } from '@/modules/mcp/utils/mcpFormatting';
-import McpServerFormModal from '@/modules/mcp/McpServerFormModal';
+import McpServerFormModal from '@/modules/mcp/modals/McpServerFormModal';
+import { McpAuthorizationModal } from '@/modules/mcp/modals/McpAuthorizationModal';
 
 type McpServersProps = {
   selectedProvider: McpProvider;
@@ -107,6 +109,8 @@ function TeamMcpFeatureCard() {
 /** Rendered by the settings module's agents tab to list and manage one provider's MCP servers. */
 export default function McpServers({ selectedProvider, currentProjects }: McpServersProps) {
   const { t } = useTranslation('settings');
+  // The authorization target is fixed when opened, independent of later project/provider selection.
+  const [authorizing, setAuthorizing] = useState<ProviderMcpServer | null>(null);
   const {
     servers,
     isLoading,
@@ -252,6 +256,7 @@ export default function McpServers({ selectedProvider, currentProjects }: McpSer
 
                 {!managed && (
                   <div className="ml-4 flex items-center gap-2">
+                    {selectedProvider === 'claude' && ['http', 'sse'].includes(server.transport) && <Button variant="outline" size="sm" onClick={() => setAuthorizing(server)}>{t('mcpAuth.connect', { defaultValue: 'Connect / authorize' })}</Button>}
                     <Button
                       onClick={() => openForm(server)}
                       variant="ghost"
@@ -319,6 +324,7 @@ export default function McpServers({ selectedProvider, currentProjects }: McpSer
           onSubmit={(formData) => submitGlobalForm(formData)}
         />
       )}
+      {authorizing && <McpAuthorizationModal key={getServerKey(authorizing)} server={authorizing} onClose={() => setAuthorizing(null)} />}
     </div>
   );
 }

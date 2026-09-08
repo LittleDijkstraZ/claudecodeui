@@ -513,7 +513,8 @@ Reference: [Claude SDK command discovery and compaction](https://code.claude.com
 
 Chat remains the main workspace and has no tool tab. Shell, Files, Source Control,
 Agents and enabled tools remain visible at the top right, outside the drawer,
-with labelled large hit targets and horizontal scrolling in narrow windows. A
+with labelled large hit targets and an overflow More menu in narrow windows. Clicking
+the active tool again collapses the panel without unmounting it. A
 single compact row holds session/machine identity and those tools; the browser's
 own window title bar is unchanged. Preferences has a separate settings button.
 
@@ -533,3 +534,20 @@ or settings covers the conversation.
 ## Continued history branches
 
 History projection follows the latest verifiable main user prompt ancestry when a conversation continues an earlier edited branch. Late assistant, tool, synthetic or sidechain records alone do not reactivate an abandoned prompt. Normal prompt replacement and parallel tool output remain supported; the native transcript, resume anchor and cumulative usage records are never rewritten by this display repair.
+
+
+## Delivery, task review, and remote authorization
+
+User sends carry a stable client UUID. Native replay receipts and verified transcript ancestry associate the UI copy with its recorded message; identical text is never a deduplication key. Admission means queued, while a correlated native receipt means delivered. Process exit, failed preparation, and reconnect without a live execution settle unconfirmed sends as unconfirmed, with an explicit manual retry. No automatic retry starts another query or stops background work. The outbox retains attachments and original branch identity; removing a browser copy does not delete native history.
+
+Rewind previews its target and effects on background work, queued drafts, and scheduled messages. The original native branch remains available. The commit transaction isolates old queued/scheduled work on that branch, and late saves or already-claimed dispatchers cannot silently feed it into the new branch. Active execution conflicts are reported rather than stopped automatically. File recovery still covers only recorded native checkpoints, not arbitrary shell, database, or external side effects.
+
+The Agents panel includes Workflows, with recorded task IDs, progress, final results, duration where known, and a link to the originating tool call. An old launch receipt is not proof a task is still running; unverified state is explicit. Inspecting a task does not issue resume or stop commands. Only foreground generation drives the main composer timer.
+
+Review merges tool snapshots and successful receipts without discarding known Write metadata. Failed, queued, or duplicate optimistic bubbles cannot invent new turn boundaries. A successful file remains listed even if its line count cannot be established; missing baselines are not guessed. Added/removed badges are per-edit totals in the selected scope, not repository-wide Git totals.
+
+Session identity details separate CloudCLI's preserved name, Claude's automatic title, native `/rename` title, and app/native execution IDs. A retained terminal reports its original branch binding. Chat refusal due to an occupied terminal offers the existing terminal when available; that action never starts a second Claude process.
+
+Remote MCP Connect runs the remote CLI's no-browser login in the selected project. The local hub temporarily accepts the exact loopback callback URL/state supplied by that attempt and forwards it to the same authenticated remote attempt over the configured SSH tunnel. Manual full-URL paste and timeout retry remain available. A successful browser redirect alone is insufficient: the remote CLI's configured MCP health must report Connected. Managed or ambiguous configuration has an explicit terminal fallback. Existing independent terminal logins are not hijacked. Reference: [Claude command-line MCP authentication](https://code.claude.com/docs/en/mcp#authenticate-from-the-command-line).
+
+Plugin installation offers Open plugin. Enabled entries share the normal top-right tools and More overflow; inventory and asset failures are visible with retry, and the last successful inventory is retained on transient errors. Machine changes invalidate stale requests, so one remote's response cannot replace another remote's plugins.

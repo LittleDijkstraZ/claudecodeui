@@ -54,13 +54,22 @@ function normalizePluginManifest(value: unknown): PluginManifest {
 
 /** Creates plugin-management workflows around loader and process adapters. */
 export function createPluginsService(dependencies: PluginDependencies) {
+  const serverErrors = new Map<string, string>();
+  const inventory = () => dependencies.scanPlugins().map((plugin) => ({
+    ...plugin,
+    serverRunning: plugin.server ? dependencies.isServerRunning(plugin.name) : false,
+    serverError: serverErrors.get(plugin.name) ?? null,
+  }));
   async function startServerIfAvailable(plugin: PluginManifest): Promise<void> {
-    if (!plugin.server || dependencies.isServerRunning(plugin.name)) return;
+    if (!plugin.server) return;
+    if (dependencies.isServerRunning(plugin.name)) { serverErrors.delete(plugin.name); return; }
     const pluginDirectory = dependencies.getPluginDirectory(plugin.name);
     if (!pluginDirectory) return;
     try {
       await dependencies.startServer(plugin.name, pluginDirectory, plugin.server);
+      serverErrors.delete(plugin.name);
     } catch (error) {
+      serverErrors.set(plugin.name, error instanceof Error ? error.message.slice(0,500) : 'Plugin backend failed to start');
       dependencies.logError(`Failed to start plugin server for ${plugin.name}`, error);
     }
   }
@@ -68,10 +77,7 @@ export function createPluginsService(dependencies: PluginDependencies) {
   return {
     list() {
       return {
-        plugins: dependencies.scanPlugins().map((plugin) => ({
-          ...plugin,
-          serverRunning: plugin.server ? dependencies.isServerRunning(plugin.name) : false,
-        })),
+        plugins: inventory(),
       };
     },
     getManifest(pluginName: string) {
@@ -102,7 +108,7 @@ export function createPluginsService(dependencies: PluginDependencies) {
       if (plugin.server && !enabled && dependencies.isServerRunning(pluginName)) {
         await dependencies.stopServer(pluginName);
       }
-      return { success: true, name: pluginName, enabled };
+      return { success: true, name: pluginName, enabled, warning: serverErrors.get(pluginName) ?? null };
     },
     async install(urlInput: unknown) {
       const url = typeof urlInput === 'string' ? urlInput.trim() : '';
@@ -111,7 +117,12 @@ export function createPluginsService(dependencies: PluginDependencies) {
       }
       const plugin = normalizePluginManifest(await dependencies.install(url));
       await startServerIfAvailable(plugin);
-      return { success: true, plugin };
+      // Return the installed inventory entry, including the actual enabled
+      // state. A raw repository manifest alone cannot establish that state.
+      let installed: ReturnType<typeof inventory>[number] | undefined;
+      try { installed = inventory().find(item => item.name === plugin.name); } catch { /* Installation succeeded; retain that outcome even if scanning failed. */ }
+      return { success: true, plugin: installed ?? plugin, inventoryConfirmed: Boolean(installed),
+        warning: serverErrors.get(plugin.name) ?? (installed ? null : 'Plugin installed, but its installed entry could not be confirmed. Refresh plugins before opening it.') };
     },
     async update(pluginName: string) {
       validatePluginName(pluginName);
@@ -119,7 +130,7 @@ export function createPluginsService(dependencies: PluginDependencies) {
       if (wasRunning) await dependencies.stopServer(pluginName);
       const plugin = normalizePluginManifest(await dependencies.update(pluginName));
       if (wasRunning) await startServerIfAvailable(plugin);
-      return { success: true, plugin };
+      return { success: true, plugin, warning: serverErrors.get(plugin.name) ?? null };
     },
     async prepareRpc(pluginName: string) {
       validatePluginName(pluginName);
@@ -133,6 +144,7 @@ export function createPluginsService(dependencies: PluginDependencies) {
           plugin.dirName ?? plugin.name,
         );
         port = await dependencies.startServer(pluginName, pluginDirectory, plugin.server);
+        serverErrors.delete(pluginName);
       }
       const secrets = dependencies.readConfig()[pluginName]?.secrets ?? {};
       return { port, secrets };
@@ -141,6 +153,7 @@ export function createPluginsService(dependencies: PluginDependencies) {
       validatePluginName(pluginName);
       if (dependencies.isServerRunning(pluginName)) await dependencies.stopServer(pluginName);
       await dependencies.uninstall(pluginName);
+      serverErrors.delete(pluginName);
       return { success: true, name: pluginName };
     },
   };

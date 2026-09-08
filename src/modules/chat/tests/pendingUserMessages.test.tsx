@@ -101,3 +101,115 @@ test('two windows can persist different queued inputs for the same session witho
   const restored = renderHook(() => useSessionStore('user-a'));
   expect(restored.result.current.getMessages('session-a').map(message => message.clientMessageId).sort()).toEqual([ID, secondId].sort());
 });
+
+
+test('explicit native identity merges live echo, survives receipt replay, and confirms outbox without text matching', async () => {
+  const view = renderHook(() => useSessionStore('user-a'));
+  const nativeId = 'native-rewritten-id';
+  act(() => view.result.current.appendRealtime('session-a', { ...input('delivered'), transcriptAnchorId: nativeId }));
+  // An older gateway admission has no native binding and must not erase it.
+  act(() => view.result.current.appendRealtime('session-a', input('queued')));
+  const native = { ...input(), id: `${nativeId}_text_0`, clientMessageId: undefined, delivery: undefined, transcriptAnchorId: nativeId };
+  act(() => view.result.current.appendRealtime('session-a', native));
+  expect(view.result.current.getMessages('session-a')).toHaveLength(1);
+  expect(view.result.current.getMessages('session-a')[0].delivery).toBeUndefined();
+  act(() => view.result.current.appendRealtime('session-a', input('queued')));
+  expect(view.result.current.getMessages('session-a')).toHaveLength(1);
+  view.unmount();
+  const restored = renderHook(() => useSessionStore('user-a'));
+  expect(restored.result.current.getMessages('session-a')).toEqual([]);
+});
+
+test('idle authority uses local observation time despite remote clock skew and survives reload', () => {
+  const localClock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-07T00:00:00Z'));
+  const view = renderHook(() => useSessionStore('user-a'));
+  const newerId = '43d5dd07-95d3-4ea2-b9e9-a386dbfb5c75';
+  act(() => {
+    view.result.current.appendRealtime('session-a', { ...input(), timestamp: '2026-09-07T00:00:30Z' });
+    localClock.mockReturnValue(Date.parse('2026-09-07T00:00:02Z'));
+    view.result.current.appendRealtime('session-a', { ...input(), id: `client_${newerId}`, clientMessageId: newerId, timestamp: '2026-09-06T23:59:32Z' });
+    view.result.current.appendRealtime('session-b', { ...input(), sessionId: 'session-b' });
+    view.result.current.settleUnconfirmedMessages('session-a', Date.parse('2026-09-07T00:00:01Z'), 'Process no longer exists');
+  });
+  expect(view.result.current.getMessages('session-a').map(message => message.delivery)).toEqual(['failed', 'queued']);
+  expect(view.result.current.getMessages('session-b')[0].delivery).toBe('queued');
+  view.unmount();
+  const restored = renderHook(() => useSessionStore('user-a'));
+  expect(restored.result.current.getMessages('session-a').find(message => message.clientMessageId === ID)).toMatchObject({ delivery: 'failed', deliveryError: 'Process no longer exists' });
+});
+
+test('deleting a local copy never hides its later native record or a new manual send of identical text', () => {
+  const view = renderHook(() => useSessionStore('user-a'));
+  const newId = '81f9b698-e606-46e1-bd45-2f70b25d37ee';
+  act(() => {
+    view.result.current.appendRealtime('session-a', input('failed'));
+    view.result.current.dismissPendingUserMessage('session-a', ID);
+    view.result.current.appendRealtime('session-a', { ...input(), id: `${ID}_text_0`, delivery: undefined, transcriptAnchorId: ID });
+    view.result.current.appendRealtime('session-a', { ...input(), id: `client_${newId}`, clientMessageId: newId });
+  });
+  expect(view.result.current.getMessages('session-a')).toHaveLength(2);
+  expect(view.result.current.getMessages('session-a').map(message => message.delivery)).toEqual([undefined, 'queued']);
+});
+
+
+test('rewind keeps old pending copies with the recovery branch and prevents late receipts entering restored context', () => {
+  const view = renderHook(() => useSessionStore('user-a'));
+  act(() => {
+    view.result.current.appendRealtime('session-a', input());
+    view.result.current.quarantineContextInputs('session-a', 'recovery-branch');
+    view.result.current.appendRealtime('session-a', input('queued'));
+  });
+  expect(view.result.current.getMessages('session-a')).toEqual([]);
+  expect(view.result.current.getMessages('recovery-branch')).toHaveLength(1);
+  expect(view.result.current.getMessages('recovery-branch')[0]).toMatchObject({ clientMessageId: ID, delivery: 'failed' });
+  view.unmount();
+  const restored = renderHook(() => useSessionStore('user-a'));
+  expect(restored.result.current.getMessages('session-a')).toEqual([]);
+  expect(restored.result.current.getMessages('recovery-branch')[0].clientMessageId).toBe(ID);
+});
+
+test('a persisted consumption response ID binds rewritten native user UUID after reload without matching its repeated text', async () => {
+  const first = renderHook(() => useSessionStore('user-a'));
+  act(() => first.result.current.appendRealtime('session-a', { ...input('delivered'), responseMessageId: 'api-response-exact' }));
+  first.unmount();
+  const restored = renderHook(() => useSessionStore('user-a'));
+  const earlier = { ...input(), id: 'old-user', clientMessageId: undefined, delivery: undefined, responseMessageIds: ['api-response-older'] };
+  const actual = { ...earlier, id: 'rewritten-native-user_text_0', transcriptAnchorId: 'rewritten-native-user', responseMessageIds: ['api-response-exact'] };
+  sessionMessages.mockResolvedValueOnce(response([earlier]));
+  await act(async () => { await restored.result.current.fetchFromServer('session-a'); });
+  expect(restored.result.current.getMessages('session-a')).toHaveLength(2);
+  sessionMessages.mockResolvedValueOnce(response([earlier, actual]));
+  await act(async () => { await restored.result.current.fetchFromServer('session-a'); });
+  expect(restored.result.current.getMessages('session-a')).toEqual([earlier, actual]);
+  act(() => restored.result.current.appendRealtime('session-a', input('queued')));
+  expect(restored.result.current.getMessages('session-a')).toEqual([earlier, actual]);
+});
+
+
+test('HTTP and websocket notifications for the same rewind cannot quarantine a newer send twice', () => {
+  const view = renderHook(() => useSessionStore('user-a'));
+  const newId = '115d8689-37b5-43aa-bbdf-c4d7f6a33916';
+  act(() => {
+    view.result.current.appendRealtime('session-a', input());
+    view.result.current.quarantineContextInputs('session-a', 'backup', 'context-revision');
+    view.result.current.appendRealtime('session-a', { ...input(), id: `client_${newId}`, clientMessageId: newId });
+    view.result.current.quarantineContextInputs('session-a', 'backup', 'context-revision');
+  });
+  expect(view.result.current.getMessages('session-a').map(message => message.clientMessageId)).toEqual([newId]);
+  expect(view.result.current.getMessages('backup').map(message => message.clientMessageId)).toEqual([ID]);
+});
+
+
+test('first local observation survives a reload and replayed future remote timestamps', () => {
+  const localClock = vi.spyOn(Date, 'now').mockReturnValue(1000);
+  const first = renderHook(() => useSessionStore('user-a'));
+  act(() => first.result.current.appendRealtime('session-a', { ...input(), timestamp: '2099-01-01T00:00:00Z' }));
+  first.unmount();
+  localClock.mockReturnValue(3000);
+  const restored = renderHook(() => useSessionStore('user-a'));
+  act(() => {
+    restored.result.current.appendRealtime('session-a', { ...input(), timestamp: '2099-01-01T00:00:30Z' });
+    restored.result.current.settleUnconfirmedMessages('session-a', 2000, 'Process no longer exists');
+  });
+  expect(restored.result.current.getMessages('session-a')[0]).toMatchObject({ delivery: 'failed' });
+});

@@ -637,3 +637,36 @@ test('missing-parent and cyclic metadata leave the newest independent prompt vis
     assert.ok(history.messages.some(message => message.content === 'edited second prompt'));
   });
 });
+
+test('native user identity follows an exact consumed API response through tool-result ancestry, never repeated text', { concurrency: false }, async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'claude-input-identity-'));
+  const nativeSessionId = 'identity-session-fixture';
+  const row = (uuid: string, parentUuid: string | null, type: string, content: unknown, extra = {}) => ({
+    type, uuid, parentUuid, sessionId: nativeSessionId, timestamp: new Date(1_700_000_000_000).toISOString(),
+    message: { role: type, content }, ...extra,
+  });
+  const rows = [
+    row('user-old', null, 'user', 'same words'),
+    row('answer-old', 'user-old', 'assistant', [{ type: 'text', text: 'old reply' }], { message: { role: 'assistant', id: 'api-old', content: [{ type: 'text', text: 'old reply' }] } }),
+    row('native-rewritten-user', 'answer-old', 'user', 'same words'),
+    row('tool-call', 'native-rewritten-user', 'assistant', [{ type: 'tool_use', id: 'tool-fixture', name: 'Read', input: {} }]),
+    row('tool-result', 'tool-call', 'user', [{ type: 'tool_result', tool_use_id: 'tool-fixture', content: 'fixture output' }]),
+    row('answer-current', 'tool-result', 'assistant', '', { message: { role: 'assistant', id: 'api-consumption-receipt', content: [{ type: 'text', text: 'current reply' }] } }),
+    row('child-answer', 'native-rewritten-user', 'assistant', '', { parent_tool_use_id: 'agent-tool', message: { role: 'assistant', id: 'api-child', content: [{ type: 'text', text: 'child reply' }] } }),
+    row('orphan-answer', 'missing-parent', 'assistant', '', { message: { role: 'assistant', id: 'api-orphan', content: [{ type: 'text', text: 'orphan reply' }] } }),
+  ];
+  const transcriptPath = path.join(directory, `${nativeSessionId}.jsonl`);
+  const original = rows.map(row => JSON.stringify(row)).join('\n');
+  await writeFile(transcriptPath, original);
+  try {
+    await withIsolatedDatabase(async () => {
+      sessionsDb.createSession(nativeSessionId, 'claude', directory, 'Synthetic identity fixture', undefined, undefined, transcriptPath);
+      const history = await new ClaudeSessionsProvider().fetchHistory(nativeSessionId);
+      const users = history.messages.filter(message => message.role === 'user' && message.kind === 'text');
+      assert.equal(users.length, 2);
+      assert.deepEqual(users.find(message => message.transcriptAnchorId === 'user-old')?.responseMessageIds, ['api-old']);
+      assert.deepEqual(users.find(message => message.transcriptAnchorId === 'native-rewritten-user')?.responseMessageIds, ['api-consumption-receipt']);
+      assert.equal(await readFile(transcriptPath, 'utf8'), original, 'Identity annotation never rewrites provider transcript data.');
+    });
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

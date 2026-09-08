@@ -4,7 +4,8 @@ import { useTranslation } from 'react-i18next';
 
 import { StandaloneShell } from '@/modules/standalone-shell';
 import { Button } from '@/shared/ui';
-import type { Project, ProjectSession } from '@/shared/types';
+import type { Project, ProjectSession, ShellExecutionBinding } from '@/shared/types';
+import { useWorkspacePanels } from '@/modules/workspace-panels';
 import { getSessionTitle } from '@/shared/utils';
 
 type TerminalEntry = { id: string; project: Project; session: ProjectSession | null; plain: boolean; label: string };
@@ -12,11 +13,16 @@ type TerminalEntry = { id: string; project: Project; session: ProjectSession | n
 /** Used by WorkspaceMain to keep each remote terminal bound to its original project and session. */
 export default function WorkspaceTerminals({ project, session, visible }: { project: Project | null; session: ProjectSession | null; visible: boolean }) {
   const { t } = useTranslation('common');
+  const panel = useWorkspacePanels();
+  const target = panel?.terminalReveal;
+  const [bindings, setBindings] = useState<Record<string, ShellExecutionBinding | null>>({});
+  const [revealError, setRevealError] = useState<string | null>(null);
   // Retain terminal instances across tab switches and chat navigation; only an explicit close removes one.
   const [terminals, setTerminals] = useState<TerminalEntry[]>([]);
   // Select a retained instance without changing its original launch props.
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const initiallyOpened = useRef(false);
+  const handledReveal = useRef<number | null>(null);
   const terminationActions = useRef(new Map<string, () => Promise<boolean>>());
   // Keep a disconnected terminal visible until its PTY can be explicitly stopped.
   const [closeError, setCloseError] = useState<string | null>(null);
@@ -42,6 +48,9 @@ export default function WorkspaceTerminals({ project, session, visible }: { proj
   };
   const openTerminal = useCallback((plain: boolean) => {
     if (!project || (!plain && !session)) return;
+    initiallyOpened.current = true;
+    handledReveal.current = target?.requestId ?? null;
+    setRevealError(null);
     setCloseError(null);
     const existing = !plain && terminals.find(item => !item.plain && item.session?.id === session?.id);
     if (existing) { setSelectedId(existing.id); return; }
@@ -51,13 +60,23 @@ export default function WorkspaceTerminals({ project, session, visible }: { proj
     const id = crypto.randomUUID();
     setTerminals(current => [...current, { id, project, session: boundSession, plain, label }]);
     setSelectedId(id);
-  }, [project, session, t, terminals]);
+  }, [project, session, t, terminals, target]);
   useEffect(() => {
-    if (visible && project && !initiallyOpened.current) {
+    if (visible && project && !initiallyOpened.current && !target) {
       initiallyOpened.current = true;
       openTerminal(true);
     }
-  }, [visible, project, terminals.length, openTerminal]);
+  }, [visible, project, terminals.length, openTerminal, target]);
+  useEffect(() => {
+    if (!visible || !target || handledReveal.current === target.requestId) return;
+    const matched = terminals.find(entry => {
+      const binding = bindings[entry.id];
+      return binding?.appSessionId === target.sessionId
+        && (target.executionId ? binding.executionId === target.executionId : target.providerSessionId ? binding.providerSessionId === target.providerSessionId : false);
+    });
+    if (matched) { handledReveal.current = target.requestId; setSelectedId(matched.id); setRevealError(null); }
+    else setRevealError(t('workspacePanel.terminalElsewhere', { defaultValue: 'This Claude session is running in a terminal that is not retained in this window. Continue in its original terminal. No new Claude process has been started.' }));
+  }, [visible, target, terminals, bindings, t]);
   const active = terminals.find(item => item.id === selectedId) ?? terminals[0];
   const canOpenClaude = Boolean(session && (!session.__provider || session.__provider === 'claude'));
 
@@ -68,17 +87,18 @@ export default function WorkspaceTerminals({ project, session, visible }: { proj
         <Button variant="outline" size="sm" className="h-7 max-w-full gap-1 px-2 text-[11px]" disabled={!canOpenClaude} onClick={() => openTerminal(false)}><Terminal className="h-3 w-3 shrink-0" /><span className="truncate">{t('workspacePanel.openClaudeTerminal', { defaultValue: 'Open this Claude session in terminal' })}</span></Button>
       </div>
       {terminals.length > 0 && <div className="flex items-center gap-1">
-        <select value={active?.id ?? ''} aria-label={t('workspacePanel.chooseTerminal', { defaultValue: 'Choose retained terminal' })} onChange={event => setSelectedId(event.target.value)} className="h-8 min-w-0 flex-1 rounded border border-input bg-background px-2 text-[11px]">
+        <select value={active?.id ?? ''} aria-label={t('workspacePanel.chooseTerminal', { defaultValue: 'Choose retained terminal' })} onChange={event => { handledReveal.current = target?.requestId ?? null; setRevealError(null); setSelectedId(event.target.value); }} className="h-8 min-w-0 flex-1 rounded border border-input bg-background px-2 text-[11px]">
           {terminals.map((entry, index) => <option key={entry.id} value={entry.id}>{index + 1}. {entry.label}</option>)}
         </select>
         <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={t('workspacePanel.closeTerminal', { defaultValue: 'Close this terminal and stop its process' })} disabled={Boolean(active && closingIds.has(active.id))} onClick={() => { if (active) void closeTerminal(active.id); }}><X className="h-3.5 w-3.5" /></Button>
       </div>}
       <p className="text-[10px] leading-relaxed text-muted-foreground">{t('workspacePanel.terminalBinding', { defaultValue: 'Each terminal stays on the machine, folder and session shown above when you switch conversations.' })}</p>
     </div>
+    {revealError && <p role="status" className="shrink-0 px-3 py-2 text-xs text-amber-600">{revealError}</p>}
     {closeError && <p role="alert" className="shrink-0 px-3 py-2 text-xs text-red-600">{closeError}</p>}
     {!project && terminals.length === 0 && <p className="p-4 text-sm text-muted-foreground">{t('workspacePanel.chooseProject', { defaultValue: 'Choose a project to open its remote terminal.' })}</p>}
     {terminals.map(entry => <div key={entry.id} className={`min-h-0 flex-1 ${entry.id === active?.id ? 'block' : 'hidden'}`} data-terminal-binding={entry.id}>
-      <StandaloneShell project={entry.project} session={entry.session} isPlainShell={entry.plain} showHeader={false} isActive={visible && entry.id === active?.id} bindingLabel={entry.label} terminalInstanceId={entry.id} onTerminateReady={terminate => { if (terminate) terminationActions.current.set(entry.id, terminate); else terminationActions.current.delete(entry.id); }} />
+      <StandaloneShell project={entry.project} session={entry.session} isPlainShell={entry.plain} showHeader={false} isActive={visible && entry.id === active?.id} bindingLabel={entry.label} terminalInstanceId={entry.id} onExecutionBinding={binding => setBindings(current => current[entry.id] === binding ? current : { ...current, [entry.id]: binding })} onTerminateReady={terminate => { if (terminate) terminationActions.current.set(entry.id, terminate); else terminationActions.current.delete(entry.id); }} />
     </div>)}
   </div>;
 }

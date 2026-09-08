@@ -15,6 +15,11 @@ export const claudeExecutionRecords = {
   isActive(sessionId: string, surface: 'chat' | 'shell'): boolean {
     return [...activeExecutions.values()].some((entry) => entry.appSessionId === sessionId && entry.surface === surface);
   },
+  /** Provider launch refusal exposes only the existing execution identity, never its settings or transcript. */
+  activeOwner(sessionId: string, surface: 'chat' | 'shell') {
+    const record = [...activeExecutions.values()].find(entry => entry.appSessionId === sessionId && entry.surface === surface);
+    return record ? { executionId: record.executionId, surface: record.surface, providerSessionId: record.providerSessionId } : null;
+  },
   isExecutionActive(executionId: string): boolean { return activeExecutions.has(executionId); },
   get: claudeExecutionsDb.get,
   latest: claudeExecutionsDb.latest,

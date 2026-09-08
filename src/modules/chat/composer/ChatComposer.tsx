@@ -262,7 +262,7 @@ export default function ChatComposer({
   const hasQueuedDraft = Boolean(queuedDraft);
   const legacyClaudeQueue = provider === 'claude' && Boolean(activity) && activity?.acceptsInput !== true;
   const canQueueDraft = isLoading && Boolean(input.trim() || attachedFiles.length > 0);
-  const submitHint = canQueueDraft
+  const submitHint = legacyClaudeQueue ? t('input.streamUnavailable', { defaultValue: 'Input unavailable; your draft will stay here' }) : canQueueDraft
     ? activity?.acceptsInput === true
       ? t('input.hintText.liveQueue', { defaultValue: 'Enter to send to this conversation' })
       : hasQueuedDraft
@@ -271,7 +271,7 @@ export default function ChatComposer({
     : sendByCtrlEnter
       ? t('input.hintText.ctrlEnter')
       : t('input.hintText.enter');
-  const submitAriaLabel = canQueueDraft
+  const submitAriaLabel = legacyClaudeQueue ? t('input.streamUnavailable', { defaultValue: 'Input unavailable; your draft will stay here' }) : canQueueDraft
     ? activity?.acceptsInput === true
       ? t('input.send')
       : hasQueuedDraft
@@ -325,6 +325,8 @@ export default function ChatComposer({
       {queuedDraft && (
         <QueuedMessageCard
           content={queuedDraft.content}
+          rewindPaused={queuedDraft.rewindPaused}
+          attachmentNames={(queuedDraft.uploadedAttachments || []).flatMap(value => value && typeof value === 'object' && 'path' in value && typeof value.path === 'string' ? [value.path] : [])}
           waitingForRemoteRun={legacyClaudeQueue}
           attachmentCount={
             queuedDraft.uploadedAttachments?.length ?? queuedDraft.attachments.length

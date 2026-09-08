@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { claudeExecutionRecords } from '@/modules/providers/services/claude-execution-records.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { createProviderRuntimeService } from '@/modules/providers/services/provider-runtime.service.js';
 import type { IProvider, IProviderRuntime } from '@/shared/interfaces.js';
@@ -135,4 +136,19 @@ test('routes permission decisions through provider-owned runtime capabilities', 
   assert.deepEqual(service.getPendingApprovalsForSession('session-1'), [
     { requestId: 'request-1', sessionId: 'session-1' },
   ]);
+});
+
+
+test('an occupied terminal rejects Chat with the existing execution identity and never launches or stops a process', async context => {
+  const terminal = { executionId: 'terminal-execution-fixture', providerSessionId: 'native-fixture', surface: 'shell' as const };
+  context.mock.method(claudeExecutionRecords, 'activeOwner', () => terminal);
+  context.mock.method(claudeExecutionRecords, 'finish', () => assert.fail('Existing terminal must remain untouched'));
+  const service = createService([createProvider('claude', createRuntime({ run: async () => assert.fail('A second Claude must not start') }))]);
+  const events: unknown[] = [];
+  await assert.rejects(service.run('claude', 'Synthetic unsent prompt', { sessionId: 'app-fixture', clientMessageId: 'send-fixture' }, { send: message => { events.push(message); } }),
+    (error: unknown) => error instanceof Error && 'code' in error && error.code === 'CLAUDE_TERMINAL_ACTIVE');
+  assert.equal(events.length, 1);
+  assert.deepEqual(Object.fromEntries(Object.entries(events[0] as Record<string, unknown>).filter(([key]) => ['kind', 'text', 'sessionId', 'code', 'executionId', 'surface', 'providerSessionId', 'clientMessageId'].includes(key))), {
+    kind: 'status', text: 'execution_conflict', sessionId: 'app-fixture', code: 'CLAUDE_TERMINAL_ACTIVE', clientMessageId: 'send-fixture', ...terminal,
+  });
 });

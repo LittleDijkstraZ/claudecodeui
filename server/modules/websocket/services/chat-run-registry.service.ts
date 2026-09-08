@@ -29,7 +29,7 @@ type ChatRunStatus = 'running' | 'completed';
 type ChatRun = {
   appSessionId: string;
   runId: string;
-  runtimeState?: { phase: 'foreground' | 'background'; acceptsInput: boolean; backgroundTasks: number; executionId?: string };
+  runtimeState?: { phase: 'foreground' | 'background'; acceptsInput: boolean; backgroundTasks: number; executionId?: string; foregroundTurnId?: string; foregroundStartedAt?: string };
   provider: LLMProvider;
   providerSessionId: string | null;
   status: ChatRunStatus;
@@ -87,9 +87,10 @@ function broadcastSessionActivity(run: ChatRun, status: 'running' | 'complete' |
 }
 
 function evictRunLater(appSessionId: string): void {
+  const completedRun = runs.get(appSessionId);
   const timer = setTimeout(() => {
     const run = runs.get(appSessionId);
-    if (run && run.status === 'completed') {
+    if (run && run === completedRun && run.status === 'completed') {
       runs.delete(appSessionId);
     }
   }, COMPLETED_RUN_RETENTION_MS);
@@ -109,6 +110,9 @@ function evictRunLater(appSessionId: string): void {
  * 4. Flip the run to `completed` when the terminal `complete` event passes by.
  */
 function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): NormalizedMessage | null {
+  // A forgotten or replaced run may still have asynchronous callbacks. Its old
+  // writer must not publish into the conversation's replacement context.
+  if (runs.get(run.appSessionId) !== run) return null;
   // Exactly-one-complete contract: when a run is aborted the chat handler
   // emits the terminal `complete` immediately, but the killed runtime may
   // still emit its own `complete` from its exit handler moments later.
@@ -128,17 +132,33 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
     }
   }
 
+  if (message.kind === 'status' && message.text === 'message_delivery' && message.clientMessageId) {
+    const prior = run.messageReceipts.get(message.clientMessageId);
+    if (prior) {
+      const keepDelivery = prior.delivery === 'delivered' || prior.delivery === 'failed' && message.delivery === 'queued';
+      message = { ...message,
+        delivery: keepDelivery ? prior.delivery : message.delivery,
+        error: keepDelivery ? prior.error : message.error,
+        transcriptAnchorId: message.transcriptAnchorId || prior.transcriptAnchorId,
+        responseMessageId: message.responseMessageId || prior.responseMessageId,
+        executionId: message.executionId || prior.executionId,
+      };
+    }
+  }
+
   run.lastSeq += 1;
 
   const outbound: NormalizedMessage = {
     ...message,
     sessionId: run.appSessionId,
+    runId: run.runId,
+    runStartedAt: run.startedAt,
     seq: run.lastSeq,
   };
 
   const runtimeStateChanged = message.kind === 'status' && message.text === 'claude_runtime_state'
     && (message.phase === 'foreground' || message.phase === 'background') && typeof message.acceptsInput === 'boolean';
-  if (runtimeStateChanged) run.runtimeState = { phase: message.phase!, acceptsInput: message.acceptsInput!, backgroundTasks: Math.max(0, Number(message.backgroundTasks) || 0), executionId: message.executionId };
+  if (runtimeStateChanged) run.runtimeState = { phase: message.phase!, acceptsInput: message.acceptsInput!, backgroundTasks: Math.max(0, Number(message.backgroundTasks) || 0), executionId: message.executionId, foregroundTurnId: typeof message.foregroundTurnId === 'string' ? message.foregroundTurnId : undefined, foregroundStartedAt: typeof message.foregroundStartedAt === 'string' ? message.foregroundStartedAt : undefined };
 
   if (message.kind === 'complete') {
     // The provider may report its own id here; the frontend only ever knows
@@ -284,6 +304,11 @@ export const chatRunRegistry = {
     return () => { sessionMutations.delete(appSessionId); };
   },
 
+  /** Scheduled dispatch uses this read-only guard to leave queued input untouched while a rewind owns the context. */
+  isSessionMutating(appSessionId: string): boolean {
+    return sessionMutations.has(appSessionId);
+  },
+
   /** Used by file rewind to exclude concurrent edits from any CloudCLI conversation in the project. */
   reserveProjectMutation(projectPath: string): (() => void) | null {
     if (projectMutations.has(projectPath) || Array.from(runs.values()).some(run =>
@@ -298,8 +323,8 @@ export const chatRunRegistry = {
   },
 
   /** Used by rewind to replace stale history in every window after the database mapping commits. */
-  notifyContextReset(appSessionId: string, contextRevision: string): void {
-    const payload = JSON.stringify({ kind: 'session_context_reset', sessionId: appSessionId, contextRevision, timestamp: new Date().toISOString() });
+  notifyContextReset(appSessionId: string, contextRevision: string, ancestry?: { backupSessionId: string | null; previousProviderSessionId: string; providerSessionId: string }): void {
+    const payload = JSON.stringify({ kind: 'session_context_reset', sessionId: appSessionId, contextRevision, ...ancestry, timestamp: new Date().toISOString() });
     for (const client of connectedClients) {
       if (client.readyState === WS_OPEN_STATE) {
         try { client.send(payload); } catch { /* A disconnected window refreshes authoritative history on reconnect. */ }

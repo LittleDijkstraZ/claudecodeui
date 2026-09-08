@@ -4,15 +4,27 @@ import { useProjectMainState, useProjectSettingsState } from '@/modules/project-
 import { useWorkspacePanelActions, useWorkspacePanels } from '@/modules/workspace-panels';
 import type { ProjectWorkspaceShellProps } from '@/shared/types';
 import { useModalVisibility } from '@/shared/hooks/useModalVisibility';
+import { usePlugins } from '@/modules/plugins';
 
 /** Used by the workspace shell to exchange selection and navigation with its owning hub frame. */
 export default function ProjectHubBridge({ navigate }: Pick<ProjectWorkspaceShellProps, 'navigate'>) {
   const { selectedSession, selectedProject, openSettings, clearSessionSelection, setActiveTab } = useProjectMainState();
-  const { showSettings } = useProjectSettingsState();
+  const { showSettings, closeSettings } = useProjectSettingsState();
+  const { plugins } = usePlugins();
   const modalVisible = useModalVisibility();
   const overlayOpen = showSettings || modalVisible;
   const panel = useWorkspacePanels();
   const panelActions = useWorkspacePanelActions();
+  useEffect(() => {
+    const openPlugin = (event: Event) => {
+      const name = (event as CustomEvent<{ name?: unknown }>).detail?.name;
+      if (typeof name !== 'string' || !plugins.some(plugin => plugin.name === name && plugin.enabled)) return;
+      closeSettings();
+      panelActions?.openPanel(`plugin:${name}`);
+    };
+    window.addEventListener('cloudcli:plugin-open', openPlugin);
+    return () => window.removeEventListener('cloudcli:plugin-open', openPlugin);
+  }, [plugins, closeSettings, panelActions]);
   const hasPanel = panel !== null;
   const panelOpen = panel?.open ?? false;
   const panelMaximized = panel?.maximized ?? false;

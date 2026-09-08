@@ -157,8 +157,14 @@ export type InstallMode = 'git' | 'npm';
 
 //----------------- SESSION PROCESSING STATE ------------
 
+/** Identity of the run owning a websocket sequence cursor; session IDs remain stable across many runs. */
+export type ChatRunCursor = { runId: string; startedAt?: number };
+
 /** Authoritative state of a live Claude execution; background work keeps the run alive without blocking its input stream. */
 export type SessionRuntimeState = {
+  /** One foreground reply within a longer native execution. Absent while only background work remains. */
+  foregroundTurnId?: string;
+  foregroundStartedAt?: string;
   phase?: 'foreground' | 'background';
   acceptsInput?: boolean;
   backgroundTasks?: number;
@@ -300,6 +306,14 @@ export type ChatMessageDelivery = 'queued' | 'delivered' | 'failed';
 export type ChatMessage = {
   type: string;
   clientMessageId?: string;
+  /** Websocket run owning this receipt; used to close unconfirmed copies when a later execution starts. */
+  runId?: string;
+  /** Exact API response linked by native consumption receipt; history uses the same response ID and parent ancestry. */
+  responseMessageId?: string;
+  responseMessageIds?: string[];
+  /** Remote execution identity from the admission/consumption receipt; never inferred from prompt text. */
+  executionId?: string;
+  providerSessionId?: string;
   delivery?: ChatMessageDelivery;
   deliveryError?: string;
   content?: string;
@@ -420,8 +434,18 @@ type QuestionOption = {
 
 /** A provider-agnostic transcript event as normalized by the backend adapters, with all kind-specific fields kept flat; it is the shape the session store holds and that chat converts into ChatMessage for rendering, so treat it as the wire contract rather than a view model. */
 export type NormalizedMessage = {
+  /** Recorded provider tool-result metadata, including Write creation evidence and exact edited content. */
+  toolUseResult?: unknown;
   id: string;
   clientMessageId?: string;
+  /** Websocket run owning this receipt; used to close unconfirmed copies when a later execution starts. */
+  runId?: string;
+  /** Exact API response linked by native consumption receipt; history uses the same response ID and parent ancestry. */
+  responseMessageId?: string;
+  responseMessageIds?: string[];
+  /** Remote execution identity from the admission/consumption receipt; never inferred from prompt text. */
+  executionId?: string;
+  providerSessionId?: string;
   delivery?: ChatMessageDelivery;
   deliveryError?: string;
   /**
@@ -482,10 +506,14 @@ export type NormalizedMessage = {
   isCompactSummary?: boolean;
   images?: Array<{ path?: string; data?: string; name?: string }>;
   files?: Array<{ path?: string; name?: string; mimeType?: string; size?: number }>;
+  workflow?: boolean;
+  taskId?: string;
+  toolUseId?: string;
+  usage?: unknown;
   toolName?: string;
   toolInput?: unknown;
   toolId?: string;
-  toolResult?: { content: string; isError: boolean; toolUseResult?: unknown } | null;
+  toolResult?: { content: string; isError: boolean; toolUseResult?: unknown; timestamp?: ToolResult['timestamp'] } | null;
   isError?: boolean;
   text?: string;
   tokens?: number;
@@ -597,6 +625,8 @@ export type CommandModalPayload = {
 
 /** A composer message queued while its session is still busy, holding the text, the in-memory and already-uploaded attachments and the send options snapshotted at queue time so it can be auto-sent unchanged once the session goes idle. */
 export type QueuedDraft = {
+  /** Retained with the old context after rewind; explicit review is required before another send. */
+  rewindPaused?: boolean;
   content: string;
   /** Browser files retained while this composer stays mounted, for editing. */
   attachments: File[];
@@ -1015,6 +1045,17 @@ type McpImportMode = 'form' | 'json';
 
 // ---------------------------
 
+//----------------- REMOTE MCP AUTHORIZATION ------------
+
+/** A short-lived remote-native MCP sign-in. Connected means the remote CLI passed its MCP health check. */
+export type McpAuthAttempt = {
+  id: string; name: string; scope: 'user' | 'local' | 'project'; workspacePath?: string; expiresAt: number;
+  status: 'starting' | 'awaiting-browser' | 'verifying' | 'connected' | 'failed' | 'expired' | 'cancelled';
+  authorizationUrl: string | null; error: string | null;
+};
+
+// ---------------------------
+
 //----------------- PLUGINS ------------
 
 /** An installed CloudCLI plugin's manifest and runtime status (entry point, slot, permissions, enabled and server-running flags); always import this type explicitly from `@/shared/types`, because `Plugin` is also a DOM global and an unimported reference silently resolves to that instead. */
@@ -1034,7 +1075,12 @@ export type Plugin = {
   serverRunning: boolean;
   dirName: string;
   repoUrl: string | null;
+  /** A backend failure does not remove an installed plugin's settings entry. */
+  serverError?: string | null;
 };
+
+/** Result of a remote plugin mutation; an installed plugin can still need a backend retry. */
+export type PluginActionResult = { success: boolean; error?: string | null; pluginName?: string; warning?: string | null };
 
 // ---------------------------
 
@@ -1740,6 +1786,8 @@ export type HubRemoteState = {
 export type RewindMode = 'conversation' | 'files' | 'both';
 /** Remote-verified actions and native message boundaries for a Claude session. */
 export type ClaudeSessionCapabilities = {
+  /** Current remote native context identity; the app session ID may survive a rewind. */
+  providerSessionId?: string;
   sideChat: boolean;
   sideChatWhileRunning?: boolean;
   conversationRewind: boolean;
@@ -1790,6 +1838,21 @@ export type RewindResult = {
   contextChanged: boolean;
   contextRevision: string;
   backupSessionId: string | null;
+  /** Present on updated remotes so pending input stays bound to its original native context. */
+  previousProviderSessionId?: string;
+  providerSessionId?: string;
+};
+
+/** Synchronous local rewind lifecycle used to freeze and quarantine context-bound pending input before history refresh. */
+export type ClaudeSessionMutationEvent = {
+  sessionId: string;
+  requestId: string;
+  messageId: string;
+  mode: RewindMode;
+  phase: 'started' | 'committed' | 'failed';
+  result?: RewindResult;
+  /** Failure may mean transport uncertainty; it is never proof that a pending input was not consumed. */
+  error?: string;
 };
 
 
@@ -1840,6 +1903,8 @@ export type WorkspacePanelTab = Exclude<AppTab, 'chat'> | 'agents' | 'sideChat' 
 
 /** The normalized agents in the viewed conversation and callbacks back to that conversation. */
 export type WorkspaceAgentsSnapshot = {
+  records?: NormalizedMessage[];
+  activity?: SessionActivity | null;
   sessionId: string | null;
   project: Project | null;
   messages: ChatMessage[];
@@ -1891,3 +1956,10 @@ export type ClaudeShellPermissionSelection = {
   toolsSettings: Pick<ClaudeSettings, 'allowedTools' | 'disallowedTools' | 'skipPermissions'>;
 };
 // ---------------------------
+
+/** Explicitly reported names and IDs; CloudCLI’s preserved name can differ from Claude’s titles. */
+export type ClaudeSessionIdentity = {
+  sessionId: string; providerSessionId: string | null; projectPath: string | null;
+  cloudcliName: string | null; automaticTitle: string | null; renamedTitle: string | null;
+  titleCoverage: 'complete' | 'recent' | 'unavailable';
+};

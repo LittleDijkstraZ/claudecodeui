@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useWorkspacePanelActions } from '@/modules/workspace-panels';
 import { Shimmer } from '@/shared/ui';
 import type { SessionActivity } from '@/shared/types';
 
@@ -33,9 +34,12 @@ const EXIT_ANIMATION_MS = 220;
  */
 export default function ActivityIndicator({ activity, onAbort, isInputFocused = false }: ActivityIndicatorProps) {
   const { t } = useTranslation('chat');
+  const panelActions = useWorkspacePanelActions();
   const [renderedActivity, setRenderedActivity] = useState<SessionActivity | null>(activity);
   const [isExiting, setIsExiting] = useState(false);
-  const startedAt = renderedActivity?.startedAt ?? null;
+  const isBackground = renderedActivity?.phase === 'background';
+  const startedAt = isBackground ? null : renderedActivity?.foregroundStartedAt
+    ? Date.parse(renderedActivity.foregroundStartedAt) : renderedActivity?.startedAt ?? null;
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   useEffect(() => {
@@ -67,7 +71,6 @@ export default function ActivityIndicator({ activity, onAbort, isInputFocused = 
   if (!renderedActivity) return null;
 
   const actionWords = ACTION_KEYS.map((key, i) => t(key, { defaultValue: DEFAULT_ACTION_WORDS[i] }));
-  const isBackground = renderedActivity.phase === 'background';
   const label = (isBackground
     ? t('claudeStatus.background', { count: renderedActivity.backgroundTasks ?? 0, defaultValue: '{{count}} background tasks' })
     : renderedActivity.statusText || actionWords[Math.floor(elapsedSeconds / 4) % actionWords.length])
@@ -95,10 +98,11 @@ export default function ActivityIndicator({ activity, onAbort, isInputFocused = 
         <div className={`${tabSurfaceClassName} min-w-0 gap-2`} title={isBackground && renderedActivity.acceptsInput ? t('claudeStatus.acceptingInput', { defaultValue: 'You can send another message' }) : undefined}>
           <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-primary" aria-hidden />
           {isBackground ? <span className="truncate font-medium">{label}</span> : <Shimmer className="font-medium">{`${label}…`}</Shimmer>}
-          <span className="shrink-0 tabular-nums text-muted-foreground/60">{elapsedLabel}</span>
+          {!isBackground && <span className="shrink-0 tabular-nums text-muted-foreground/60">{elapsedLabel}</span>}
+          {isBackground && panelActions && <button type="button" className="pointer-events-auto underline underline-offset-2" onClick={() => panelActions.openPanel('agents')}>Agents &amp; Workflows</button>}
         </div>
 
-        {renderedActivity.canInterrupt && onAbort && (
+        {!isBackground && renderedActivity.canInterrupt && onAbort && (
           <button
             type="button"
             onClick={onAbort}

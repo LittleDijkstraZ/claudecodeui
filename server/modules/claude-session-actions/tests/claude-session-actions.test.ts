@@ -7,8 +7,9 @@ import test from 'node:test';
 import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk';
 
 import { createClaudeSessionActionsService } from '@/modules/claude-session-actions/claude-session-actions.service.js';
-import { claudeSessionActionsDb, closeConnection, getConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
+import { claudeSessionActionsDb, closeConnection, getConnection, initializeDatabase, scheduledMessagesDb, sessionDraftsDb, sessionsDb, userDb } from '@/modules/database/index.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
+import { dispatchDueScheduledMessages, dispatchQueuedMessages } from '@/modules/scheduled-messages/index.js';
 import { AppError } from '@/shared/index.js';
 
 const userId = '11111111-1111-4111-8111-111111111111';
@@ -75,6 +76,8 @@ test('conversation rewind changes the real provider mapping, keeps selected mess
   const result = await service.rewind(1, 'app-original', { messageId: userId, mode: 'conversation', previewToken: preview.previewToken });
   assert.equal(result.sessionId, 'app-original');
   assert.equal(result.contextChanged, true);
+  assert.equal(result.previousProviderSessionId, 'native-original');
+  assert.equal(result.providerSessionId, 'native-fork-1');
   assert.equal(sessionsDb.getSessionById('app-original')?.provider_session_id, 'native-fork-1');
   assert.equal(sessionsDb.getSessionById('app-original')?.jsonl_path?.endsWith('native-fork-1.jsonl'), true);
   assert.ok(result.backupSessionId);
@@ -218,6 +221,9 @@ test('context reset clears completed replay and broadcasts the response revision
     const reset = frames.find(frame => frame.kind === 'session_context_reset');
     assert.equal(reset?.contextRevision, result.contextRevision);
     assert.equal(reset?.sessionId, 'app-original');
+    assert.equal(reset?.previousProviderSessionId, 'native-original');
+    assert.equal(reset?.providerSessionId, result.providerSessionId);
+    assert.equal(reset?.backupSessionId, result.backupSessionId);
   } finally { connectedClients.delete(connection as never); }
 }));
 
@@ -262,4 +268,83 @@ test('explicit saved-message side chat leaves the running parent active and unch
   assert.deepEqual(events, [`fork:native-original:${userId}`]);
   await assert.rejects(service.fork('app-original', {}), errorCode('CLAUDE_SESSION_BUSY'));
   await assert.rejects(service.preview(1, 'app-original', { messageId: userId, mode: 'conversation' }), errorCode('CLAUDE_SESSION_BUSY'));
+}));
+
+test('rewind targets exclude mixed tool-result carriers and injected task notices', async () => fixture(async ({ make }) => {
+  const mixed = { ...history[0], uuid: 'mixed-result', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'write', content: 'Created' }, { type: 'text', text: 'Tool finished' }] } };
+  const notice = { ...history[0], uuid: 'task-notice', message: { role: 'user', content: [{ type: 'text', text: '<task-notification task-id="background">Finished</task-notification>' }] } };
+  const service = make({ messages: async () => [...history, mixed, notice] as SessionMessage[] });
+  assert.deepEqual((await service.capabilities('app-original')).userMessageIds, [userId]);
+  for (const messageId of ['mixed-result', 'task-notice']) await assert.rejects(service.preview(1, 'app-original', { messageId, mode: 'conversation' }), errorCode('CLAUDE_MESSAGE_NOT_FOUND'));
+}));
+
+test('context replacement retains drafts and paused queued/scheduled input on the original branch, never the new context', async () => fixture(async ({ make, project }) => {
+  const account = Number(userDb.createUser('rewind-fixture', 'fixture-hash').id);
+  const queued = { content: 'Original-context question', attachments: [{ path: '/fixture/upload.txt' }], providerSessionId: 'native-original' };
+  sessionDraftsDb.saveDraft(account, 'app-original', { text: 'Unsent original draft', queuedMessage: queued });
+  sessionsDb.createAppSession('other-app', 'claude', project);
+  sessionsDb.assignProviderSessionId('other-app', 'other-native');
+  sessionDraftsDb.saveDraft(account, 'other-app', { text: '', queuedMessage: { content: 'Unrelated context', providerSessionId: 'other-native' } });
+  scheduledMessagesDb.create({ userId: account, sessionId: 'app-original', content: 'Scheduled original question', options: {}, scheduledFor: new Date('2030-01-01') });
+  const service = make();
+  const preview = await service.preview(account, 'app-original', { messageId: userId, mode: 'conversation' });
+  const result = await service.rewind(account, 'app-original', { messageId: userId, mode: 'conversation', previewToken: preview.previewToken });
+  const drafts = sessionDraftsDb.getDrafts(account);
+  assert.equal(drafts.some(draft => draft.scope === 'app-original'), false);
+  assert.deepEqual(drafts.find(draft => draft.scope === result.backupSessionId)?.queuedMessage, { ...queued, rewindPaused: true });
+  assert.equal(drafts.find(draft => draft.scope === result.backupSessionId)?.text, 'Unsent original draft');
+  assert.deepEqual(sessionDraftsDb.listQueuedMessages().map(draft => draft.sessionId), ['other-app']);
+  getConnection().prepare('UPDATE sessions SET isArchived = 0 WHERE session_id = ?').run(result.backupSessionId);
+  assert.deepEqual(sessionDraftsDb.listQueuedMessages().map(draft => draft.sessionId), ['other-app']);
+  assert.equal(scheduledMessagesDb.listForSession(account, 'app-original').length, 0);
+  const scheduled = scheduledMessagesDb.listForSession(account, result.backupSessionId!);
+  assert.equal(scheduled[0].content, 'Scheduled original question');
+  assert.equal(scheduled[0].status, 'cancelled');
+  assert.match(scheduled[0].failure_reason ?? '', /original branch/);
+}));
+
+test('automatic dispatch cannot claim old queued or scheduled input while rewind prepares a branch', async () => fixture(async ({ make }) => {
+  const account = Number(userDb.createUser('paused-fixture', 'fixture-hash').id);
+  sessionDraftsDb.saveDraft(account, 'app-original', { text: '', queuedMessage: { content: 'Pending original question', providerSessionId: 'native-original' } });
+  scheduledMessagesDb.create({ userId: account, sessionId: 'app-original', content: 'Due original question', options: {}, scheduledFor: new Date(0) });
+  let started!: () => void, finish!: () => void;
+  const startedGate = new Promise<void>(resolve => { started = resolve; });
+  const finishGate = new Promise<void>(resolve => { finish = resolve; });
+  const service = make({ fork: async () => { started(); await finishGate; return { sessionId: 'native-restored' }; } });
+  const preview = await service.preview(account, 'app-original', { messageId: userId, mode: 'conversation' });
+  const operation = service.rewind(account, 'app-original', { messageId: userId, mode: 'conversation', previewToken: preview.previewToken });
+  await startedGate;
+  let runs = 0, aborts = 0;
+  const runtime = { hasRuntime: () => true, run: async () => { runs++; }, abort: async () => { aborts++; return true; } } as never;
+  assert.equal(chatRunRegistry.isSessionMutating('app-original'), true);
+  assert.equal(await dispatchQueuedMessages(runtime), 0);
+  assert.equal(await dispatchDueScheduledMessages(runtime), 0);
+  finish(); await operation;
+  assert.equal(await dispatchQueuedMessages(runtime), 0);
+  assert.equal(await dispatchDueScheduledMessages(runtime), 0);
+  assert.equal(runs, 0); assert.equal(aborts, 0);
+}));
+
+test('a delayed draft save cannot re-arm an old or unbound Claude queue after rewind', async () => fixture(async ({ make, project }) => {
+  const account = Number(userDb.createUser('late-draft-fixture', 'fixture-hash').id);
+  const original = { content: 'Keep the original question', providerSessionId: 'native-original', attachments: [{ path: '/fixture/attachment.txt' }] };
+  sessionDraftsDb.saveDraft(account, 'app-original', { text: 'Original draft', queuedMessage: original });
+  const service = make();
+  const preview = await service.preview(account, 'app-original', { messageId: userId, mode: 'conversation' });
+  const result = await service.rewind(account, 'app-original', { messageId: userId, mode: 'conversation', previewToken: preview.previewToken });
+  for (const queuedMessage of [original, { content: 'Legacy client has no native identity', attachments: original.attachments }]) {
+    // This is the same repository path used by a late /api/user/drafts PUT.
+    sessionDraftsDb.saveDraft(account, 'app-original', { text: 'Late unsent draft', queuedMessage });
+    assert.deepEqual(sessionDraftsDb.getDrafts(account).find(draft => draft.scope === 'app-original')?.queuedMessage,
+      { ...queuedMessage, rewindPaused: true });
+    assert.equal(sessionDraftsDb.listQueuedMessages().length, 0);
+  }
+  assert.deepEqual(sessionDraftsDb.getDrafts(account).find(draft => draft.scope === result.backupSessionId)?.queuedMessage,
+    { ...original, rewindPaused: true });
+  const bound = { content: 'Explicit current-context input', providerSessionId: result.providerSessionId };
+  sessionDraftsDb.saveDraft(account, 'app-original', { text: '', queuedMessage: bound });
+  assert.deepEqual(sessionDraftsDb.listQueuedMessages().map(draft => draft.queuedMessage), [bound]);
+  sessionsDb.createAppSession('other-provider', 'codex', project);
+  sessionDraftsDb.saveDraft(account, 'other-provider', { text: '', queuedMessage: { content: 'Other provider retains its existing behavior' } });
+  assert.equal(sessionDraftsDb.listQueuedMessages().length, 2);
 }));

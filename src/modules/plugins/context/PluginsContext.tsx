@@ -1,8 +1,8 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
 import { api } from '@/shared/api';
-import type { Plugin } from '@/shared/types';
+import type { Plugin, PluginActionResult } from '@/shared/types';
 
 
 type PluginsContextValue = {
@@ -10,10 +10,10 @@ type PluginsContextValue = {
   loading: boolean;
   pluginsError: string | null;
   refreshPlugins: () => Promise<void>;
-  installPlugin: (url: string) => Promise<{ success: boolean; error?: string }>;
-  uninstallPlugin: (name: string) => Promise<{ success: boolean; error?: string }>;
-  updatePlugin: (name: string) => Promise<{ success: boolean; error?: string }>;
-  togglePlugin: (name: string, enabled: boolean) => Promise<{ success: boolean; error: string | null }>;
+  installPlugin: (url: string) => Promise<PluginActionResult>;
+  uninstallPlugin: (name: string) => Promise<PluginActionResult>;
+  updatePlugin: (name: string) => Promise<PluginActionResult>;
+  togglePlugin: (name: string, enabled: boolean) => Promise<PluginActionResult>;
 };
 
 const PluginsContext = createContext<PluginsContextValue | null>(null);
@@ -28,15 +28,23 @@ export function usePlugins() {
 
 /** Mounted by the app root so the plugins and project-workspace modules can read and mutate installed plugins through usePlugins. */
 export function PluginsProvider({ children }: { children: ReactNode }) {
+  // Keep the last successful remote inventory visible while refreshing or disconnected.
   const [plugins, setPlugins] = useState<Plugin[]>([]);
+  // Only the initial inventory blocks rendering; later refreshes retain existing entries.
   const [loading, setLoading] = useState(true);
+  // Surface inventory failures independently of installation outcomes.
   const [pluginsError, setPluginsError] = useState<string | null>(null);
+  const requestVersion = useRef(0);
+  const providerGeneration = useRef(0);
+  const changes = useRef<BroadcastChannel | null>(null);
 
   const refreshPlugins = useCallback(async () => {
+    const version = ++requestVersion.current;
     try {
       const res = await api.plugins.list();
       if (res.ok) {
         const data = await res.json();
+        if (version !== requestVersion.current) return;
         setPlugins(data.plugins || []);
         setPluginsError(null);
       } else {
@@ -47,28 +55,53 @@ export function PluginsProvider({ children }: { children: ReactNode }) {
         } catch {
           errorMessage = res.statusText || errorMessage;
         }
-        setPluginsError(errorMessage);
+        if (version === requestVersion.current) setPluginsError(errorMessage);
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to fetch plugins';
-      setPluginsError(message);
-      console.error('[Plugins] Failed to fetch plugins:', err);
+      if (version === requestVersion.current) setPluginsError(message);
     } finally {
-      setLoading(false);
+      if (version === requestVersion.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
+    ++providerGeneration.current;
     void refreshPlugins();
+    const refresh = () => { void refreshPlugins(); };
+    window.addEventListener('focus', refresh);
+    // A channel only invalidates this machine's inventory; no plugin data or credentials travel across it.
+    const channel = typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel(`cloudcli-plugins:${window.__REMOTE_BASE__ || location.origin}`);
+    changes.current = channel;
+    if (channel) channel.onmessage = refresh;
+    return () => {
+      ++providerGeneration.current;
+      ++requestVersion.current;
+      window.removeEventListener('focus', refresh);
+      channel?.close();
+      changes.current = null;
+    };
   }, [refreshPlugins]);
 
   const installPlugin = useCallback(async (url: string) => {
+    const generation = providerGeneration.current;
+    ++requestVersion.current;
     try {
       const res = await api.plugins.install(url);
       const data = await res.json();
       if (res.ok) {
+        if (generation !== providerGeneration.current) return { success: true, pluginName: data.plugin?.name };
+        // Only a server-confirmed inventory entry supplies enabled/entry state;
+        // older servers return a raw manifest, which must not be guessed here.
+        if (data.inventoryConfirmed === true && typeof data.plugin?.name === 'string'
+          && typeof data.plugin?.enabled === 'boolean' && typeof data.plugin?.entry === 'string') {
+          const installed = data.plugin as Plugin;
+          ++requestVersion.current;
+          setPlugins(current => [...current.filter(plugin => plugin.name !== installed.name), installed]);
+        }
         await refreshPlugins();
-        return { success: true };
+        changes.current?.postMessage('changed');
+        return { success: true, pluginName: data.plugin?.name, warning: data.warning || data.plugin?.serverError || null };
       }
       return { success: false, error: data.details || data.error || 'Install failed' };
     } catch (err) {
@@ -77,11 +110,13 @@ export function PluginsProvider({ children }: { children: ReactNode }) {
   }, [refreshPlugins]);
 
   const uninstallPlugin = useCallback(async (name: string) => {
+    ++requestVersion.current;
     try {
       const res = await api.plugins.uninstall(name);
       const data = await res.json();
       if (res.ok) {
         await refreshPlugins();
+        changes.current?.postMessage('changed');
         return { success: true };
       }
       return { success: false, error: data.details || data.error || 'Uninstall failed' };
@@ -91,12 +126,14 @@ export function PluginsProvider({ children }: { children: ReactNode }) {
   }, [refreshPlugins]);
 
   const updatePlugin = useCallback(async (name: string) => {
+    ++requestVersion.current;
     try {
       const res = await api.plugins.update(name);
       const data = await res.json();
       if (res.ok) {
         await refreshPlugins();
-        return { success: true };
+        changes.current?.postMessage('changed');
+        return { success: true, pluginName: name, warning: data.warning || null };
       }
       return { success: false, error: data.details || data.error || 'Update failed' };
     } catch (err) {
@@ -104,7 +141,8 @@ export function PluginsProvider({ children }: { children: ReactNode }) {
     }
   }, [refreshPlugins]);
 
-  const togglePlugin = useCallback(async (name: string, enabled: boolean): Promise<{ success: boolean; error: string | null }> => {
+  const togglePlugin = useCallback(async (name: string, enabled: boolean): Promise<PluginActionResult> => {
+    ++requestVersion.current;
     try {
       const res = await api.plugins.toggle(name, enabled);
       if (!res.ok) {
@@ -118,8 +156,10 @@ export function PluginsProvider({ children }: { children: ReactNode }) {
         }
         return { success: false, error: errorMessage };
       }
+      const data = await res.json();
       await refreshPlugins();
-      return { success: true, error: null };
+      changes.current?.postMessage('changed');
+      return { success: true, error: null, warning: data.warning || null };
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : 'Toggle failed' };
     }

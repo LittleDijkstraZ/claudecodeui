@@ -184,3 +184,62 @@ test('a repeated UUID is idempotent only when its attachment payload is also unc
   assert.throws(() => queue.begin('same-prompt', 'Compare attachments', false, { ...attachments, files: [{ path: '/remote/notes-b.txt' }] }), /different message|attachment/i);
   assert.equal(queue.messageCount(), 1);
 });
+
+
+test('consumption IDs do not fabricate native anchors; a later explicit user echo binds its saved identity', () => {
+  const { queue, deliveries } = fixture();
+  queue.begin('client-id', 'Prompt')!.commit([message('Prompt')]);
+  queue.observe({ type: 'assistant', uuid: 'assistant-id', user_message_uuid: 'client-id' });
+  assert.equal(deliveries.at(-1)?.delivery, 'delivered');
+  assert.equal(deliveries.at(-1)?.transcriptAnchorId, undefined);
+  queue.observe({ type: 'user', uuid: 'native-row', user_message_uuid: 'client-id' });
+  assert.equal(deliveries.at(-1)?.transcriptAnchorId, 'native-row');
+  assert.equal(queue.ownsUserEcho({ type: 'user', uuid: 'native-row' }), true);
+  queue.observe({ type: 'result', uuid: 'result', user_message_uuid: 'client-id' });
+  assert.equal(deliveries.at(-1)?.transcriptAnchorId, 'native-row');
+  queue.release();
+});
+
+test('human input retains its stable UUID and explicit provenance on the native stream', async () => {
+  const { queue } = fixture();
+  queue.begin('client-id', 'Prompt')!.commit([message('Prompt')]);
+  const input = (await queue.stream.next()).value!;
+  assert.equal(input.uuid, 'client-id');
+  assert.deepEqual(input.origin, { kind: 'human' });
+  queue.release();
+});
+
+test('first main response identity binds to its explicit consumed client UUID without a guessed user anchor', () => {
+  const { queue, deliveries } = fixture();
+  queue.begin('send-a', 'same text')!.commit([message('same text')]);
+  queue.begin('send-b', 'same text')!.commit([message('same text')]);
+  queue.observe({ type: 'stream_event', user_message_uuid: 'send-b', event: { type: 'message_start', message: { id: 'api-response-b' } } });
+  queue.observe({ type: 'assistant', user_message_uuid: 'send-b', message: { id: 'api-response-later' } });
+  assert.equal(deliveries.find(entry => entry.id === 'send-a')?.delivery, 'queued');
+  const receipt = deliveries.at(-1)!;
+  assert.equal(receipt.id, 'send-b');
+  assert.equal(receipt.responseMessageId, 'api-response-b');
+  assert.equal(receipt.transcriptAnchorId, undefined);
+  queue.release();
+});
+
+
+test('one response consuming two inputs confirms both without conflating their saved user identities', () => {
+  const { queue, deliveries } = fixture();
+  for (const id of ['send-a', 'send-b']) queue.begin(id, 'same text')!.commit([message('same text')]);
+  for (const event of [
+    { type: 'stream_event', user_message_uuids: ['send-a', 'send-b'], event: { type: 'message_start', message: { id: 'shared-response' } } },
+    { type: 'assistant', user_message_uuids: ['send-a', 'send-b'], message: { id: 'shared-response' } },
+    { type: 'user', uuid: 'ambiguous-native-row', user_message_uuids: ['send-a', 'send-b'] },
+  ]) queue.observe(event);
+  const delivered = deliveries.filter(entry => entry.delivery === 'delivered');
+  assert.deepEqual(delivered.map(entry => entry.id), ['send-a', 'send-b']);
+  assert.ok(delivered.every(entry => !entry.responseMessageId && !entry.transcriptAnchorId));
+  queue.observe({ type: 'user', uuid: 'native-a', user_message_uuid: 'send-a' });
+  assert.equal(deliveries.at(-1)?.transcriptAnchorId, 'native-a');
+  queue.observe({ type: 'user', uuid: 'send-b', user_message_uuids: ['send-a', 'send-b'] });
+  assert.equal(deliveries.at(-1)?.id, 'send-b');
+  assert.equal(deliveries.at(-1)?.transcriptAnchorId, 'send-b');
+  assert.equal(deliveries.filter(entry => entry.id === 'send-a').at(-1)?.transcriptAnchorId, 'native-a');
+  queue.release();
+});

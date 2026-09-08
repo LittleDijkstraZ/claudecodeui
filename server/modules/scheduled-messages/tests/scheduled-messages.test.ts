@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { closeConnection, initializeDatabase, scheduledMessagesDb, sessionDraftsDb, sessionsDb, userDb } from '@/modules/database/index.js';
+import { claudeSessionActionsDb, closeConnection, initializeDatabase, scheduledMessagesDb, sessionDraftsDb, sessionsDb, userDb } from '@/modules/database/index.js';
 import { dispatchDueScheduledMessages, dispatchQueuedMessages } from '@/modules/scheduled-messages/services/scheduled-message-dispatcher.service.js';
 import { scheduledMessagesService } from '@/modules/scheduled-messages/services/scheduled-messages.service.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
@@ -17,6 +17,8 @@ async function withIsolatedDatabase(runTest: (userId: number) => void | Promise<
 
   closeConnection();
   process.env.DATABASE_PATH = path.join(tempDirectory, 'auth.db');
+  // An explicit empty fixture file prevents legacy-install DB migration.
+  await writeFile(process.env.DATABASE_PATH, '');
   await initializeDatabase();
 
   try {
@@ -75,10 +77,12 @@ test('a message due in the past is sent on the next pass, not skipped', async ()
 
 test('a queued message is sent by the server without a browser connection', async () => {
   await withIsolatedDatabase(async (userId) => {
+    sessionsDb.assignProviderSessionId(SESSION_ID, 'queued-native-fixture');
     sessionDraftsDb.saveDraft(userId, SESSION_ID, {
       text: '',
       queuedMessage: {
         content: 'continue on the VPS',
+        providerSessionId: 'queued-native-fixture',
         options: { model: 'claude-opus-5' },
         attachments: [{ path: '/tmp/upload.png' }],
       },
@@ -96,9 +100,10 @@ test('a queued message is sent by the server without a browser connection', asyn
 
 test('a queued message stays pending while its session is busy', async () => {
   await withIsolatedDatabase(async (userId) => {
+    sessionsDb.assignProviderSessionId(SESSION_ID, 'queued-native-fixture');
     sessionDraftsDb.saveDraft(userId, SESSION_ID, {
       text: '',
-      queuedMessage: { content: 'send after this run' },
+      queuedMessage: { content: 'send after this run', providerSessionId: 'queued-native-fixture' },
     });
     chatRunRegistry.startRun({
       appSessionId: SESSION_ID,
@@ -113,7 +118,34 @@ test('a queued message stays pending while its session is busy', async () => {
     assert.equal(runs.length, 0);
     assert.deepEqual(sessionDraftsDb.getDrafts(userId)[0]?.queuedMessage, {
       content: 'send after this run',
+      providerSessionId: 'queued-native-fixture',
     });
+  });
+});
+
+test('a scheduled candidate claimed before rewind cannot later start in the replacement context', async () => {
+  await withIsolatedDatabase(async userId => {
+    const second = 'second-scheduled';
+    sessionsDb.createAppSession(second, 'claude', '/fixture/second', 'Second');
+    sessionsDb.assignProviderSessionId(second, 'second-original-native');
+    scheduledMessagesDb.create({ userId, sessionId: SESSION_ID, content: 'First scheduled run', options: {}, scheduledFor: new Date(0) });
+    const pending = scheduledMessagesDb.create({ userId, sessionId: second, content: 'Old-context scheduled question', options: {}, scheduledFor: new Date(1) });
+    let started!: () => void, finish!: () => void;
+    const startedGate = new Promise<void>(resolve => { started = resolve; });
+    const finishGate = new Promise<void>(resolve => { finish = resolve; });
+    const commands: string[] = [], aborts: string[] = [];
+    const runtime = { hasRuntime: () => true, run: async (_provider: string, command: string) => {
+      commands.push(command); started(); await finishGate;
+    }, abort: async (_provider: string, session: string) => { aborts.push(session); return true; } } as never;
+    const dispatch = dispatchDueScheduledMessages(runtime);
+    await startedGate;
+    const backup = claudeSessionActionsDb.replaceContext(second, 'second-original-native', 'second-restored-native', '/fixture/second-restored.jsonl', 'target');
+    finish(); await dispatch;
+    assert.deepEqual(commands, ['First scheduled run']);
+    assert.deepEqual(aborts, []);
+    const retained = scheduledMessagesDb.listForSession(userId, backup).find(row => row.id === pending.id);
+    assert.equal(retained?.status, 'failed');
+    assert.match(retained?.failure_reason ?? '', /context changed/i);
   });
 });
 

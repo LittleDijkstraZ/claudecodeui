@@ -15,7 +15,7 @@ import { useDropzone } from 'react-dropzone';
 import { api } from '@/shared/api';
 import { PROVIDER_PERMISSION_PREFERENCE_KEYS } from '@/shared/constants';
 import { readUserPreference } from '@/shared/userSettings';
-import type { CommandModalPayload, CostCommandData, HelpCommandData, MarkSessionProcessing, ModelCommandData, QueuedDraft, SessionActivityMap, StatusCommandData,QueuedSendOptions,ChatAttachment,ChatMessage,PendingPermissionRequest,PermissionMode,SessionEstablishedContext,Project,ProjectSession,LLMProvider,SlashCommand } from '@/shared/types';
+import type { ClaudeSessionMutationEvent, CommandModalPayload, CostCommandData, HelpCommandData, MarkSessionProcessing, ModelCommandData, QueuedDraft, SessionActivityMap, StatusCommandData,QueuedSendOptions,ChatAttachment,ChatMessage,PendingPermissionRequest,PermissionMode,SessionEstablishedContext,Project,ProjectSession,LLMProvider,SlashCommand } from '@/shared/types';
 import { grantClaudeToolPermission } from '@/modules/chat/utils/chatPermissions';
 import {
   clearQueuedMessage,
@@ -129,6 +129,7 @@ const restoreQueuedDraft = (sessionKey: string): QueuedDraft | null => {
   return saved
     ? {
         content: saved.content,
+        rewindPaused: saved.rewindPaused,
         attachments: [],
         uploadedAttachments: saved.attachments ?? saved.images,
         options: saved.options,
@@ -625,12 +626,52 @@ export function useChatComposerState({
     selectedSession,
   ]);
 
+  // A context mutation invalidates in-flight attachment preparation and blocks sends until its outcome.
+  const contextMutations = useRef(new Map<string, { requestId: string; generation: number; pending: boolean }>());
+  useEffect(() => {
+    const listener = (event: Event) => {
+      const detail = (event as CustomEvent<ClaudeSessionMutationEvent>).detail;
+      if (!detail?.sessionId) return;
+      const previous = contextMutations.current.get(detail.sessionId);
+      if (detail.phase === 'started') {
+        contextMutations.current.set(detail.sessionId, { requestId: detail.requestId, generation: (previous?.generation || 0) + 1, pending: true });
+        // The server moves/pause-marks the old queued draft atomically with the context.
+        // Do not race that transaction with a separate client draft deletion.
+      } else if (previous?.requestId === detail.requestId) {
+        contextMutations.current.set(detail.sessionId, { ...previous, pending: false });
+        if (detail.phase === 'committed') void hydrateChatDrafts().then(() => {
+          if (sessionKeyRef.current === detail.sessionId) setQueuedDraft(restoreQueuedDraft(detail.sessionId));
+        });
+      }
+    };
+    const remoteReset = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string; contextRevision?: string }>).detail;
+      if (!detail?.sessionId || !detail.contextRevision) return;
+      const requestId = `remote:${detail.contextRevision}`;
+      const previous = contextMutations.current.get(detail.sessionId);
+      if (previous?.requestId === requestId) return;
+      contextMutations.current.set(detail.sessionId, { requestId, generation: (previous?.generation || 0) + 1, pending: false });
+      void hydrateChatDrafts().then(() => {
+        if (sessionKeyRef.current === detail.sessionId) setQueuedDraft(restoreQueuedDraft(detail.sessionId!));
+      });
+    };
+    window.addEventListener('cloudcli:session-mutation', listener);
+    window.addEventListener('cloudcli:context-replaced', remoteReset);
+    return () => { window.removeEventListener('cloudcli:session-mutation', listener); window.removeEventListener('cloudcli:context-replaced', remoteReset); };
+  }, [sessionKey]);
+
   const handleSubmit = useCallback(
     async (
       event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>,
       queuedSubmission?: QueuedDraft,
     ) => {
       event.preventDefault();
+      const mutationAtSubmission = sessionKey ? contextMutations.current.get(sessionKey) : undefined;
+      if (mutationAtSubmission?.pending) {
+        addMessage({ type: 'error', content: 'The conversation context is being restored. Your draft has not been sent.', timestamp: new Date() });
+        return;
+      }
+      const submissionAnchorId = queuedSubmission ? null : editingAnchorId;
       const currentInput = queuedSubmission?.content ?? inputValueRef.current;
       const currentAttachments = queuedSubmission?.attachments ?? attachedFiles;
       const previouslyUploadedAttachments = queuedSubmission?.uploadedAttachments ?? [];
@@ -659,6 +700,10 @@ export function useChatComposerState({
       // A turn is already in flight: stash this message instead of sending it.
       // Upload attached files now so the queued record contains durable image
       // descriptors that can be sent even if another session is open later.
+      if (provider === 'claude' && isLoading) {
+        addMessage({ type: 'error', content: 'This Claude process has not advertised an available input stream. Your message remains in the composer and has not been queued. Retry when the process is ready, or open its existing terminal.', timestamp: new Date() });
+        return;
+      }
       if (isLoading) {
         // A run can restart in the tiny gap between scheduling and flushing a
         // queued submission. Put the same durable draft back without uploading
@@ -861,6 +906,11 @@ export function useChatComposerState({
           });
         }
 
+        const mutationNow = sessionKey ? contextMutations.current.get(sessionKey) : undefined;
+        if (mutationNow?.pending || mutationNow?.generation !== mutationAtSubmission?.generation) {
+          addMessage({ type: 'error', content: 'The conversation context changed while this message was preparing. Your draft has not been sent; review the restored conversation before retrying.', timestamp: new Date() }, targetSessionId, provider);
+          return;
+        }
         const attachmentRecords = uploadedAttachments as ChatAttachment[];
         const clientMessageId = provider === 'claude' ? crypto.randomUUID() : undefined;
         const userMessage: ChatMessage = {
@@ -873,7 +923,7 @@ export function useChatComposerState({
           // Tags this echo as the replacement, so the truncation the server
           // broadcasts a moment later cuts the turns being replaced without
           // taking the message the user just sent with them.
-          ...(editingAnchorId ? { replacesAnchorId: editingAnchorId } : {}),
+          ...(submissionAnchorId ? { replacesAnchorId: submissionAnchorId } : {}),
         };
 
         addMessage(userMessage, targetSessionId, provider);
@@ -887,10 +937,10 @@ export function useChatComposerState({
           // Replacing an already-sent message is its own frame: it changes the
           // shape of the conversation, so it gets validated separately and can
           // report why it was refused.
-          type: editingAnchorId ? 'chat.edit-send' : 'chat.send',
+          type: submissionAnchorId ? 'chat.edit-send' : 'chat.send',
           sessionId: targetSessionId,
           ...(clientMessageId ? { clientMessageId } : {}),
-          ...(editingAnchorId ? { anchorId: editingAnchorId } : {}),
+          ...(submissionAnchorId ? { anchorId: submissionAnchorId } : {}),
           content: messageContent,
           options: {
             ...(queuedSubmission?.options ?? buildSendOptions(messageContent)),
@@ -990,7 +1040,9 @@ export function useChatComposerState({
     if (!queuedDraft) {
       return;
     }
-    setQueuedDraft(null);
+    // A paused backup remains available for inspecting its uploaded file references.
+    // Copying its text must not silently delete those retained attachments.
+    if (!queuedDraft.rewindPaused) setQueuedDraft(null);
     setInput(queuedDraft.content);
     inputValueRef.current = queuedDraft.content;
     setAttachedFiles(queuedDraft.attachments);
@@ -1062,6 +1114,7 @@ export function useChatComposerState({
     ) {
       writeQueuedMessage(sessionKey, {
         content: queuedDraft.content,
+        rewindPaused: queuedDraft.rewindPaused,
         options: queuedDraft.options,
         attachments: queuedDraft.uploadedAttachments,
       });
@@ -1273,6 +1326,18 @@ export function useChatComposerState({
     textareaRef.current?.focus();
   }, [setInput]);
 
+  /** An explicit retry creates a new send UUID. It never overwrites the current draft or reuses old edit intent. */
+  const retryUnconfirmedMessage = useCallback((message: ChatMessage) => {
+    if (message.delivery !== 'failed' || !message.clientMessageId) return;
+    const attachments = [...(message.images || []), ...(message.files || [])];
+    if (attachments.some(attachment => typeof attachment.path !== 'string')) {
+      addMessage({ type: 'error', content: 'This retained copy has attachments that need to be selected again before retrying.', timestamp: new Date() });
+      return;
+    }
+    void handleSubmit(createFakeSubmitEvent(), { content: message.content || '', attachments: [], uploadedAttachments: attachments,
+      options: buildSendOptions(message.content || '') });
+  }, [handleSubmit, addMessage, buildSendOptions]);
+
   const cancelEditMessage = useCallback(() => {
     setEditingTarget(null);
     setInput('');
@@ -1284,6 +1349,7 @@ export function useChatComposerState({
     setInput,
     editingAnchorId,
     beginEditMessage,
+    retryUnconfirmedMessage,
     cancelEditMessage,
     textareaRef,
     inputHighlightRef,

@@ -251,7 +251,7 @@ test('a launch preparation failure returns a failed receipt for the admitted pro
     const receipts = connection.frames.filter(frame => frame.text === 'message_delivery' && frame.clientMessageId === CLIENT_ID);
     assert.deepEqual(receipts.map(frame => frame.delivery), ['queued', 'failed']);
     assert.ok(receipts.every(frame => frame.content === 'Keep this user prompt'));
-    assert.match(String(receipts[1].error), /without confirming/);
+    assert.match(String(receipts[1].error), /Fixture launch preparation failed/);
     assert.ok(Number(receipts[1].seq) < Number(connection.frames.find(frame => frame.kind === 'complete')?.seq));
     assert.equal(chatRunRegistry.isProcessing(sessionId), false);
   }, { run: async () => { throw new Error('Fixture launch preparation failed'); } });
@@ -269,5 +269,22 @@ test('a completed run returns final delivery receipts on subscribe without repla
     assert.equal(ack?.messageReceipts[0].clientMessageId, CLIENT_ID);
     assert.equal(ack?.messageReceipts[0].delivery, 'failed');
     assert.equal(connection.frames.some(frame => frame.role === 'assistant'), false);
+  });
+});
+
+
+test('subscribe replays the new run from zero when a client carries an older run sequence cursor', { concurrency: false }, async () => {
+  await withFixture(async ({ sessionId, connection, run }) => {
+    run.writer.send({ kind: 'text', provider: 'claude', role: 'assistant', content: 'First new run frame' });
+    run.writer.send({ kind: 'status', provider: 'claude', text: 'message_delivery', clientMessageId: CLIENT_ID, delivery: 'queued', content: 'Fixture' });
+    await connection.receive({ type: 'chat.subscribe', sessions: [{ sessionId, runId: 'previous-run', lastSeq: 900 }] });
+    const ack = connection.frames.find(frame => frame.kind === 'chat_subscribed')!;
+    assert.equal(ack.runId, run.runId);
+    assert.equal(ack.runStartedAt, run.startedAt);
+    assert.equal(connection.frames.some(frame => frame.content === 'First new run frame' && frame.runId === run.runId), true);
+    connection.frames = [];
+    await connection.receive({ type: 'chat.subscribe', sessions: [{ sessionId, runId: run.runId, lastSeq: 1 }] });
+    assert.equal(connection.frames.some(frame => frame.content === 'First new run frame'), false);
+    assert.equal(connection.frames.some(frame => frame.text === 'message_delivery' && frame.seq === 2), true);
   });
 });

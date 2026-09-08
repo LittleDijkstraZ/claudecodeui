@@ -497,7 +497,25 @@
       "description": "Codex supports stdio-based MCP servers. You can add servers that extend Codex's capabilities with additional tools and resources."
     }
   },
+  "mcpAuth": {
+    "title": "Connect remote MCP", "currentRemote": "Current remote", "close": "Close",
+    "connect": "Connect / authorize", "explanation": "Sign in using this browser. Credentials stay with Claude on the selected remote; this dialog waits for that MCP server to connect.",
+    "connected": "Connected — confirmed by the remote MCP health check.", "waiting": "Waiting for browser authorization.",
+    "verifying": "Checking the remote MCP connection…", "incomplete": "Authorization has not completed.", "starting": "Starting sign-in on the remote…",
+    "preparing": "Preparing the local callback…", "openBrowser": "Open authorization page",
+    "automatic": "The local callback is ready and bound to this remote. If the browser redirect still fails, paste its complete address below.",
+    "manual": "After signing in, a localhost connection error is possible. Copy the entire address from that page and paste it below; it will be delivered to this remote.",
+    "callback": "Full callback URL", "sendCallback": "Send to this remote", "retry": "Start a new authorization",
+    "limit": "No chat is created or sent. Existing running chats may need their MCP connection refreshed before the newly authorized tools appear."
+  },
   "pluginSettings": {
+    "openPlugin": "Open plugin",
+    "enableToOpen": "Enable this plugin to open it.",
+    "installedSuccess": "Plugin installed.",
+    "installedEntryPending": "Installation succeeded. Refresh this remote’s plugin list to confirm its entry.",
+    "refreshPlugins": "Refresh plugins",
+    "notAvailable": "This plugin is not installed on this remote.",
+    "retryOpen": "Retry opening plugin",
     "title": "Plugins",
     "description": "Extend the interface with custom plugins. Install from git or drop a folder in ~/.claude-code-ui/plugins/",
     "installPlaceholder": "https://github.com/user/my-plugin",

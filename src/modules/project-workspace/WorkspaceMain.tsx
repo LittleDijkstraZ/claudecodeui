@@ -81,6 +81,10 @@ function WorkspaceMain({
     if (tab === 'chat') panelActions?.collapsePanel();
     else panelActions?.openPanel(tab);
   }, [panelActions]);
+  const toggleView = useCallback((tab: AppTab | WorkspacePanelTab) => {
+    if (tab === 'chat') panelActions?.collapsePanel();
+    else panelActions?.togglePanel(tab);
+  }, [panelActions]);
   // Existing command-palette and workspace shortcuts still request AppTab values.
   // Consume those requests as panel navigation without hiding or remounting chat.
   useEffect(() => {
@@ -88,7 +92,7 @@ function WorkspaceMain({
   }, [activeTab, selectView, setActiveTab]);
   const visible = (tab: WorkspacePanelTab) => Boolean(panel?.open && panel.tab === tab);
   const retained = (tab: WorkspacePanelTab) => Boolean(panel?.visited.has(tab));
-  const title = panel?.tab === 'agents' ? t('workspacePanel.agents', { defaultValue: 'Agents' })
+  const title = panel?.tab === 'agents' ? t('workspacePanel.agentsAndWorkflows', { defaultValue: 'Agents & Workflows' })
     : panel?.tab === 'preferences' ? t('workspacePanel.preferences', { defaultValue: 'Preferences' })
     : panel?.tab === 'sideChat' ? t('workspacePanel.sideChat', { defaultValue: 'Side chat' })
       : panel?.tab === 'git' ? t('workspacePanel.sourceControl', { defaultValue: 'Source Control' })
@@ -116,8 +120,8 @@ function WorkspaceMain({
     <div className={`flex min-h-[52px] min-w-0 shrink-0 items-center gap-1 border-b border-border/60 bg-background ${window.__CLOUDCLI_EMBEDDED__ && !window.__CLOUDCLI_SIDE_CHAT__ ? 'pl-14 pr-2' : 'px-2'}`} data-testid="workspace-tool-bar">
       {!window.__CLOUDCLI_EMBEDDED__ && isMobile && selectedProject && <MobileMenuButton onMenuClick={onMenuClick} compact />}
       <div className="min-w-0 max-w-[28%] shrink-0 basis-48 px-1">{workspaceIdentity}</div>
-      <div className="flex min-w-0 flex-1 justify-end"><WorkspaceTabs activeTab={selectedTool} sessionId={selectedSession?.id ?? null} setActiveTab={selectView} shouldShowTasksTab={shouldShowTasksTab} shouldShowBrowserTab={shouldShowBrowserTab} /></div>
-      <button type="button" onClick={() => panelActions?.openPanel('preferences')} aria-label={t('workspacePanel.preferences', { defaultValue: 'Preferences' })} title={`${machineLabel} · ${t('workspacePanel.preferences', { defaultValue: 'Preferences' })}`} aria-expanded={visible('preferences')} className="flex h-11 min-h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"><SlidersHorizontal className="h-[18px] w-[18px]" /></button>
+      <div className="flex min-w-0 flex-1 justify-end"><WorkspaceTabs activeTab={selectedTool} sessionId={selectedSession?.id ?? null} setActiveTab={toggleView} onNavigation={selectView} shouldShowTasksTab={shouldShowTasksTab} shouldShowBrowserTab={shouldShowBrowserTab} /></div>
+      <button type="button" onClick={() => panelActions?.togglePanel('preferences')} aria-label={t('workspacePanel.preferences', { defaultValue: 'Preferences' })} title={`${machineLabel} · ${t('workspacePanel.preferences', { defaultValue: 'Preferences' })}`} aria-expanded={visible('preferences')} className="flex h-11 min-h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"><SlidersHorizontal className="h-[18px] w-[18px]" /></button>
     </div>
     <WorkspacePanelLayout main={main} mainCovered={mainCovered} title={title} sessionId={selectedSession?.id ?? null}>
       {retained('preferences') && <div className={`h-full min-h-0 flex-col ${visible('preferences') ? 'flex' : 'hidden'}`}>

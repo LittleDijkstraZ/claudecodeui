@@ -31,6 +31,7 @@ vi.mock('@/modules/project-workspace/ProjectSidebarRegion', () => ({ default: fu
 vi.mock('@/modules/settings', () => ({ Settings: ({ remoteName, projects, initialTab, onClose }: { remoteName?: string; projects: AgentSettingsProject[]; initialTab: string; onClose: () => void }) =>
   <div role="dialog" aria-label={`Settings · ${remoteName ?? 'standalone'}`}><span>{initialTab}</span><output>{JSON.stringify(projects)}</output><button onClick={onClose}>Close settings</button></div>,
 }));
+vi.mock('@/modules/plugins', () => ({ usePlugins: () => ({ plugins: [{ name: 'fixture-tool', enabled: true }] }) }));
 vi.mock('@/modules/quick-settings-panel', () => ({ QuickSettingsPanel: () => null }));
 vi.mock('@/modules/project-workspace/controllers/ProjectEffects', () => ({ default: () => null }));
 vi.mock('@/modules/project-workspace/ProjectCommandPalette', () => ({ default: () => null }));
@@ -133,4 +134,14 @@ test('standalone sidebar and panel actions share one complete settings instance 
   expect(screen.getByRole('dialog').textContent).toContain('"fullPath":"/remote/one"');
   fireEvent.click(screen.getByText('Open from tool panel'));
   expect(screen.getAllByRole('dialog')).toHaveLength(1);
+});
+
+
+test('open installed plugin closes full settings and selects only an enabled plugin from this remote', () => {
+  workspace(); receive('alpha');
+  act(() => window.dispatchEvent(new CustomEvent('cloudcli:plugin-open', { detail: { name: 'not-installed' } })));
+  expect(screen.getByRole('dialog')).toBeTruthy();
+  act(() => window.dispatchEvent(new CustomEvent('cloudcli:plugin-open', { detail: { name: 'fixture-tool' } })));
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(screen.getByTestId('panel-state').textContent).toBe('true:plugin:fixture-tool');
 });

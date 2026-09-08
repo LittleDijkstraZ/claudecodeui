@@ -63,6 +63,7 @@ test('rebuilds a tool-use UI message when its separately received result changes
   assert.deepEqual(withResult[0]?.toolResult, {
     content: 'file contents',
     isError: false,
+    timestamp: toolResult.timestamp,
     toolUseResult: undefined,
   });
 

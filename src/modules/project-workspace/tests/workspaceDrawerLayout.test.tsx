@@ -47,10 +47,14 @@ test('tools remain outside the collapsed panel with visible labels while chat an
   expect(screen.queryByRole('tab', { name: 'workspacePanel.preferences' })).toBeNull();
   expect(tools[0].tabIndex).toBe(0);
   expect(tools.slice(1).every(tool => tool.tabIndex === -1)).toBe(true);
-  expect(screen.getByTestId('workspace-tool-navigation').classList.contains('overflow-x-auto')).toBe(true);
+  expect(within(screen.getByTestId('workspace-tool-navigation')).getByTestId('overflow-tool-tabs')).toBeTruthy();
   fireEvent.click(tools[0]);
   expect(within(panel).getByRole('heading', { name: 'tabs.shell' })).toBeTruthy();
   expect(within(panel).queryByRole('tablist')).toBeNull();
+  fireEvent.click(tools[0]);
+  expect(panel.classList.contains('hidden')).toBe(true);
+  fireEvent.click(tools[0]);
+  expect(panel.classList.contains('hidden')).toBe(false);
   fireEvent.click(screen.getByRole('button', { name: 'Preferences' }));
   expect(screen.getByTestId('inline-preferences')).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Alpha · Machine settings' }));

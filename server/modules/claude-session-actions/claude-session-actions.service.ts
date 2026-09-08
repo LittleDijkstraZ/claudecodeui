@@ -40,8 +40,16 @@ function sourceSession(sessionId: string): Session {
 }
 function isUserPrompt(message: SessionMessage): boolean {
   if (message.type !== 'user' || message.parent_tool_use_id) return false;
+  const flags = message as SessionMessage & { isMeta?: boolean; isCompactSummary?: boolean; isSynthetic?: boolean; isSidechain?: boolean };
+  if (flags.isMeta || flags.isCompactSummary || flags.isSynthetic || flags.isSidechain) return false;
   const content = (message.message as { content?: unknown })?.content;
-  return typeof content === 'string' ? Boolean(content.trim()) : Array.isArray(content) && content.some(item => item?.type === 'text' || item?.type === 'image');
+  const promptText = (value: unknown) => typeof value === 'string' && Boolean(value.trim())
+    && !/^\s*<(?:task-notification|local-command-stdout|command-name|system-reminder)(?:\s|>)/.test(value);
+  // Mixed tool-result/text carriers and injected background notices are not
+  // human rewind targets even though Claude serializes them with role:user.
+  return typeof content === 'string' ? promptText(content) : Array.isArray(content)
+    && !content.some(item => item?.type === 'tool_result')
+    && content.some(item => item?.type === 'image' || item?.type === 'text' && promptText(item.text));
 }
 function nativeMessageId(messages: SessionMessage[], input: string, userOnly: boolean): string {
   const matched = messages.find(message => (message.uuid === input || input.startsWith(`${message.uuid}_`)) && (!userOnly || isUserPrompt(message)));
@@ -156,6 +164,7 @@ export function createClaudeSessionActionsService(overrides: Partial<Dependencie
       const session = sourceSession(sessionId);
       const history = await messages(session);
       return {
+        providerSessionId: session.provider_session_id,
         sideChat: true, sideChatWhileRunning: true, conversationRewind: true, fileRewind: 'preview-required',
         isBusy: chatRunRegistry.isProcessing(sessionId) || dependencies.active(session.provider_session_id) || dependencies.active(sessionId),
         messageIds: history.map(message => message.uuid), userMessageIds: history.filter(isUserPrompt).map(message => message.uuid),
@@ -243,9 +252,12 @@ export function createClaudeSessionActionsService(overrides: Partial<Dependencie
             if (backupSessionId) await claudeUsageService.inheritContext(sessionId, backupSessionId);
             await claudeUsageService.getSnapshot(sessionId);
             chatRunRegistry.forgetCompletedRun(sessionId);
-            chatRunRegistry.notifyContextReset(sessionId, contextRevision);
+            chatRunRegistry.notifyContextReset(sessionId, contextRevision, {
+              backupSessionId, previousProviderSessionId: session.provider_session_id, providerSessionId: branch.sessionId,
+            });
           }
           return { ...detail(sessionId), mode: input.mode, contextChanged: Boolean(branch), contextRevision, backupSessionId,
+            previousProviderSessionId: session.provider_session_id, providerSessionId: branch?.sessionId ?? session.provider_session_id,
             files, conversationBoundary: 'includes-selected-message', inheritedFileCheckpoints: branch ? false : undefined };
         } catch (error) {
           if (branch && sessionsDb.getSessionById(sessionId)?.provider_session_id !== branch.sessionId) await discardPreparedBranch(session, branch);

@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { FileCode2, GitFork, Loader2, RotateCcw, X } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
 import { Button, Dialog, DialogContent, DialogTitle } from '@/shared/ui';
 import {
@@ -8,7 +9,7 @@ import {
   previewClaudeRewind,
   rewindClaudeSession,
 } from '@/shared/api';
-import type { RewindMode, RewindPreview, RewindResult } from '@/shared/types';
+import type { ClaudeSessionMutationEvent, RewindMode, RewindPreview, RewindResult } from '@/shared/types';
 import { isCurrentRewindPreview } from '@/modules/chat/session-actions/claudeSessionActionChecks';
 
 type ClaudeSessionActionDialogProps = {
@@ -40,6 +41,8 @@ export default function ClaudeSessionActionDialog({ type, sessionId, messageId, 
   const [error, setError] = useState<string | null>(null);
   // Prevent a second rewind if the server committed but refreshing the UI failed.
   const [completed, setCompleted] = useState(false);
+  // Preserve the original branch link even if refreshing the new context fails.
+  const [committedResult, setCommittedResult] = useState<RewindResult | null>(null);
   // Expire a preview promptly even when the user leaves the dialog open.
   const [now, setNow] = useState(() => Date.now());
   const mounted = useRef(true);
@@ -69,19 +72,32 @@ export default function ClaudeSessionActionDialog({ type, sessionId, messageId, 
     if (busy || completed || (isRewind && !isCurrentRewindPreview(preview, mode))) return;
     setBusy(true);
     setError(null);
+    const requestId = crypto.randomUUID();
+    let committed = false;
+    const mutation = (phase: ClaudeSessionMutationEvent['phase'], extra: Pick<ClaudeSessionMutationEvent, 'result' | 'error'> = {}) => {
+      window.dispatchEvent(new CustomEvent<ClaudeSessionMutationEvent>('cloudcli:session-mutation', {
+        detail: { sessionId, messageId, mode, requestId, phase, ...extra },
+      }));
+    };
     try {
       if (isRewind) {
+        mutation('started');
         const result = await rewindClaudeSession(sessionId, messageId, mode, preview!.previewToken);
-        if (mounted.current) setCompleted(true);
+        committed = true;
+        if (mounted.current) { setCompleted(true); setCommittedResult(result); }
+        // Pending input must be quarantined at commit, before resetHistory or
+        // any awaited refresh can make this stable app ID look ready to send.
+        mutation('committed', { result });
+        window.dispatchEvent(new CustomEvent('cloudcli:session-rewound', { detail: result }));
         // Refresh from actual saved history only after the server changes context.
         await onRewound(result);
-        window.dispatchEvent(new CustomEvent('cloudcli:session-rewound', { detail: result }));
       } else {
         const result = await forkClaudeSession(sessionId, messageId);
         window.dispatchEvent(new CustomEvent('cloudcli:side-chat-open', { detail: result }));
       }
-      if (mounted.current) onClose();
+      if (mounted.current && !isRewind) onClose();
     } catch (reason) {
+      if (isRewind && !committed) mutation('failed', { error: reason instanceof Error ? reason.message : String(reason) });
       if (mounted.current) setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       if (mounted.current) setBusy(false);
@@ -100,7 +116,9 @@ export default function ClaudeSessionActionDialog({ type, sessionId, messageId, 
           <DialogTitle id={titleId} className="not-sr-only text-base font-semibold">{t(`sessionActions.${type}`)}</DialogTitle>
           <Button type="button" variant="ghost" size="icon" className="ml-auto h-8 w-8" aria-label={t('sessionActions.close')} disabled={busy} onClick={onClose}><X className="h-4 w-4" /></Button>
         </div>
-        <blockquote className="mb-4 max-h-28 overflow-auto rounded-lg border border-border bg-muted/30 p-3 text-sm text-muted-foreground">{message.trim().slice(0, 500) || t('sessionActions.attachmentMessage')}{message.length > 500 ? '…' : ''}</blockquote>
+        <p className="mb-1 text-xs font-medium">{t('sessionActions.target')}</p>
+        <blockquote className="mb-2 max-h-28 overflow-auto rounded-lg border border-border bg-muted/30 p-3 text-sm text-muted-foreground">{message.trim().slice(0, 500) || t('sessionActions.attachmentMessage')}{message.length > 500 ? '…' : ''}</blockquote>
+        <details className="mb-4 text-xs text-muted-foreground"><summary className="cursor-pointer">{t('sessionActions.targetIdentity')}</summary><code className="mt-1 block break-all">{messageId}</code></details>
         {isRewind ? (
           <div className="space-y-4">
             <fieldset disabled={busy || completed} className="space-y-2">
@@ -113,6 +131,10 @@ export default function ClaudeSessionActionDialog({ type, sessionId, messageId, 
               ))}
             </fieldset>
             {mode !== 'files' && <p className="text-xs leading-relaxed text-muted-foreground">{t('sessionActions.contextBoundary')} {t('sessionActions.backup')} {t('sessionActions.checkpointAfterRewind')}</p>}
+            <div className="space-y-2 rounded-lg border border-border bg-muted/20 p-3 text-xs leading-relaxed text-muted-foreground">
+              <p>{t('sessionActions.backgroundImpact')}</p>
+              <p>{t(mode === 'files' ? 'sessionActions.pendingFilesImpact' : 'sessionActions.pendingContextImpact')}</p>
+            </div>
             {fileMode && <p className="rounded-lg border border-amber-500/25 bg-amber-500/5 p-3 text-xs leading-relaxed text-amber-800 dark:text-amber-200">{t('sessionActions.fileScope')}</p>}
             <section className="overflow-hidden rounded-xl border border-border" aria-live="polite">
               <div className="flex items-center gap-2 border-b border-border bg-muted/30 px-3 py-2 text-sm font-medium"><FileCode2 className="h-4 w-4" />{t('sessionActions.preview')}</div>
@@ -138,12 +160,16 @@ export default function ClaudeSessionActionDialog({ type, sessionId, messageId, 
             <p className="rounded-lg border border-amber-500/25 bg-amber-500/5 p-3 text-xs text-amber-800 dark:text-amber-200">{t('sessionActions.sharedFiles')}</p>
           </div>
         )}
+        {completed && <div role="status" className="mt-4 space-y-2 rounded-lg border border-border bg-muted/20 p-3 text-sm">
+          <p>{t('sessionActions.restored')}</p>
+          {committedResult?.backupSessionId && <Link className="inline-block underline underline-offset-2" to={`/session/${committedResult.backupSessionId}`} onClick={onClose}>{t('sessionActions.openBackup')}</Link>}
+        </div>}
         {error && <p role="alert" className="mt-3 break-words text-sm text-destructive">{completed ? t('sessionActions.refreshFailed') + ' ' : ''}{error}</p>}
         <div className="mt-5 flex flex-wrap justify-end gap-2">
           <Button type="button" variant="outline" disabled={busy} onClick={onClose}>{t(completed ? 'sessionActions.close' : 'sessionActions.cancel')}</Button>
-          <Button type="button" variant={isRewind ? 'destructive' : 'default'} disabled={busy || completed || (isRewind && (previewLoading || !validPreview))} onClick={() => { void confirm(); }}>
+          {!completed && <Button type="button" variant={isRewind ? 'destructive' : 'default'} disabled={busy || (isRewind && (previewLoading || !validPreview))} onClick={() => { void confirm(); }}>
             {busy && <Loader2 className="h-4 w-4 animate-spin" />}{t(isRewind ? 'sessionActions.confirmRewind' : 'sessionActions.confirmSideChat')}
-          </Button>
+          </Button>}
         </div>
       </DialogContent>
     </Dialog>

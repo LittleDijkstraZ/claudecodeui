@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 
 import { useTheme } from '@/shared/context/ThemeContext';
 import { api } from '@/shared/api';
+import { Button } from '@/shared/ui';
 import { usePlugins } from '@/modules/plugins/context/PluginsContext';
 import type { Project, ProjectSession } from '@/shared/types';
 
@@ -52,8 +53,10 @@ export default function PluginTabContent({
   const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Retry a failed remote bundle without replacing the conversation or workspace.
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const { isDarkMode } = useTheme();
-  const { plugins } = usePlugins();
+  const { plugins, loading, pluginsError, refreshPlugins } = usePlugins();
 
   // Stable refs so effects don't need context values in their dep arrays
   const contextRef = useRef<PluginContext>(buildContext(isDarkMode, selectedProject, selectedSession));
@@ -116,7 +119,8 @@ export default function PluginTabContent({
           },
         };
 
-        await mod.mount?.(container, pluginHostApi);
+        if (typeof mod.mount !== 'function') throw new Error('The plugin entry does not export mount(). Check the remote plugin build.');
+        await mod.mount(container, pluginHostApi);
         if (!active) {
           try { mod.unmount?.(container); } catch { /* ignore */ }
           moduleRef.current = null;
@@ -135,14 +139,19 @@ export default function PluginTabContent({
       contextCallbacks.clear();
       moduleRef.current = null;
     };
-  }, [pluginName, plugin?.entry, plugin?.enabled]); // re-mount when plugin or enabled state changes
+  }, [pluginName, plugin?.entry, plugin?.enabled, plugin?.version, loadAttempt]);
 
   return (
     <div className="relative h-full w-full overflow-auto">
       <div ref={containerRef} className="h-full w-full overflow-auto" />
+      {!plugin?.enabled && <div className="absolute inset-0 p-4 text-sm text-muted-foreground">
+        {loading ? t('settings:pluginSettings.scanningPlugins') : plugin ? t('settings:pluginSettings.enableToOpen') : pluginsError || t('settings:pluginSettings.notAvailable')}
+        <Button variant="outline" className="mt-3 block" onClick={() => void refreshPlugins()}>{t('settings:pluginSettings.refreshPlugins')}</Button>
+      </div>}
       {loadError && (
         <div className="absolute inset-0 p-4 text-[13px] text-red-600">
           {t('common:misc.pluginLoadFailed', { error: loadError })}
+          <Button variant="outline" className="mt-3 block" onClick={() => setLoadAttempt(value => value + 1)}>{t('settings:pluginSettings.retryOpen')}</Button>
         </div>
       )}
     </div>

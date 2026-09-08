@@ -141,13 +141,19 @@
       "alreadyWaitingHint": "请先编辑或移除待发消息",
       "notDelivered": "尚未送达 Claude",
       "remoteUnsupported": "当前远端进程未报告支持持续输入。这条草稿要等整个运行结束后才会发送。",
-      "preparing": "上一条消息仍在准备发送。新草稿会留在这里，请等准备完成后再发送。"
+      "preparing": "上一条消息仍在准备发送。新草稿会留在这里，请等准备完成后再发送。",
+      "paused": "已暂停的待发送副本",
+      "pausedHint": "不会自动发送",
+      "retainedFiles": "保留的文件：{{names}}。若复制这段文字重新发送，请重新选择所需附件。",
+      "copyPaused": "把暂停的文字复制到输入框",
+      "copyPausedHint": "复制文字到输入框；附件副本会保留在这里供检查"
     },
     "commands": {
       "reported": "远端已确认",
       "documented": "文档支持",
       "compactNeedsHistory": "/compact 需要已有对话的历史上下文，请先正常发送一条消息。"
-    }
+    },
+    "streamUnavailable": "当前无法接收输入；草稿会保留在这里"
   },
   "providerSelection": {
     "title": "选择您的 AI 助手",
@@ -262,7 +268,9 @@
       "failed": "未确认送达",
       "dismiss": "移除本地副本",
       "dismissHint": "仅移除当前浏览器的副本，不取消已提交的消息，也不删除远端历史。",
-      "storageFailed": "浏览器无法保存待确认消息的副本。消息目前仍然可见，但刷新后可能无法恢复。"
+      "storageFailed": "浏览器无法保存待确认消息的副本。消息目前仍然可见，但刷新后可能无法恢复。",
+      "retry": "作为新消息重试",
+      "retryHint": "尚未确认送达。请先检查对话；重试会发送一条新消息。"
     }
   },
   "export": {
@@ -418,7 +426,14 @@
     "confirmRewind": "恢复到这里",
     "refreshFailed": "上下文已经恢复，但暂时无法载入恢复后的历史。请刷新这个对话后再继续。",
     "checkpointAfterRewind": "恢复后的上下文副本不包含此前的文件检查点。",
-    "branchWhileRunning": "主对话仍在运行。可以从已保存的消息开旁支；回退需要先等待主对话停止。"
+    "branchWhileRunning": "主对话仍在运行。可以从已保存的消息开旁支；回退需要先等待主对话停止。",
+    "target": "所选消息",
+    "targetIdentity": "已保存的消息标识",
+    "backgroundImpact": "当前对话及其后台任务仍在运行时，不能回退；此操作不会自动停止任务。普通追加提问是另一项操作，不需要先回退。",
+    "pendingContextImpact": "恢复期间暂停待发送消息。旧上下文的消息副本保留在原分支中供你检查，不会自动发送到恢复后的上下文。",
+    "pendingFilesImpact": "恢复文件期间暂停待发送消息。对话上下文保持不变；恢复操作不会重新发送这些消息。",
+    "restored": "已完成所选恢复。",
+    "openBackup": "查看回退前的原对话分支"
   },
   "usage": {
     "title": "Token 与费用估算",

@@ -26,6 +26,8 @@ const sessionActivityMapsMatch = (
       || leftActivity.acceptsInput !== rightActivity.acceptsInput
       || leftActivity.backgroundTasks !== rightActivity.backgroundTasks
       || leftActivity.executionId !== rightActivity.executionId
+      || leftActivity.foregroundTurnId !== rightActivity.foregroundTurnId
+      || leftActivity.foregroundStartedAt !== rightActivity.foregroundStartedAt
     ) {
       return false;
     }
@@ -59,6 +61,8 @@ export function useSessionProtection() {
       const previous = activity?.executionId && existing?.executionId !== activity.executionId ? undefined : existing;
       const next: SessionActivity = {
         phase: activity?.phase ?? previous?.phase,
+        foregroundTurnId: activity?.phase === 'background' ? undefined : activity?.foregroundTurnId ?? previous?.foregroundTurnId,
+        foregroundStartedAt: activity?.phase === 'background' ? undefined : activity?.foregroundStartedAt ?? previous?.foregroundStartedAt,
         acceptsInput: activity?.acceptsInput ?? previous?.acceptsInput,
         backgroundTasks: activity?.backgroundTasks ?? previous?.backgroundTasks,
         executionId: activity?.executionId ?? previous?.executionId,
@@ -76,6 +80,8 @@ export function useSessionProtection() {
         && existing.acceptsInput === next.acceptsInput
         && existing.backgroundTasks === next.backgroundTasks
         && existing.executionId === next.executionId
+        && existing.foregroundTurnId === next.foregroundTurnId
+        && existing.foregroundStartedAt === next.foregroundStartedAt
       ) {
         return prev;
       }
@@ -133,6 +139,8 @@ export function useSessionProtection() {
 
         updated.set(sessionId, {
           phase: snapshot.phase,
+          foregroundTurnId: snapshot.foregroundTurnId,
+          foregroundStartedAt: snapshot.foregroundStartedAt,
           acceptsInput: snapshot.acceptsInput,
           backgroundTasks: snapshot.backgroundTasks,
           executionId: snapshot.executionId,
