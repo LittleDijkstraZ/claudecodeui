@@ -53,6 +53,7 @@ test.each(['background', 'foreground'] as const)('a live %s query accepts multip
   const frames = view.send.mock.calls.map(call => call[0]) as unknown as Array<Record<string, unknown>>;
   expect(frames.map(frame => [frame.type, frame.sessionId])).toEqual([['chat.send', 'session-a'], ['chat.send', 'session-a']]);
   expect(frames[0].clientMessageId).not.toBe(frames[1].clientMessageId);
+  expect(frames.map(frame => (frame.options as Record<string, unknown>).deliveryMode)).toEqual(['queue', 'queue']);
   expect(String(frames[0].clientMessageId)).toMatch(/^[0-9a-f-]{36}$/);
   expect(view.processing).not.toHaveBeenCalled();
   expect(view.add.mock.calls.map(([message]) => message.delivery)).toEqual(['queued', 'queued']);
@@ -416,4 +417,45 @@ test('an already retried source retains its delivery warning without another ret
   expect(view.getByRole('status').textContent).toMatch(/unconfirmed|未确认|未確認/);
   expect(view.queryByRole('button')).toBeNull();
   expect(view.container.textContent).toContain('Retried as a new message');
+});
+
+test('interrupt-and-send is one explicit message to the same remote, while subsequent ordinary sends remain queued', async () => {
+  const view = composer({ ...BACKGROUND, phase: 'foreground', inputModes: ['queue', 'interrupt'] });
+  act(() => view.result.current.setInput('Change direction now'));
+  await act(async () => { await view.result.current.handleInterruptAndSend({ preventDefault() {} } as never); });
+  expect(view.send).toHaveBeenCalledTimes(1);
+  expect(view.send.mock.calls[0][0]).toMatchObject({ type: 'chat.send', sessionId: 'session-a', content: 'Change direction now', options: { deliveryMode: 'interrupt' } });
+  expect(view.result.current.input).toBe('');
+  await view.submit('Then do this');
+  expect(view.send.mock.calls[1][0]).toMatchObject({ type: 'chat.send', options: { deliveryMode: 'queue' } });
+  expect(view.send.mock.calls.some(([frame]) => (frame as { type: string }).type === 'chat.abort')).toBe(false);
+});
+
+test.each([undefined, ['queue']] as const)('unconfirmed interrupt support %s keeps the draft and does not silently fall back to queue', async inputModes => {
+  const view = composer({ ...BACKGROUND, inputModes: inputModes ? [...inputModes] : undefined });
+  act(() => view.result.current.setInput('Keep this draft'));
+  await act(async () => { await view.result.current.handleInterruptAndSend({ preventDefault() {} } as never); });
+  expect(view.send).not.toHaveBeenCalled();
+  expect(view.result.current.input).toBe('Keep this draft');
+  expect(view.add.mock.calls.at(-1)?.[0]).toMatchObject({ type: 'error' });
+  expect(view.add.mock.calls.some(([message]) => message.type === 'user')).toBe(false);
+});
+
+test('interrupt refuses a closed input stream without creating a waiting message', async () => {
+  const view = composer({ ...BACKGROUND, inputModes: ['queue', 'interrupt'], acceptsInput: false });
+  act(() => view.result.current.setInput('Keep this too'));
+  await act(async () => { await view.result.current.handleInterruptAndSend({ preventDefault() {} } as never); });
+  expect(view.send).not.toHaveBeenCalled();
+  expect(view.result.current.input).toBe('Keep this too');
+  expect(view.add.mock.calls.some(([message]) => message.type === 'user')).toBe(false);
+});
+
+test('interrupt-and-send cannot turn an edit into a rewind or discard its draft', async () => {
+  const view = composer({ ...BACKGROUND, inputModes: ['queue', 'interrupt'] });
+  act(() => view.result.current.beginEditMessage({ type: 'user', content: 'Old text', timestamp: 1, transcriptAnchorId: 'old-anchor' }));
+  act(() => view.result.current.setInput('Editing earlier text'));
+  await act(async () => { await view.result.current.handleInterruptAndSend({ preventDefault() {} } as never); });
+  expect(view.send).not.toHaveBeenCalled();
+  expect(view.result.current.input).toBe('Editing earlier text');
+  expect(view.result.current.editingAnchorId).toBe('old-anchor');
 });

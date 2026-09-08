@@ -58,3 +58,34 @@ test('an inventory scan failure does not turn a completed installation into an i
   assert.equal(result.success,true);assert.equal(result.inventoryConfirmed,false);
   assert.match(result.warning || '',/Refresh plugins/);
 });
+
+test('failed staged update restarts the unchanged backend and retains its visible inventory', async () => {
+  const plugin = { name: 'demo', enabled: true, server: 'server.js', dirName: 'demo' };
+  let running = true;
+  const operations: string[] = [];
+  const service = createPluginsService(dependencies({
+    scanPlugins: () => [plugin], getPluginDirectory: () => '/plugins/demo', isServerRunning: () => running,
+    stopServer: async () => { running = false; operations.push('stop'); },
+    update: async () => { operations.push('update'); throw new Error('Fixture build failed'); },
+    startServer: async () => { operations.push('start'); running = true; return 4000; },
+  }));
+  await assert.rejects(service.update('demo'), /Fixture build failed/);
+  assert.deepEqual(operations, ['stop', 'update', 'start']);
+  assert.equal(service.list().plugins[0].serverRunning, true);
+  assert.equal(service.list().plugins[0].name, 'demo');
+});
+
+test('an update serializes conflicting lifecycle operations and temporarily refuses new RPC startup', async () => {
+  const plugin = { name: 'demo', enabled: true, server: 'server.js', dirName: 'demo' };
+  let complete!: (value: typeof plugin) => void;
+  const service = createPluginsService(dependencies({
+    scanPlugins: () => [plugin], update: () => new Promise(resolve => { complete = resolve; }),
+  }));
+  const updating = service.update('demo');
+  await assert.rejects(service.update('demo'), /already in progress/);
+  await assert.rejects(service.setEnabled('demo', false), /updating/);
+  await assert.rejects(service.uninstall('demo'), /updating/);
+  await assert.rejects(service.prepareRpc('demo'), /updating/);
+  complete(plugin); await updating;
+  assert.equal(service.list().plugins[0].name, 'demo');
+});

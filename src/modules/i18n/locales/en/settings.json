@@ -180,6 +180,12 @@
         "label": "Font Size",
         "description": "Editor font size in pixels"
       }
+    },
+    "toolTabs": {
+      "label": "Tool tab display",
+      "description": "Choose how workspace tools appear. Saved in this browser and shared by all machines in the workbench.",
+      "icons": "Icons only",
+      "iconsAndText": "Icons and text"
     }
   },
   "mcpForm": {
@@ -498,14 +504,23 @@
     }
   },
   "mcpAuth": {
-    "title": "Connect remote MCP", "currentRemote": "Current remote", "close": "Close",
-    "connect": "Connect / authorize", "explanation": "Sign in using this browser. Credentials stay with Claude on the selected remote; this dialog waits for that MCP server to connect.",
-    "connected": "Connected — confirmed by the remote MCP health check.", "waiting": "Waiting for browser authorization.",
-    "verifying": "Checking the remote MCP connection…", "incomplete": "Authorization has not completed.", "starting": "Starting sign-in on the remote…",
-    "preparing": "Preparing the local callback…", "openBrowser": "Open authorization page",
+    "title": "Connect remote MCP",
+    "currentRemote": "Current remote",
+    "close": "Close",
+    "connect": "Connect / authorize",
+    "explanation": "Sign in using this browser. Credentials stay with Claude on the selected remote; this dialog waits for that MCP server to connect.",
+    "connected": "Connected — confirmed by the remote MCP health check.",
+    "waiting": "Waiting for browser authorization.",
+    "verifying": "Checking the remote MCP connection…",
+    "incomplete": "Authorization has not completed.",
+    "starting": "Starting sign-in on the remote…",
+    "preparing": "Preparing the local callback…",
+    "openBrowser": "Open authorization page",
     "automatic": "The local callback is ready and bound to this remote. If the browser redirect still fails, paste its complete address below.",
     "manual": "After signing in, a localhost connection error is possible. Copy the entire address from that page and paste it below; it will be delivered to this remote.",
-    "callback": "Full callback URL", "sendCallback": "Send to this remote", "retry": "Start a new authorization",
+    "callback": "Full callback URL",
+    "sendCallback": "Send to this remote",
+    "retry": "Start a new authorization",
     "limit": "No chat is created or sent. Existing running chats may need their MCP connection refreshed before the newly authorized tools appear."
   },
   "pluginSettings": {
@@ -516,6 +531,7 @@
     "refreshPlugins": "Refresh plugins",
     "notAvailable": "This plugin is not installed on this remote.",
     "retryOpen": "Retry opening plugin",
+    "bundleRequirement": "Check that this plugin builds a self-contained, single-file browser bundle. Relative module imports and sibling assets resolved through import.meta.url are not supported by the authenticated loader.",
     "title": "Plugins",
     "description": "Extend the interface with custom plugins. Install from git or drop a folder in ~/.claude-code-ui/plugins/",
     "installPlaceholder": "https://github.com/user/my-plugin",

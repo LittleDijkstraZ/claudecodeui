@@ -122,14 +122,20 @@
       "pausedHint": "不會自動傳送",
       "retainedFiles": "保留的檔案：{{names}}。若複製這段文字重新傳送，請重新選擇所需附件。",
       "copyPaused": "把暫停的文字複製到輸入框",
-      "copyPausedHint": "複製文字到輸入框；附件副本會保留在這裡供檢查"
+      "copyPausedHint": "複製文字到輸入框；附件副本會保留在這裡供檢查",
+      "afterReply": "等目前回覆結束後傳送，背景 Workflow 繼續執行"
     },
     "commands": {
       "reported": "遠端已確認",
       "documented": "文件支援",
       "compactNeedsHistory": "/compact 需要既有對話的歷史上下文，請先正常傳送一則訊息。"
     },
-    "streamUnavailable": "目前無法接收輸入；草稿會保留在這裡"
+    "streamUnavailable": "目前無法接收輸入；草稿會保留在這裡",
+    "interrupt": "中斷",
+    "interruptAndSend": "中斷並傳送",
+    "interruptUnavailable": "此遠端執行尚未確認支援中斷並傳送。草稿未傳送；請等待狀態更新或使用佇列傳送。",
+    "interruptEditing": "請先完成或取消對舊訊息的編輯，再中斷並傳送新訊息。",
+    "interruptHint": "中斷目前回覆並立即傳送這份草稿，保留既有排隊訊息和背景 Workflow。"
   },
   "thinkingMode": {
     "selector": {

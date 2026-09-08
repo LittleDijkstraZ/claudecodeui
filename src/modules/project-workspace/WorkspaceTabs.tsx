@@ -55,7 +55,7 @@ const TASKS_TAB: BuiltInTab = {
   icon: ClipboardCheck,
 };
 
-/** Rendered by WorkspaceMain outside the collapsible panel so tools remain reachable beside the persistent chat. */
+/** Rendered by WorkspaceMain inside the retained right panel; Chat stays the primary surface. */
 export default function WorkspaceTabs({
   activeTab,
   sessionId = null,

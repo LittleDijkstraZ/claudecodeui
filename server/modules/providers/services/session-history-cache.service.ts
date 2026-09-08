@@ -13,7 +13,7 @@ import type { FetchHistoryResult } from '@/shared/types.js';
  * CPU per request.
  *
  * Entries are keyed by app session id and validated with one `stat` per
- * request against the transcript file's identity (path + mtime + size), so
+ * request against the transcript file's identity (path + device/inode + change time + mtime + size), so
  * only the first read after the file changes pays the parse. Anything that
  * rewrites history (a new turn, an edit, a rewind, a fork) touches the file
  * and invalidates naturally; no explicit invalidation hooks exist or are
@@ -28,6 +28,10 @@ import type { FetchHistoryResult } from '@/shared/types.js';
 type CacheEntry = {
   transcriptPath: string;
   mtimeMs: number;
+  /** Identity/change metadata also catches same-length rewrites preserving mtime. */
+  ctimeMs: number;
+  ino: number;
+  dev: number;
   /** File size in bytes; doubles as the entry's cost against the byte budget. */
   size: number;
   full: FetchHistoryResult;
@@ -41,7 +45,7 @@ type GetFullHistoryArgs = {
   loadFull: () => Promise<FetchHistoryResult>;
 };
 
-type PendingHistoryLoad = Pick<CacheEntry, 'transcriptPath' | 'mtimeMs' | 'size'> & {
+type PendingHistoryLoad = Pick<CacheEntry, 'transcriptPath' | 'mtimeMs' | 'ctimeMs' | 'ino' | 'dev' | 'size'> & {
   result: Promise<FetchHistoryResult>;
 };
 
@@ -54,6 +58,7 @@ type PendingHistoryLoad = Pick<CacheEntry, 'transcriptPath' | 'mtimeMs' | 'size'
 const MAX_CACHED_TRANSCRIPT_FILE_BYTES = 256 * 1024 * 1024;
 const MAX_CACHE_ENTRIES = 8;
 
+/** Providers sessions service uses a bounded cache; focused tests create isolated instances. */
 export function createSessionHistoryCache(
   maxTotalFileBytes = MAX_CACHED_TRANSCRIPT_FILE_BYTES,
   maxEntries = MAX_CACHE_ENTRIES,
@@ -103,6 +108,7 @@ export function createSessionHistoryCache(
         cached
         && cached.transcriptPath === transcriptPath
         && cached.mtimeMs === stat.mtimeMs
+        && cached.ctimeMs === stat.ctimeMs && cached.ino === stat.ino && cached.dev === stat.dev
         && cached.size === stat.size
       ) {
         // Re-insert to mark as most recently used.
@@ -115,7 +121,8 @@ export function createSessionHistoryCache(
       // (or rewind may remap the native path) while an older parse is pending.
       const pending = pendingLoads.get(sessionId);
       if (pending && pending.transcriptPath === transcriptPath
-        && pending.mtimeMs === stat.mtimeMs && pending.size === stat.size) {
+        && pending.mtimeMs === stat.mtimeMs && pending.ctimeMs === stat.ctimeMs
+        && pending.ino === stat.ino && pending.dev === stat.dev && pending.size === stat.size) {
         return pending.result;
       }
 
@@ -124,12 +131,12 @@ export function createSessionHistoryCache(
         // a newer request has already loaded the changed transcript.
         if (pendingLoads.get(sessionId)?.result === load) {
           entries.delete(sessionId);
-          entries.set(sessionId, { transcriptPath, mtimeMs: stat.mtimeMs, size: stat.size, full });
+          entries.set(sessionId, { transcriptPath, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, ino: stat.ino, dev: stat.dev, size: stat.size, full });
           evictOverBudget();
         }
         return full;
       });
-      pendingLoads.set(sessionId, { transcriptPath, mtimeMs: stat.mtimeMs, size: stat.size, result: load });
+      pendingLoads.set(sessionId, { transcriptPath, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, ino: stat.ino, dev: stat.dev, size: stat.size, result: load });
       try {
         return await load;
       } finally {
@@ -139,4 +146,5 @@ export function createSessionHistoryCache(
   };
 }
 
+/** Shared bounded transcript cache used by providers sessions service. */
 export const sessionHistoryCache = createSessionHistoryCache();

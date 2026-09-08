@@ -26,6 +26,7 @@ test('remote transport scopes API, WebSocket and shell but leaves external servi
     base = '/remote/alpha';
   for (const path of ['/api/projects', '/api/providers/sessions/same-id?offset=40', '/health']) assert.equal(remoteTransportUrl(path, origin, base), origin + base + path);
   assert.equal(remoteTransportUrl('ws://127.0.0.1:3000/ws?token=fake', origin, base), 'ws://127.0.0.1:3000/remote/alpha/ws?token=fake');
+  assert.equal(remoteTransportUrl('ws://127.0.0.1:3000/plugin-ws/fixture_terminal?token=fake', origin, base), 'ws://127.0.0.1:3000/remote/alpha/plugin-ws/fixture_terminal?token=fake');
   assert.equal(remoteTransportUrl('/shell', origin, base), origin + base + '/shell');
   for (const path of ['https://example.org/api/test', '/assets/app.js', '/remote/beta/api/projects']) assert.equal(remoteTransportUrl(path, origin, base), path);
 });

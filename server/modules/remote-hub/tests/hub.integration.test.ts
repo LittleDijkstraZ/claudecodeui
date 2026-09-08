@@ -154,6 +154,19 @@ test('websocket text/binary streams and query authentication remain scoped to th
   await once(invalid, 'error'); invalid.terminate();
 });
 
+test('plugin websocket handshakes and initial input reach only the selected remote', async () => {
+  for (const [id, expected, remote] of [['one', 'first', first], ['two', 'second', second]] as const) {
+    const socket = new WebSocket(origin.replace('http:', 'ws:') + `/remote/${id}/plugin-ws/fixture_plugin?token=plugin-${id}`, { origin });
+    await once(socket, 'open');
+    const reply = once(socket, 'message'); socket.send('first-input');
+    assert.equal(JSON.parse(String((await reply)[0])).remote, expected);
+    assert.equal(remote.socketRequests.at(-1), `/plugin-ws/fixture_plugin?token=plugin-${id}`);
+    const closed = once(socket, 'close'); socket.close(); await closed;
+  }
+  const invalid = new WebSocket(origin.replace('http:', 'ws:') + '/remote/one/plugin-ws/not.allowed', { origin });
+  await once(invalid, 'error'); invalid.terminate();
+});
+
 test('one disconnected remote does not block HTTP and websocket access to the other', async () => {
   await first.close();
   const [offline, online] = await Promise.all([request('/remote/one/health'), request('/remote/two/health')]);

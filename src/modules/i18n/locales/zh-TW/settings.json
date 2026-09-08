@@ -155,6 +155,12 @@
         "label": "字型大小",
         "description": "編輯器字型大小（px）"
       }
+    },
+    "toolTabs": {
+      "label": "工具標籤顯示",
+      "description": "選擇工作區工具的顯示方式。儲存在目前瀏覽器，套用至工作台中的所有機器。",
+      "icons": "只顯示圖示",
+      "iconsAndText": "圖示和文字"
     }
   },
   "mcpForm": {
@@ -448,6 +454,7 @@
     }
   },
   "pluginSettings": {
+    "bundleRequirement": "請檢查外掛是否建置為獨立的單檔瀏覽器 bundle。目前驗證載入器不支援相對模組匯入，或透過 import.meta.url 讀取同目錄資源。",
     "title": "外掛",
     "description": "透過自訂外掛擴充介面。從 git 安裝或直接將資料夾放入 ~/.claude-code-ui/plugins/",
     "installPlaceholder": "https://github.com/user/my-plugin",

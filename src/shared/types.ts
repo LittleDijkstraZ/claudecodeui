@@ -160,6 +160,9 @@ export type InstallMode = 'git' | 'npm';
 /** Identity of the run owning a websocket sequence cursor; session IDs remain stable across many runs. */
 export type ChatRunCursor = { runId: string; startedAt?: number };
 
+/** Claude sends wait for the current reply by default; interrupt explicitly redirects the same native process. */
+export type ClaudeInputMode = 'queue' | 'interrupt';
+
 /** Authoritative state of a live Claude execution; background work keeps the run alive without blocking its input stream. */
 export type SessionRuntimeState = {
   /** One foreground reply within a longer native execution. Absent while only background work remains. */
@@ -167,6 +170,8 @@ export type SessionRuntimeState = {
   foregroundStartedAt?: string;
   phase?: 'foreground' | 'background';
   acceptsInput?: boolean;
+  /** Only modes explicitly advertised by this remote execution may be offered as supported. */
+  inputModes?: ClaudeInputMode[];
   backgroundTasks?: number;
   executionId?: string;
 };
@@ -1067,6 +1072,8 @@ export type Plugin = {
   name: string;
   displayName: string;
   version: string;
+  /** Changes when the installed entry artifact changes, including same-version updates. */
+  assetRevision?: string;
   description: string;
   author: string;
   icon: string;
@@ -1901,6 +1908,9 @@ export type ClaudeUsageSnapshot = {
 // ---------------------------
 
 //----------------- RIGHT WORKSPACE PANELS ------------
+
+/** Browser-wide display choice shared by toolbars and Appearance settings across retained remote frames. */
+export type WorkspaceToolTabAppearance = 'icons' | 'icons-and-text';
 
 /** A retained workspace view shown beside the primary conversation. */
 export type WorkspacePanelTab = Exclude<AppTab, 'chat'> | 'agents' | 'sideChat' | 'preferences';

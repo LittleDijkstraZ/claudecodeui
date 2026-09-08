@@ -16,6 +16,28 @@ type PluginsContextValue = {
   togglePlugin: (name: string, enabled: boolean) => Promise<PluginActionResult>;
 };
 
+// Repository manifests are external JSON; optional package-style metadata must
+// never become object-valued React children and erase the settings page.
+function normalizePlugin(value: unknown): Plugin | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const item = value as Record<string, unknown>;
+  if (typeof item.name !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(item.name)) return null;
+  const text = (field: unknown, fallback = '') => typeof field === 'string' ? field : fallback;
+  const authorName = item.author && typeof item.author === 'object' && 'name' in item.author ? item.author.name : item.author;
+  return {
+    name: item.name, displayName: text(item.displayName, item.name), entry: text(item.entry, 'index.js'),
+    version: typeof item.version === 'number' ? String(item.version) : text(item.version, '0.0.0'),
+    assetRevision: typeof item.assetRevision === 'string' ? item.assetRevision : undefined,
+    description: text(item.description), author: text(authorName), icon: text(item.icon, 'Puzzle'),
+    type: item.type === 'react' ? 'react' : 'module', slot: 'tab',
+    server: typeof item.server === 'string' ? item.server : null,
+    permissions: Array.isArray(item.permissions) ? item.permissions.filter((permission): permission is string => typeof permission === 'string') : [],
+    enabled: item.enabled === true, serverRunning: item.serverRunning === true,
+    dirName: text(item.dirName, item.name), repoUrl: typeof item.repoUrl === 'string' ? item.repoUrl : null,
+    serverError: typeof item.serverError === 'string' ? item.serverError : null,
+  };
+}
+
 const PluginsContext = createContext<PluginsContextValue | null>(null);
 
 export function usePlugins() {
@@ -45,7 +67,8 @@ export function PluginsProvider({ children }: { children: ReactNode }) {
       if (res.ok) {
         const data = await res.json();
         if (version !== requestVersion.current) return;
-        setPlugins(data.plugins || []);
+        if (!Array.isArray(data.plugins)) throw new Error('Remote plugin inventory is invalid. Refresh plugins to retry.');
+        setPlugins(data.plugins.map(normalizePlugin).filter((plugin: Plugin | null): plugin is Plugin => Boolean(plugin)));
         setPluginsError(null);
       } else {
         let errorMessage = `Failed to fetch plugins (${res.status})`;
@@ -95,9 +118,11 @@ export function PluginsProvider({ children }: { children: ReactNode }) {
         // older servers return a raw manifest, which must not be guessed here.
         if (data.inventoryConfirmed === true && typeof data.plugin?.name === 'string'
           && typeof data.plugin?.enabled === 'boolean' && typeof data.plugin?.entry === 'string') {
-          const installed = data.plugin as Plugin;
-          ++requestVersion.current;
-          setPlugins(current => [...current.filter(plugin => plugin.name !== installed.name), installed]);
+          const installed = normalizePlugin(data.plugin);
+          if (installed) {
+            ++requestVersion.current;
+            setPlugins(current => [...current.filter(plugin => plugin.name !== installed.name), installed]);
+          }
         }
         await refreshPlugins();
         changes.current?.postMessage('changed');

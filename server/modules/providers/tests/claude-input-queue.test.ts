@@ -243,3 +243,32 @@ test('one response consuming two inputs confirms both without conflating their s
   assert.equal(deliveries.filter(entry => entry.id === 'send-a').at(-1)?.transcriptAnchorId, 'native-a');
   queue.release();
 });
+
+
+test('default follow-ups wait for a native next turn while explicit interrupt uses now without replacing queued inputs', async (context) => {
+  const { queue, deliveries } = fixture(); context.after(() => queue.release());
+  queue.begin('initial', 'Initial', true)!.commit([message('Initial')]);
+  queue.begin('queued', 'After this turn')!.commit([message('After this turn')]);
+  queue.begin('interrupt', 'Change direction now', false, {}, 'interrupt')!.commit([message('Change direction now')]);
+  const inputs = [await queue.stream.next(), await queue.stream.next(), await queue.stream.next()].map(item => item.value!);
+  assert.deepEqual(inputs.map(input => [input.uuid, input.priority]), [['initial', 'next'], ['queued', 'later'], ['interrupt', 'now']]);
+  assert.deepEqual(deliveries.map(entry => entry.deliveryMode), ['queue', 'queue', 'interrupt']);
+  queue.observe({ type: 'result', terminal_reason: 'aborted_streaming', user_message_uuid: 'initial' });
+  assert.equal(queue.hasPending(), true);
+  assert.equal(deliveries.filter(entry => entry.id === 'queued').at(-1)?.delivery, 'queued');
+  assert.equal(deliveries.filter(entry => entry.id === 'interrupt').at(-1)?.delivery, 'queued');
+  assert.equal(queue.isOpen(), true);
+});
+
+test('the same UUID cannot change a queued send into an interrupt or downgrade an interrupt on retry', async (context) => {
+  const { queue } = fixture(); context.after(() => queue.release());
+  queue.begin('queue-id', 'Prompt')!.commit([message('Prompt')]);
+  assert.throws(() => queue.begin('queue-id', 'Prompt', false, {}, 'interrupt'), /different message or delivery mode/);
+  assert.equal(queue.begin('queue-id', 'Prompt', false, {}, 'queue'), null);
+  queue.begin('interrupt-id', 'Prompt', false, {}, 'interrupt')!.commit([message('Prompt')]);
+  assert.throws(() => queue.begin('interrupt-id', 'Prompt'), /different message or delivery mode/);
+  assert.equal(queue.begin('interrupt-id', 'Prompt', false, {}, 'interrupt'), null);
+  assert.equal((await queue.stream.next()).value?.priority, 'later');
+  assert.equal((await queue.stream.next()).value?.priority, 'now');
+  assert.equal(queue.messageCount(), 2);
+});

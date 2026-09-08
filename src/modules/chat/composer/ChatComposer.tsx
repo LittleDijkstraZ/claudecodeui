@@ -10,7 +10,7 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { PaperclipIcon, MessageSquareIcon, XIcon, Loader2, ArrowUpIcon, PencilIcon } from 'lucide-react';
+import { PaperclipIcon, MessageSquareIcon, XIcon, Loader2, ArrowUpIcon, PencilIcon, ZapIcon } from 'lucide-react';
 
 import { AgentsStatus } from '@/modules/workspace-panels';
 import { useVoiceInput } from '@/modules/chat/hooks/useVoiceInput';
@@ -75,6 +75,8 @@ type ChatComposerProps = {
   hasInput: boolean;
   onClearInput: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement> | MouseEvent<HTMLButtonElement> | TouchEvent<HTMLButtonElement>) => void;
+  /** Interrupts the current reply and sends the draft through its existing native input stream. */
+  onInterruptAndSend?: (event: MouseEvent<HTMLButtonElement>) => void;
   isDragActive: boolean;
   queuedDraft: QueuedDraft | null;
   /** Set while the composer is replacing an already-sent message. */
@@ -153,6 +155,7 @@ export default function ChatComposer({
   hasInput,
   onClearInput,
   onSubmit,
+  onInterruptAndSend,
   isDragActive,
   queuedDraft,
   isEditingSentMessage,
@@ -261,12 +264,15 @@ export default function ChatComposer({
 
   const hasQueuedDraft = Boolean(queuedDraft);
   const legacyClaudeQueue = provider === 'claude' && Boolean(activity) && activity?.acceptsInput !== true;
-  const canQueueDraft = isLoading && Boolean(input.trim() || attachedFiles.length > 0);
+  const isClaudeWorking = provider === 'claude' && activity?.phase === 'foreground';
+  const canQueueDraft = (isLoading || isClaudeWorking) && Boolean(input.trim() || attachedFiles.length > 0);
+  const canInterruptAndSend = activity?.acceptsInput === true && activity.inputModes?.includes('interrupt') === true
+    && Boolean(input.trim() || attachedFiles.length > 0) && !isEditingSentMessage;
   // Sending to Claude is checked by the server, even before capability updates
   // reach this view. Keep the stop action only for an empty composer.
   const submitHint = canQueueDraft
     ? provider === 'claude'
-      ? t('input.hintText.liveQueue', { defaultValue: 'Enter to send to this conversation' })
+      ? t('input.queue.afterReply', { defaultValue: 'Queue until the current reply ends; background Workflows keep running' })
       : hasQueuedDraft
         ? t('input.hintText.updateQueued', { defaultValue: 'Enter to update queued message' })
         : t('input.hintText.queue', { defaultValue: 'Enter to queue your next message' })
@@ -275,7 +281,7 @@ export default function ChatComposer({
       : t('input.hintText.enter');
   const submitAriaLabel = canQueueDraft
     ? provider === 'claude'
-      ? t('input.send')
+      ? t('input.queue.sendNext', { defaultValue: 'Queue next message' })
       : hasQueuedDraft
         ? t('input.queue.update', { defaultValue: 'Update queued message' })
         : t('input.queue.sendNext', { defaultValue: 'Queue next message' })
@@ -552,6 +558,23 @@ export default function ChatComposer({
                 <ArrowUpIcon className="h-4 w-4" />
               ) : undefined}
             </PromptInputSubmit>
+            {provider === 'claude' && activity && onInterruptAndSend && (
+              <button
+                type="button"
+                onClick={onInterruptAndSend}
+                disabled={!canInterruptAndSend}
+                aria-label={t('input.interruptAndSend', { defaultValue: 'Interrupt and send' })}
+                title={isEditingSentMessage
+                  ? t('input.interruptEditing', { defaultValue: 'Finish or cancel editing the earlier message before interrupting with a new message.' })
+                  : !activity.inputModes?.includes('interrupt')
+                    ? t('input.interruptUnavailable', { defaultValue: 'This remote execution has not confirmed interrupt-and-send support. Your draft has not been sent; wait for its state to update or use Queue.' })
+                    : t('input.interruptHint', { defaultValue: 'Interrupt the current reply and send this draft now. Existing queued messages and background Workflows remain.' })}
+                className="inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-xl border border-amber-500/30 px-2.5 text-xs font-medium text-amber-700 hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-40 dark:text-amber-400"
+              >
+                <ZapIcon className="h-3.5 w-3.5" aria-hidden="true" />
+                {t('input.interrupt', { defaultValue: 'Interrupt' })}
+              </button>
+            )}
           </div>
 
         </PromptInputFooter>

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
-import { Settings, SlidersHorizontal } from 'lucide-react';
+import { PanelRightClose, PanelRightOpen, Settings } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { ChatInterface, AgentsPanel } from '@/modules/chat';
@@ -116,16 +116,17 @@ function WorkspaceMain({
     : <div className="truncate text-sm font-medium">{machineLabel}</div>;
   // Chat is the persistent main surface; preferences is a setting, not a tool tab.
   const selectedTool = panel?.open && panel.tab !== 'preferences' ? panel.tab : 'chat';
+  const hubControlsPanel = Boolean(window.__CLOUDCLI_EMBEDDED__ && !window.__CLOUDCLI_SIDE_CHAT__);
+  const toolNavigation = <WorkspaceTabs activeTab={selectedTool} sessionId={selectedSession?.id ?? null} setActiveTab={toggleView} onNavigation={selectView} shouldShowTasksTab={shouldShowTasksTab} shouldShowBrowserTab={shouldShowBrowserTab} />;
   return <div className="flex h-full min-h-0 min-w-0 flex-col">
-    <div className={`flex min-h-[52px] min-w-0 shrink-0 items-center gap-1 border-b border-border/60 bg-background ${window.__CLOUDCLI_EMBEDDED__ && !window.__CLOUDCLI_SIDE_CHAT__ ? 'pl-14 pr-2' : 'px-2'}`} data-testid="workspace-tool-bar">
+    <div className={`flex min-h-[52px] min-w-0 shrink-0 items-center gap-1 border-b border-border/60 bg-background ${hubControlsPanel ? 'px-14' : 'px-2'}`} data-testid="workspace-header">
       {!window.__CLOUDCLI_EMBEDDED__ && isMobile && selectedProject && <MobileMenuButton onMenuClick={onMenuClick} compact />}
-      <div className="min-w-0 max-w-[28%] shrink-0 basis-48 px-1">{workspaceIdentity}</div>
-      <div className="flex min-w-0 flex-1 justify-end"><WorkspaceTabs activeTab={selectedTool} sessionId={selectedSession?.id ?? null} setActiveTab={toggleView} onNavigation={selectView} shouldShowTasksTab={shouldShowTasksTab} shouldShowBrowserTab={shouldShowBrowserTab} /></div>
-      <button type="button" onClick={() => panelActions?.togglePanel('preferences')} aria-label={t('workspacePanel.preferences', { defaultValue: 'Preferences' })} title={`${machineLabel} · ${t('workspacePanel.preferences', { defaultValue: 'Preferences' })}`} aria-expanded={visible('preferences')} className="flex h-11 min-h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"><SlidersHorizontal className="h-[18px] w-[18px]" /></button>
+      <div className="min-w-0 flex-1 px-1">{workspaceIdentity}</div>
+      <button type="button" onClick={() => onShowSettings()} aria-label={`${machineLabel} · ${t('workspacePanel.machineSettings', { defaultValue: 'Machine settings' })}`} title={`${machineLabel} · ${t('workspacePanel.machineSettings', { defaultValue: 'Machine settings' })}`} aria-haspopup="dialog" aria-expanded={settingsOpen} className="flex h-11 min-h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"><Settings className="h-[18px] w-[18px]" /></button>
+      {!hubControlsPanel && !mainCovered && <button type="button" onClick={() => panelActions?.setPanelOpen(!panel?.open)} aria-label={t(panel?.open ? 'workspacePanel.collapse' : 'workspacePanel.open', { defaultValue: panel?.open ? 'Collapse panel; keep work running' : 'Open workspace panel' })} title={t(panel?.open ? 'workspacePanel.collapse' : 'workspacePanel.open', { defaultValue: panel?.open ? 'Collapse panel; keep work running' : 'Open workspace panel' })} aria-expanded={Boolean(panel?.open)} className="flex h-11 min-h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">{panel?.open ? <PanelRightClose className="h-[18px] w-[18px]" /> : <PanelRightOpen className="h-[18px] w-[18px]" />}</button>}
     </div>
-    <WorkspacePanelLayout main={main} mainCovered={mainCovered} title={title} sessionId={selectedSession?.id ?? null}>
+    <WorkspacePanelLayout main={main} mainCovered={mainCovered} title={title} navigation={toolNavigation} sessionId={selectedSession?.id ?? null}>
       {retained('preferences') && <div className={`h-full min-h-0 flex-col ${visible('preferences') ? 'flex' : 'hidden'}`}>
-        <div className="shrink-0 border-b border-border/60 p-3"><button type="button" onClick={() => onShowSettings()} className="flex min-h-11 w-full items-center gap-2.5 rounded-lg border border-border px-3 py-2 text-left text-sm hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary" aria-label={`${machineLabel} · ${t('workspacePanel.machineSettings', { defaultValue: 'Machine settings' })}`}><Settings className="h-[18px] w-[18px] shrink-0" /><span>{t('workspacePanel.machineSettings', { defaultValue: 'Machine settings' })}</span></button></div>
         <QuickSettingsPanel />
       </div>}
       {retained('shell') && <div className={`h-full ${visible('shell') ? 'block' : 'hidden'}`}><WorkspaceTerminals project={selectedProject} session={selectedSession} visible={visible('shell')} /></div>}

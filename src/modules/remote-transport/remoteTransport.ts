@@ -10,6 +10,8 @@ declare global {
     __REMOTE_HUB__?: boolean;
     __CLOUDCLI_EMBEDDED__?: boolean;
     __CLOUDCLI_SIDE_CHAT__?: boolean;
+    /** Unscoped browser preferences only; session/auth consumers must keep using localStorage. */
+    __CLOUDCLI_BROWSER_STORAGE__?: Storage;
   }
 }
 
@@ -18,7 +20,7 @@ declare global {
 export function remoteTransportUrl(value: string, origin: string, base: string): string {
   const url = new URL(value, origin);
   if (url.host !== new URL(origin).host || !['http:', 'https:', 'ws:', 'wss:'].includes(url.protocol)) return value;
-  if (!/^\/(?:api(?:\/|$)|health$|ws$|shell$)/.test(url.pathname)) return value;
+  if (!/^\/(?:api(?:\/|$)|health$|ws$|shell$|plugin-ws\/[a-zA-Z0-9_-]+$)/.test(url.pathname)) return value;
   url.pathname = base + url.pathname;
   return url.href;
 }
@@ -51,6 +53,9 @@ export function installRemoteTransport() {
   if (!base || !id) return;
   const resolve = (url: string) => remoteTransportUrl(url, window.location.origin, base);
   const storage = window.localStorage;
+  // Retain the browser-owned store for appearance choices shared by hub frames.
+  // Everything else continues through the immutable per-remote storage wrapper.
+  window.__CLOUDCLI_BROWSER_STORAGE__ = storage;
   const scoped = scopedRemoteStorage(storage, id);
   for (const key of ['userLanguage', 'theme']) {
     if (scoped.getItem(key) === null && storage.getItem(key) !== null) scoped.setItem(key, storage.getItem(key)!);

@@ -623,6 +623,7 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
   let foreground = true;
   let foregroundTurnId = crypto.randomUUID();
   let foregroundStartedAt = new Date().toISOString();
+  const reportedInterruptions = new Set<string>();
   let streamStarted = false;
   let streamGeneration = 0;
   let commandCatalogGeneration = 0;
@@ -630,10 +631,10 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
   const inputQueue = createClaudeInputQueue((entry, error) => {
     ws.send(createNormalizedMessage({ kind: 'status', text: 'message_delivery', provider: 'claude', sessionId: sessionKey(),
       clientMessageId: entry.id, responseMessageId: entry.responseMessageId, transcriptAnchorId: entry.transcriptAnchorId, providerSessionId: capturedSessionId || undefined,
-      delivery: entry.delivery, content: entry.command, images: entry.images, files: entry.files, timestamp: entry.timestamp, executionId, ...(error ? { error } : {}) }));
+      delivery: entry.delivery, deliveryMode: entry.deliveryMode, content: entry.command, images: entry.images, files: entry.files, timestamp: entry.timestamp, executionId, ...(error ? { error } : {}) }));
   });
   const emitRuntimeState = () => ws.send(createNormalizedMessage({ kind: 'status', text: 'claude_runtime_state', provider: 'claude', sessionId: sessionKey(),
-    phase: foreground ? 'foreground' : 'background', acceptsInput: streamStarted && inputQueue.isOpen(), backgroundTasks: backgroundWork.pendingCount(), executionId,
+    phase: foreground ? 'foreground' : 'background', acceptsInput: streamStarted && inputQueue.isOpen(), inputModes: ['queue', 'interrupt'], backgroundTasks: backgroundWork.pendingCount(), executionId,
     foregroundTurnId: foreground ? foregroundTurnId : undefined, foregroundStartedAt: foreground ? foregroundStartedAt : undefined }));
   releasePromptStream = inputQueue.release;
   const enqueueInput = async (command: string, next: AnyRecord): Promise<boolean> => {
@@ -641,7 +642,8 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
     claudeCommandCatalog.assertAllowed(command, capturedSessionId);
     if (next.cwd && path.resolve(next.cwd) !== path.resolve(options.cwd)) throw new Error('The queued message must use this Claude process’s project folder.');
     if (typeof next.clientMessageId !== 'string') throw new Error('A message identifier is required for the existing input stream.');
-    const slot = inputQueue.begin(next.clientMessageId, command, false, { images: next.images, files: next.files });
+    if (next.deliveryMode !== undefined && next.deliveryMode !== 'queue' && next.deliveryMode !== 'interrupt') throw new Error('Unsupported message delivery mode.');
+    const slot = inputQueue.begin(next.clientMessageId, command, false, { images: next.images, files: next.files }, next.deliveryMode ?? 'queue');
     if (!slot) return true;
     if (idleReleaseTimer) { clearTimeout(idleReleaseTimer); idleReleaseTimer = null; }
     try {
@@ -702,6 +704,7 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
 
   try {
     emitRuntimeState();
+    if (options.deliveryMode === 'interrupt') throw new Error('Interrupt and send requires an existing Claude input stream. No replacement process was started.');
     claudeCommandCatalog.assertAllowed(command, capturedSessionId);
     if ('expectedProviderSessionId' in options && options.expectedProviderSessionId !== providerSessionId) throw new Error('The conversation changed before Claude started. Retry using its current state.');
     if (options.executionSettings && sessionId) {
@@ -1058,12 +1061,13 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
           ws.send(createNormalizedMessage({ kind: 'task_notification', status: 'info', provider: 'claude', sessionId: sid,
             id: `native-result-${message.uuid || message.user_message_uuid}`, summary: `Claude /${nativeReports.join(', /')}: ${message.result}` }));
         }
-        lastResultFailed = message.is_error === true;
+        const interrupted = message.terminal_reason === 'aborted_streaming' || message.terminal_reason === 'aborted_tools';
+        const resultErrors = Array.isArray(message.errors) ? message.errors.filter((error: unknown) => typeof error === 'string' && error.trim()) : [];
+        lastResultFailed = message.is_error === true && (!interrupted || resultErrors.length > 0 || typeof message.api_error_status === 'number');
         const turn = backgroundWork.finishTurn(lastResultFailed);
         const abortPending = Boolean(sessionKey() && getSession(sessionKey()!)?.aborted);
         if (lastResultFailed && !abortPending) {
-          const errors = Array.isArray(message.errors) ? message.errors.filter((error: unknown) => typeof error === 'string') : [];
-          const errorContent = errors.join('\n') || (typeof message.result === 'string' ? message.result : '') || `Claude ended this turn with ${message.subtype || 'an error'}.`;
+          const errorContent = resultErrors.join('\n') || (typeof message.result === 'string' ? message.result : '') || `Claude ended this turn with ${message.subtype || 'an error'}.`;
           ws.send(createNormalizedMessage({ kind: 'error', content: errorContent, sessionId: sid, provider: 'claude' }));
           notifyRunFailed({
             userId: ws.userId || null, provider: 'claude', sessionId: sessionId || capturedSessionId || null,
@@ -1075,7 +1079,14 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
           // A foreground result does not end the native runtime or its Workflow.
           for (const msg of textStream.finish(sid)) ws.send(msg);
           emitRuntimeState();
-          if (!lastResultFailed) ws.send(createNormalizedMessage({ kind: 'status', text: 'foreground_complete', provider: 'claude', sessionId: sid, executionId, foregroundTurnId, foregroundStartedAt }));
+          if (interrupted && !reportedInterruptions.has(foregroundTurnId)) {
+            reportedInterruptions.add(foregroundTurnId);
+            ws.send(createNormalizedMessage({ kind: 'task_notification', status: 'info', provider: 'claude', sessionId: sid,
+              id: `interrupted-${executionId}-${foregroundTurnId}`, executionId, foregroundTurnId,
+              summary: 'Current response interrupted. Continue with the next message in this session.', reason: message.terminal_reason }));
+          }
+          if (!lastResultFailed) ws.send(createNormalizedMessage({ kind: 'status', text: 'foreground_complete', provider: 'claude', sessionId: sid, executionId, foregroundTurnId, foregroundStartedAt,
+            ...(interrupted ? { status: 'interrupted', interrupted: true, reason: message.terminal_reason } : {}) }));
           if (heldForBackgroundWork && !backgroundWork.hasPendingWorkflow() && !lastResultFailed) notifyBackgroundWorkCompleted({
             userId: ws.userId || null, provider: 'claude', sessionId: sessionKey(), sessionName: sessionSummary,
           });

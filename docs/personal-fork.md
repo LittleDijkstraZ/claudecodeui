@@ -48,6 +48,17 @@ Polling uses the client clock for idle-response guards; remote timestamps must
 not keep a restarted session artificially busy. Partial capabilities are retained
 only when a snapshot identifies the same execution.
 
+Regular follow-up sends and retries use native input priority `later`: Claude
+finishes its current foreground reply before processing the queued message.
+Interrupt and send requires a nonempty draft (or attachment) and an existing
+execution advertising that capability. It submits one native `now` message to
+the same query; it does not abort the query, clear its queue, restart Claude,
+or cancel background Workflows. Reusing a message UUID with a different mode
+is a conflict. Unknown/closed input streams retain the draft and report refusal;
+editing or rewinding a previous message cannot use this action. Structured
+native interruption results receive a concise interrupted status, while actual
+provider errors remain visible. Queue admission is still not proof of delivery.
+
 A manual retry links the retained unconfirmed copy to its new send UUID. Repeated
 clicks cannot create additional copies from that source, including after refresh;
 if the new send fails, retry is offered on that new copy. Retrying preserves
@@ -529,11 +540,18 @@ Reference: [Claude SDK command discovery and compaction](https://code.claude.com
 ## Adjustable workspace sides
 
 Chat remains the main workspace and has no tool tab. Shell, Files, Source Control,
-Agents and enabled tools remain visible at the top right, outside the drawer,
-with labelled large hit targets and an overflow More menu in narrow windows. Clicking
-the active tool again collapses the panel without unmounting it. A
-single compact row holds session/machine identity and those tools; the browser's
-own window title bar is unchanged. Preferences has a separate settings button.
+Agents and enabled plugins are selected inside the right panel, with large hit
+targets, hover labels and a More menu when space is limited. Clicking the active
+tool again collapses the panel without unmounting it. There is no second toolbar
+above Chat: one compact row holds session/machine identity and a direct machine
+settings gear. The right-panel toggle stays at the upper-right corner, aligned
+with the left sidebar toggle. The browser's own window title bar is unchanged.
+
+Settings → Appearance switches between icons (the default) and icons with text.
+This is a browser-wide preference shared across remote frames; credentials,
+drafts and model settings remain scoped to their remote. Light mode uses white
+main/right surfaces and a light-gray left sidebar; dark mode and semantic status
+colors retain their existing meanings.
 
 The left sidebar can collapse and be resized by pointer or keyboard, with its
 preferred width preserved across narrow windows and reloads. Conversation and
@@ -548,17 +566,23 @@ broadcast to other windows. A conflicting save reapplies the move against the
 latest revision, preserving concurrent edits and group contents. The detached
 single-group view hides sorting controls. Existing conversation dragging is unchanged.
 
-The right-edge control opens the retained workspace panel. The panel contains
+The upper-right control opens the retained workspace panel. The panel contains
 its selected tool, a compact tool heading and size controls. Closing, resizing
-or maximizing it does not replace its remote frame or running terminal. The hub
-keeps an external compatibility toolbar while a remote still serves the old
-layout, without duplicating the new remote toolbar. Shared modal coverage hides
+or maximizing it does not replace its remote frame or running terminal. Shared modal coverage hides
 outer handles and preserves unread state while token statistics, change review
 or settings covers the conversation.
 
 ## Continued history branches
 
 History projection follows the latest verifiable main user prompt ancestry when a conversation continues an earlier edited branch. Late assistant, tool, synthetic or sidechain records alone do not reactivate an abandoned prompt. Normal prompt replacement and parallel tool output remain supported; the native transcript, resume anchor and cumulative usage records are never rewritten by this display repair.
+
+History pages select their main-transcript range before reading child Agent logs.
+Only Agent rows on that page are enriched, with bounded parallel reads. Child
+progress updates refresh that enrichment without reparsing the unchanged parent
+transcript. Branch projection still uses the complete main transcript, and full
+history/usage recovery retains its complete scope. Cache identity includes file
+replacement metadata, so equal-sized replacements with preserved modification
+time cannot silently reuse stale history.
 
 
 ## Delivery, task review, and remote authorization
@@ -575,4 +599,8 @@ Session identity details separate CloudCLI's preserved name, Claude's automatic 
 
 Remote MCP Connect runs the remote CLI's no-browser login in the selected project. The local hub temporarily accepts the exact loopback callback URL/state supplied by that attempt and forwards it to the same authenticated remote attempt over the configured SSH tunnel. Manual full-URL paste and timeout retry remain available. A successful browser redirect alone is insufficient: the remote CLI's configured MCP health must report Connected. Managed or ambiguous configuration has an explicit terminal fallback. Existing independent terminal logins are not hijacked. Reference: [Claude command-line MCP authentication](https://code.claude.com/docs/en/mcp#authenticate-from-the-command-line).
 
-Plugin installation offers Open plugin. Enabled entries share the normal top-right tools and More overflow; inventory and asset failures are visible with retry, and the last successful inventory is retained on transient errors. Machine changes invalidate stale requests, so one remote's response cannot replace another remote's plugins.
+Plugin installation offers Open plugin. Enabled entries share the right panel's tool navigation and More overflow; inventory and asset failures are visible with retry, and the last successful inventory is retained on transient errors. Machine changes invalidate stale requests, so one remote's response cannot replace another remote's plugins.
+
+Plugin UI now mounts in its own same-origin document, preserving the selected remote’s HTTP/WebSocket routing and scoped storage while isolating accidental document/CSS changes from CloudCLI. This is a compatibility boundary for trusted installed plugins, not a security sandbox. Invalid optional manifest metadata (including object-valued authors) cannot crash Settings. A failed mount, missing entry, or stalled load retains host-owned error and retry controls; changed entry artifacts reload even when a plugin keeps its version number. Updates build and validate in hidden staging before promotion. Staged git/build/manifest failures retain the previous installed files and restart its prior backend. If the new backend fails readiness after promotion, the new plugin remains installed with a warning and retry controls; this is not an automatic rollback. Plugin sockets buffer bounded startup input and route through the selected SSH tunnel.
+
+The authenticated plugin loader still requires a built, self-contained single-file browser bundle. Relative module imports and sibling resources resolved through `import.meta.url` are not supported; these failures show a build compatibility hint and recovery controls. CloudCLI does not drop asset authentication or put account JWTs into plugin asset URLs to work around this boundary. Individual third-party plugins may still need their own build/runtime fixes.

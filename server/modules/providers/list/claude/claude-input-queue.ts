@@ -2,7 +2,7 @@ import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 
 import type { AnyRecord } from '@/shared/index.js';
 
-type Entry = { responseMessageId?: string; transcriptAnchorId?: string; images?: unknown; files?: unknown; id: string; command: string; timestamp: string; delivery: 'queued' | 'delivered' | 'failed'; processed: boolean; initial: boolean };
+type Entry = { responseMessageId?: string; transcriptAnchorId?: string; images?: unknown; files?: unknown; id: string; command: string; timestamp: string; delivery: 'queued' | 'delivered' | 'failed'; processed: boolean; initial: boolean; deliveryMode: 'queue' | 'interrupt' };
 
 /** The Claude runtime owns one pushable stdin iterable for the entire native process. */
 export function createClaudeInputQueue(onDelivery: (entry: Entry, error?: string) => void) {
@@ -12,16 +12,16 @@ export function createClaudeInputQueue(onDelivery: (entry: Entry, error?: string
   let preparing = 0;
   let wake: (() => void) | null = null;
   const notify = () => { wake?.(); wake = null; };
-  const begin = (id: string, command: string, initial = false, attachments: { images?: unknown; files?: unknown } = {}) => {
+  const begin = (id: string, command: string, initial = false, attachments: { images?: unknown; files?: unknown } = {}, deliveryMode: Entry['deliveryMode'] = 'queue') => {
     const existing = entries.get(id);
     if (existing) {
-      if (existing.command !== command || JSON.stringify([existing.images ?? [], existing.files ?? []]) !== JSON.stringify([attachments.images ?? [], attachments.files ?? []])) throw new Error('This message identifier already belongs to a different message.');
+      if (existing.command !== command || existing.deliveryMode !== deliveryMode || JSON.stringify([existing.images ?? [], existing.files ?? []]) !== JSON.stringify([attachments.images ?? [], attachments.files ?? []])) throw new Error('This message identifier already belongs to a different message or delivery mode.');
       onDelivery(existing);
       return null;
     }
     if (closed) throw new Error('The existing Claude input stream has closed. This message was not submitted.');
     if ([...entries.values()].filter(entry => !entry.processed).length >= 64) throw new Error('The existing Claude input queue is full. Wait for a queued message to be handled.');
-    const entry: Entry = { ...attachments, id, command, initial, timestamp: new Date().toISOString(), delivery: 'queued', processed: false };
+    const entry: Entry = { ...attachments, id, command, initial, deliveryMode, timestamp: new Date().toISOString(), delivery: 'queued', processed: false };
     entries.set(id, entry); preparing++;
     const reserved: (typeof pending)[number] = { entry, messages: null };
     pending.push(reserved);
@@ -31,7 +31,10 @@ export function createClaudeInputQueue(onDelivery: (entry: Entry, error?: string
       commit(messages: SDKUserMessage[]) {
         if (settled) return; settled = true; preparing--;
         if (closed) { entry.delivery = 'failed'; entry.processed = true; onDelivery(entry, 'Claude closed before this message could be submitted.'); return; }
-        reserved.messages = messages.map(message => ({ ...message, uuid: id as SDKUserMessage['uuid'], timestamp: entry.timestamp, priority: 'next', origin: { kind: 'human' } }));
+        // Native "later" waits for a new turn instead of folding into current
+        // tool rounds. Only an explicit send-and-interrupt may use "now".
+        reserved.messages = messages.map(message => ({ ...message, uuid: id as SDKUserMessage['uuid'], timestamp: entry.timestamp,
+          priority: initial ? 'next' : deliveryMode === 'interrupt' ? 'now' : 'later', origin: { kind: 'human' } }));
         notify();
       },
       fail(error: string) {

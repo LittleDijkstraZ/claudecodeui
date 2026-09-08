@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import DOMPurify from 'dompurify';
+import { Puzzle } from 'lucide-react';
 
 import { api } from '@/shared/api';
 
@@ -60,7 +61,9 @@ export default function PluginIcon({ pluginName, iconFile, className }: Props) {
   const [svg, setSvg] = useState<string | null>(url ? (svgCache.get(url) ?? null) : null);
 
   useEffect(() => {
+    setSvg(svgCache.get(url) ?? null);
     if (!iconFile || !url || svgCache.has(url)) return;
+    let active = true;
     api.plugins.asset(pluginName, iconFile)
       .then((r) => {
         if (!r.ok) return;
@@ -71,13 +74,14 @@ export default function PluginIcon({ pluginName, iconFile, className }: Props) {
         const sanitized = sanitizeSvg(text);
         if (sanitized) {
           svgCache.set(url, sanitized);
-          setSvg(sanitized);
+          if (active) setSvg(sanitized);
         }
       })
       .catch(() => {});
+    return () => { active = false; };
   }, [url, pluginName, iconFile]);
 
-  if (!svg) return <span className={className} />;
+  if (!svg) return <Puzzle className={className} aria-hidden="true" />;
 
   return (
     <span className={className} dangerouslySetInnerHTML={{ __html: svg }} />

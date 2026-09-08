@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { appendFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -178,4 +178,20 @@ test('the oldest entries are evicted over budget, but the newest survives alone'
   } finally {
     await rm(tempDirectory, { recursive: true, force: true });
   }
+});
+
+
+test('same-size replacement preserving mtime invalidates the transcript cache', async () => {
+  await withTranscriptFile(async (transcriptPath) => {
+    const cache = createSessionHistoryCache();
+    const before = await stat(transcriptPath);
+    const original = await cache.getFullHistory({ sessionId: 's1', transcriptPath, loadFull: async () => historyResult('original') });
+    const replacement = `${transcriptPath}.replacement`;
+    await writeFile(replacement, ' '.repeat(before.size));
+    await utimes(replacement, before.atime, before.mtime);
+    await rename(replacement, transcriptPath);
+    const updated = await cache.getFullHistory({ sessionId: 's1', transcriptPath, loadFull: async () => historyResult('replacement') });
+    assert.notEqual(updated, original);
+    assert.equal(updated?.messages[0].id, 'replacement');
+  });
 });

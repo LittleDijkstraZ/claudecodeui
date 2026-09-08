@@ -4,7 +4,6 @@ import path from 'node:path';
 import readline from 'node:readline';
 
 import { readClaudeTaskNotification } from '@/modules/providers/list/claude/claude-task-notifications.js';
-
 import type { IProviderSessions } from '@/shared/interfaces.js';
 import type {
   AnyRecord,
@@ -470,56 +469,11 @@ async function getSessionMessages(
       return { messages: [], total: 0, hasMore: false };
     }
 
-    const projectDir = path.dirname(jsonLPath);
-
     const messages = dropSupersededPromptBranches(
       await readTranscriptRows(jsonLPath, providerSessionId),
     );
 
     attachUserResponseIdentities(messages);
-
-    const agentIds = new Set<string>();
-    for (const message of messages) {
-      const agentId = message.toolUseResult?.agentId;
-      if (agentId) {
-        agentIds.add(String(agentId));
-      }
-    }
-
-    // Read each spawned agent's own transcript once, then hang it off every
-    // row that references it.
-    const subagentsById = new Map<string, {
-      activity: SubagentActivity[];
-      info: SubagentInfo;
-      endedMidToolCall: boolean;
-    }>();
-    for (const agentId of agentIds) {
-      const located = await findClaudeSubagentTranscript(projectDir, providerSessionId, agentId);
-      if (!located) {
-        continue;
-      }
-
-      const [transcript, meta] = await Promise.all([
-        readClaudeSubagentTranscript(located.transcriptPath),
-        readClaudeSubagentMeta(located.metaPath),
-      ]);
-
-      subagentsById.set(agentId, {
-        endedMidToolCall: transcript.endedMidToolCall,
-        activity: transcript.activity
-          .slice(0, MAX_TRANSMITTED_SUBAGENT_ACTIVITIES)
-          .map(truncateSubagentActivity),
-        info: {
-          id: agentId,
-          name: meta.agentType,
-          type: meta.agentType,
-          description: meta.description,
-          model: transcript.model,
-          status: 'completed',
-          activityCount: transcript.activity.length,
-        },
-      });
-    }
 
     // An async agent's launch result is internal bookkeeping ("Async agent
     // launched successfully…"); its real answer arrives later as a separate
@@ -535,34 +489,18 @@ async function getSessionMessages(
         continue;
       }
 
-      const subagent = subagentsById.get(String(agentId));
       const toolUseId = readAgentToolUseId(message);
       const notification = toolUseId ? notificationsByToolUseId.get(toolUseId) : undefined;
-      // An async agent's launch row never tells you it finished — only the
-      // later notification does. When that notification is missing (a live run,
-      // or one compacted out of the transcript), the agent's own transcript is
-      // the evidence: a timeline that does not stop mid-tool-call is done.
-      const isAwaitingAsyncAgent = message.toolUseResult?.isAsync === true
-        && !notification
-        && (!subagent || subagent.endedMidToolCall);
-
-      if (subagent) {
-        if (subagent.activity.length > 0) {
-          message.subagentTools = subagent.activity;
-        }
-        message.subagent = {
-          ...subagent.info,
-          description: subagent.info.description
-            ?? (typeof message.toolUseResult?.description === 'string' ? message.toolUseResult.description : undefined),
-          model: subagent.info.model
-            ?? (typeof message.toolUseResult?.resolvedModel === 'string' ? message.toolUseResult.resolvedModel : undefined),
-          status: isAwaitingAsyncAgent
-            ? 'running'
-            : notification && notification.status !== 'completed'
-              ? 'failed'
-              : 'completed',
-        };
-      }
+      // This cached projection contains only evidence from the main file.
+      // Agent transcript I/O is deferred until its tool call is on the page.
+      message.subagent = {
+        id: String(agentId),
+        description: typeof message.toolUseResult?.description === 'string' ? message.toolUseResult.description : undefined,
+        model: typeof message.toolUseResult?.resolvedModel === 'string' ? message.toolUseResult.resolvedModel : undefined,
+        status: notification
+          ? notification.status === 'completed' ? 'completed' : 'failed'
+          : message.toolUseResult?.isAsync === true ? 'running' : 'completed',
+      };
 
       if (notification) {
         replaceAgentToolResultContent(message, notification.result || notification.summary);
@@ -1087,6 +1025,58 @@ export class ClaudeSessionsProvider implements IProviderSessions {
     return { found: true, resumeThroughId: null };
   }
 
+  /** Sessions service calls this after pagination; direct history reads use it
+   * too. Read only agents actually present on the requested page, with bounded
+   * I/O concurrency. Never store child-file activity inside the parent-file cache. */
+  async enrichHistoryPage(sessionId: string, messages: NormalizedMessage[], expectedProviderSessionId?: string): Promise<NormalizedMessage[]> {
+    const session = sessionsDb.getSessionById(sessionId);
+    if (!session?.jsonl_path || !session.provider_session_id
+      || expectedProviderSessionId && session.provider_session_id !== expectedProviderSessionId) return messages;
+    const projectDirectory = path.dirname(session.jsonl_path);
+    const providerSessionId = session.provider_session_id;
+    const agentIds = [...new Set(messages.flatMap(message => message.subagent?.id ? [message.subagent.id] : []))];
+    if (!agentIds.length) return messages;
+    const agents = new Map<string, { transcript: ClaudeSubagentTranscript; meta: ClaudeSubagentMeta }>();
+    let nextAgent = 0;
+    const readNext = async () => {
+      while (nextAgent < agentIds.length) {
+        const agentId = agentIds[nextAgent++];
+        const located = await findClaudeSubagentTranscript(projectDirectory, providerSessionId, agentId);
+        if (!located) continue;
+        const [transcript, meta] = await Promise.all([
+          readClaudeSubagentTranscript(located.transcriptPath),
+          readClaudeSubagentMeta(located.metaPath),
+        ]);
+        agents.set(agentId, { transcript, meta });
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(8, agentIds.length) }, readNext));
+    return messages.map(message => {
+      const agent = message.subagent && agents.get(message.subagent.id);
+      if (!agent || !message.subagent) return message;
+      const { transcript, meta } = agent;
+      return {
+        ...message,
+        subagentTools: transcript.activity.length
+          ? transcript.activity.slice(0, MAX_TRANSMITTED_SUBAGENT_ACTIVITIES).map(truncateSubagentActivity)
+          : undefined,
+        subagent: {
+          ...message.subagent,
+          name: meta.agentType,
+          type: meta.agentType,
+          description: meta.description ?? message.subagent.description,
+          model: transcript.model ?? message.subagent.model,
+          activityCount: transcript.activity.length,
+          // A launch acknowledgement alone does not prove completion. A
+          // notification or a child transcript ending cleanly does.
+          status: message.subagent.status === 'running' && !transcript.endedMidToolCall
+            ? 'completed'
+            : message.subagent.status,
+        },
+      };
+    });
+  }
+
   /**
    * Loads Claude JSONL history for a project/session and returns normalized
    * messages, preserving the existing pagination behavior from projects.js.
@@ -1161,7 +1151,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
     const { page, hasMore } = sliceTailPage(transcript, normalizedLimit, normalizedOffset);
 
     return {
-      messages: page,
+      messages: options.deferEnrichment ? page : await this.enrichHistoryPage(sessionId, page, providerSessionId),
       total,
       hasMore,
       offset: normalizedOffset,

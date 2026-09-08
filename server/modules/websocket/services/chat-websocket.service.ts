@@ -223,6 +223,11 @@ async function dispatchRun(
 
   const clientOptions = (data.options ?? {}) as AnyRecord;
   const command = typeof data.content === 'string' ? data.content : '';
+  const deliveryMode = clientOptions.deliveryMode ?? 'queue';
+  if (clientOptions.deliveryMode !== undefined && clientOptions.deliveryMode !== 'queue' && clientOptions.deliveryMode !== 'interrupt') {
+    if (ws) sendProtocolError(ws, 'INVALID_DELIVERY_MODE', 'Delivery mode must be queue or interrupt.', sessionId, data.clientMessageId);
+    return { started: false, error: 'Invalid delivery mode.' };
+  }
 
   const attachmentCandidates = [
     ...normalizeAttachmentDescriptors(clientOptions.images),
@@ -244,6 +249,7 @@ async function dispatchRun(
     ...clientOptions,
     ...extraRuntimeOptions,
     clientMessageId: data.clientMessageId,
+    deliveryMode,
     // Attachments are re-validated server-side: only direct children of the
     // global upload store may reach provider runtimes or their file tools.
     attachments: uniqueAttachments,
@@ -259,17 +265,27 @@ async function dispatchRun(
     if (ws) sendProtocolError(ws, 'INVALID_MESSAGE_ID', 'A valid client message UUID is required.', sessionId, clientMessageId);
     return { started: false, error: 'Invalid client message identifier.' };
   }
+  if (deliveryMode === 'interrupt' && (provider !== 'claude' || beforeRun || Object.keys(extraRuntimeOptions).length > 0 || !clientMessageId || !command.trim() && uniqueAttachments.length === 0)) {
+    if (ws) sendProtocolError(ws, 'INTERRUPT_NOT_SUPPORTED', 'Interrupt and send requires a regular Claude message with content and a message UUID.', sessionId, clientMessageId);
+    return { started: false, error: 'Interrupt and send is not supported for this request.' };
+  }
   const existing = chatRunRegistry.getRun(sessionId);
   const previousReceipt = clientMessageId ? existing?.messageReceipts.get(clientMessageId) : undefined;
-  if (existing?.status === 'completed' && previousReceipt) {
-    if (String(existing.writer.userId) !== String(userId) || previousReceipt.content !== command
+  if (existing && previousReceipt) {
+    if (String(existing.writer.userId) !== String(userId) || previousReceipt.content !== command || (previousReceipt.deliveryMode ?? 'queue') !== deliveryMode
       || JSON.stringify([previousReceipt.images ?? [], previousReceipt.files ?? []]) !== JSON.stringify([runtimeOptions.images ?? [], runtimeOptions.files ?? []])) {
       if (ws) sendProtocolError(ws, 'MESSAGE_ID_CONFLICT', 'This message identifier cannot be reused for another send.', sessionId, clientMessageId);
       return { started: false, error: 'Message identifier conflict.' };
     }
-    // A retry after completion may repeat its receipt, never launch the same prompt again.
-    if (ws) sendJson(ws, previousReceipt);
-    return { started: true, error: null };
+    if (existing.status === 'completed') {
+      // A retry after completion may repeat its receipt, never launch the same prompt again.
+      if (ws) sendJson(ws, previousReceipt);
+      return { started: true, error: null };
+    }
+  }
+  if (deliveryMode === 'interrupt' && (existing?.status !== 'running' || !existing.runtimeState?.inputModes?.includes('interrupt'))) {
+    if (ws) sendProtocolError(ws, 'INPUT_NOT_ACCEPTED', 'The current Claude process has not advertised interrupt-and-send support. No replacement process was started.', sessionId, clientMessageId);
+    return { started: false, error: 'The existing Claude input stream cannot accept interrupt and send.' };
   }
   if (existing?.status === 'running' && provider === 'claude' && dependencies.runtime.enqueue && !beforeRun && Object.keys(extraRuntimeOptions).length === 0 && clientMessageId) {
     if (String(existing.writer.userId) !== String(userId)) {
@@ -312,7 +328,7 @@ async function dispatchRun(
   // so a model/settings/ownership failure cannot leave an orphaned optimistic send.
   if (provider === 'claude' && clientMessageId) run.writer.send(createNormalizedMessage({
     kind: 'status', text: 'message_delivery', sessionId, provider, clientMessageId,
-    delivery: 'queued', content: command, images: runtimeOptions.images, files: runtimeOptions.files,
+    delivery: 'queued', deliveryMode, content: command, images: runtimeOptions.images, files: runtimeOptions.files,
     timestamp: new Date().toISOString(),
   }));
 
@@ -342,7 +358,7 @@ async function dispatchRun(
     console.error(`[Chat] Provider runtime "${provider}" failed`, { sessionId, error: failure });
     if (provider === 'claude' && clientMessageId && run.messageReceipts.get(clientMessageId)?.delivery !== 'delivered') run.writer.send(createNormalizedMessage({
       kind: 'status', text: 'message_delivery', sessionId, provider, clientMessageId,
-      delivery: 'failed', content: command, images: runtimeOptions.images, files: runtimeOptions.files,
+      delivery: 'failed', deliveryMode, content: command, images: runtimeOptions.images, files: runtimeOptions.files,
       timestamp: new Date().toISOString(), error: failure,
     }));
     run.writer.send(createNormalizedMessage({ kind: 'error', content: failure, sessionId, provider }));
@@ -379,6 +395,10 @@ async function handleChatEditSend(
   }
 
   const { sessionId, session, provider } = resolved;
+  if (data.options?.deliveryMode === 'interrupt') {
+    sendProtocolError(ws, 'INTERRUPT_NOT_SUPPORTED', 'Interrupt and send cannot edit or rewind a previous message.', sessionId, data.clientMessageId);
+    return;
+  }
   const anchorId = typeof data.anchorId === 'string' ? data.anchorId.trim() : '';
   if (!anchorId) {
     sendProtocolError(ws, 'ANCHOR_REQUIRED', 'chat.edit-send requires the anchorId of the message being replaced.', sessionId, data.clientMessageId);

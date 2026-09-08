@@ -108,7 +108,7 @@ function runtimeHarness(steps: (state: {
   };
   return {
     events, inputs, queries: () => queryCount, interrupts: () => interrupts,
-    enqueue: (command: string, clientMessageId: string) => runtime.enqueue!(appSessionId, command, { clientMessageId }),
+    enqueue: (command: string, clientMessageId: string, deliveryMode: 'queue' | 'interrupt' = 'queue') => runtime.enqueue!(appSessionId, command, { clientMessageId, deliveryMode }),
     options: () => sdkOptions,
     abort: () => runtime.abort(appSessionId),
     run: () => runtime.run('Fixture only; no model call is made.', { sessionId: appSessionId }, {
@@ -277,7 +277,7 @@ test('Workflow accepts multiple messages through the same native query and never
     assert.equal(h.queries(), 1); assert.equal(h.interrupts(), 0);
     assert.equal(h.inputs.length, 3);
     assert.equal(h.inputs[1].uuid, second); assert.equal(h.inputs[2].uuid, third);
-    assert.equal(h.inputs[1].priority, 'next');
+    assert.equal(h.inputs[1].priority, 'later');
     assert.deepEqual(events.filter(event => event.clientMessageId === second).map(event => event.delivery), ['queued']);
     yield { type: 'user', uuid: second, session_id: nativeSession, message: { role: 'user', content: 'Second user question' } };
     assert.deepEqual(events.filter(event => event.clientMessageId === second && event.text === 'message_delivery').map(event => event.delivery), ['queued', 'delivered']);
@@ -521,4 +521,50 @@ test('a synchronous spawn failure reports completion and does not leave a startu
   assert.equal(h.events.at(-1)?.success, false);
   await h.run();
   assert.equal(h.queries(), 2);
+});
+
+
+test('queue and explicit interrupt share one native Query and preserve the Workflow and queued UUIDs', async () => {
+  const queued = '043f1128-5a4f-42b9-967a-7e6bd635d1e4';
+  const interrupt = '043f1128-5a4f-42b9-967a-7e6bd635d1e5';
+  const h = runtimeHarness(async function* ({ events, inputClosed, inputDone }) {
+    yield workflow(); yield started(); yield result();
+    assert.equal(await h.enqueue('After the current turn', queued), true);
+    assert.equal(await h.enqueue('Interrupt and send now', interrupt, 'interrupt'), true);
+    await delay(0);
+    assert.deepEqual(h.inputs.map(input => input.priority), ['next', 'later', 'now']);
+    assert.equal(h.queries(), 1); assert.equal(h.interrupts(), 0);
+    assert.ok(events.filter(event => event.text === 'claude_runtime_state').every(event => JSON.stringify(event.inputModes) === JSON.stringify(['queue', 'interrupt'])));
+    yield { ...result(true), terminal_reason: 'aborted_streaming' };
+    yield { ...result(true), terminal_reason: 'aborted_streaming' };
+    assert.equal(inputClosed(), false);
+    assert.equal(events.some(event => event.kind === 'complete' || event.kind === 'error'), false);
+    const notes = events.filter(event => event.kind === 'task_notification' && event.reason === 'aborted_streaming');
+    assert.equal(notes.length, 1); assert.ok(notes[0].executionId); assert.ok(notes[0].foregroundTurnId);
+    assert.ok(events.some(event => event.text === 'foreground_complete' && event.interrupted === true));
+    assert.equal(events.filter(event => event.clientMessageId === queued).at(-1)?.delivery, 'queued');
+    yield { type: 'user', uuid: interrupt, session_id: nativeSession, message: { role: 'user', content: 'Interrupt and send now' } };
+    yield { ...result(), user_message_uuid: interrupt };
+    assert.equal(inputClosed(), false);
+    assert.equal(events.filter(event => event.clientMessageId === queued).at(-1)?.delivery, 'queued');
+    yield notification();
+    yield { type: 'user', uuid: queued, session_id: nativeSession, message: { role: 'user', content: 'After the current turn' } };
+    yield { ...result(), user_message_uuid: queued }; await inputDone;
+  });
+  await h.run();
+  assert.equal(h.queries(), 1); assert.equal(h.interrupts(), 0);
+  assert.equal(h.events.filter(event => event.kind === 'complete').length, 1);
+});
+
+test('a true API failure is not relabeled as an intentional interrupt', async () => {
+  const h = runtimeHarness(async function* ({ events, inputDone }) {
+    yield workflow(); yield started(); yield result();
+    yield { ...result(true), terminal_reason: 'api_error', api_error_status: 529, result: 'Fixture overloaded' };
+    assert.ok(events.some(event => event.kind === 'error' && event.content === 'Fixture overloaded'));
+    assert.equal(events.some(event => event.interrupted === true), false);
+    yield { ...result(true), terminal_reason: 'aborted_tools', errors: ['Fixture tool failure was also reported'] };
+    assert.ok(events.some(event => event.kind === 'error' && event.content === 'Fixture tool failure was also reported'));
+    yield notification(); yield result(); await inputDone;
+  });
+  await h.run();
 });

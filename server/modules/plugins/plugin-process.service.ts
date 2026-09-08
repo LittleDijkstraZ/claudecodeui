@@ -91,17 +91,18 @@ export function startPluginServer(name, pluginDir, serverEntry) {
       for (const line of lines) {
         try {
           const msg = JSON.parse(line.trim());
-          if (msg.ready && typeof msg.port === 'number') {
+          if (msg.ready && Number.isInteger(msg.port) && msg.port > 0 && msg.port <= 65535) {
             clearTimeout(timeout);
             resolved = true;
             runningPlugins.set(name, { process: pluginProcess, port: msg.port });
 
             pluginProcess.on('exit', () => {
-              runningPlugins.delete(name);
+              if (runningPlugins.get(name)?.process === pluginProcess) runningPlugins.delete(name);
             });
 
             console.log(`[Plugins] Server started for "${name}" on port ${msg.port}`);
             resolve(msg.port);
+            break;
           }
         } catch {
           // Not JSON yet, keep buffering
@@ -123,7 +124,7 @@ export function startPluginServer(name, pluginDir, serverEntry) {
 
     pluginProcess.on('exit', (code) => {
       clearTimeout(timeout);
-      runningPlugins.delete(name);
+      if (runningPlugins.get(name)?.process === pluginProcess) runningPlugins.delete(name);
       if (!resolved) {
         resolved = true;
         reject(new Error(`Plugin server exited with code ${code} before reporting ready`));
@@ -141,14 +142,17 @@ export function startPluginServer(name, pluginDir, serverEntry) {
  * Stop a plugin's server subprocess.
  * Returns a Promise that resolves when the process has fully exited.
  */
-export function stopPluginServer(name) {
+export async function stopPluginServer(name) {
+  // An install/enable may still be waiting for readiness when disable arrives.
+  // Wait for that exact startup to settle before releasing its files or config.
+  try { await startingPlugins.get(name); } catch { /* Failed startup already released ownership. */ }
   const entry = runningPlugins.get(name);
   if (!entry) return Promise.resolve();
 
   return new Promise((resolve) => {
     const cleanup = () => {
       clearTimeout(forceKillTimer);
-      runningPlugins.delete(name);
+      if (runningPlugins.get(name) === entry) runningPlugins.delete(name);
       resolve();
     };
 
@@ -158,7 +162,7 @@ export function stopPluginServer(name) {
 
     // Force kill after 5 seconds if still running
     const forceKillTimer = setTimeout(() => {
-      if (runningPlugins.has(name)) {
+      if (runningPlugins.get(name) === entry) {
         entry.process.kill('SIGKILL');
         cleanup();
       }

@@ -63,3 +63,21 @@ test('a raw manifest from an older server cannot fabricate an enabled installed 
   expect(screen.queryByRole('button',{name:'Open plugin'})).toBeNull();
   expect(screen.getByRole('button',{name:'Refresh plugins'})).toBeTruthy();
 });
+
+test('package-style plugin author and malformed optional metadata cannot crash the settings page', async () => {
+  vi.mocked(api.plugins.list).mockResolvedValue(response({ plugins: [{ ...plugin, author: { name: 'Fixture author', email: 'unused@example.test' }, version: { invalid: 'object' }, description: ['unexpected'], icon: { unexpected: true }, repoUrl: { unexpected: true } }] }));
+  render(<PluginsProvider><PluginSettingsTab /></PluginsProvider>);
+  await screen.findByText('Fixture plugin');
+  expect(screen.getByText('Fixture author')).toBeTruthy();
+  expect(screen.getByText('v0.0.0')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Open plugin' })).toBeTruthy();
+});
+
+test('malformed refresh payload retains the last valid plugin instead of removing the page', async () => {
+  vi.mocked(api.plugins.list).mockResolvedValueOnce(response({ plugins: [plugin] })).mockResolvedValue(response({ plugins: { wrong: 'shape' } }));
+  render(<PluginsProvider><PluginSettingsTab /></PluginsProvider>);
+  await screen.findByText('Fixture plugin');
+  fireEvent(window, new Event('focus'));
+  await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('inventory is invalid'));
+  expect(screen.getByRole('button', { name: 'Open plugin' })).toBeTruthy();
+});

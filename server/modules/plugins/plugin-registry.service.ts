@@ -95,6 +95,21 @@ export function validateManifest(manifest) {
   return { valid: true };
 }
 
+/** A successful command is not an installed UI until its declared build artifacts exist. */
+function validateBuiltPlugin(pluginDir, manifest, expectedName = manifest.name) {
+  if (manifest.name !== expectedName) throw new Error('Plugin updates cannot change the installed plugin name');
+  for (const [kind, entry] of [['Frontend', manifest.entry], ['Server', manifest.server]]) {
+    if (!entry) continue;
+    const file = path.resolve(pluginDir, entry);
+    if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
+      throw new Error(`${kind} build artifact is missing: ${entry}. Check the plugin build command.`);
+    }
+    if (!fs.realpathSync(file).startsWith(fs.realpathSync(pluginDir) + path.sep)) {
+      throw new Error(`${kind} build artifact must stay inside the plugin directory`);
+    }
+  }
+}
+
 const BUILD_TIMEOUT_MS = 60_000;
 
 /** Run `npm run build` if the plugin's package.json declares a build script. */
@@ -113,6 +128,7 @@ function runBuildIfNeeded(dir, packageJsonPath, onSuccess, onError) {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
+  buildProcess.stdout.resume();
   let stderr = '';
   let settled = false;
 
@@ -124,7 +140,7 @@ function runBuildIfNeeded(dir, packageJsonPath, onSuccess, onError) {
     onError(new Error('npm run build timed out'));
   }, BUILD_TIMEOUT_MS);
 
-  buildProcess.stderr.on('data', (data) => { stderr += data.toString(); });
+  buildProcess.stderr.on('data', (data) => { stderr = (stderr + data.toString()).slice(-16_384); });
 
   buildProcess.on('close', (code) => {
     if (settled) return;
@@ -200,16 +216,23 @@ export function scanPlugins() {
         }
       } catch { /* ignore */ }
 
+      let assetRevision;
+      try {
+        const builtEntry = fs.statSync(path.join(pluginsDir, entry.name, manifest.entry));
+        assetRevision = `${builtEntry.mtimeMs}-${builtEntry.size}`;
+      } catch { /* Keep a broken plugin visible so Settings can offer repair or removal. */ }
+
       plugins.push({
         name: manifest.name,
         displayName: manifest.displayName,
-        version: manifest.version || '0.0.0',
-        description: manifest.description || '',
-        author: manifest.author || '',
-        icon: manifest.icon || 'Puzzle',
+        version: ['string', 'number'].includes(typeof manifest.version) ? String(manifest.version) : '0.0.0',
+        description: typeof manifest.description === 'string' ? manifest.description : '',
+        author: typeof manifest.author === 'string' ? manifest.author : typeof manifest.author?.name === 'string' ? manifest.author.name : '',
+        icon: typeof manifest.icon === 'string' ? manifest.icon : 'Puzzle',
         type: manifest.type || 'module',
         slot: manifest.slot || 'tab',
         entry: manifest.entry,
+        assetRevision,
         server: manifest.server || null,
         permissions: manifest.permissions || [],
         enabled: config[manifest.name]?.enabled !== false, // enabled by default
@@ -287,6 +310,7 @@ export function installPluginFromGit(url) {
 
     const finalize = (manifest) => {
       try {
+        validateBuiltPlugin(tempDir, manifest);
         fs.renameSync(tempDir, targetDir);
       } catch (err) {
         cleanupTemp();
@@ -299,8 +323,9 @@ export function installPluginFromGit(url) {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
+    gitProcess.stdout.resume();
     let stderr = '';
-    gitProcess.stderr.on('data', (data) => { stderr += data.toString(); });
+    gitProcess.stderr.on('data', (data) => { stderr = (stderr + data.toString()).slice(-16_384); });
 
     gitProcess.on('close', (code) => {
       if (code !== 0) {
@@ -345,10 +370,14 @@ export function installPluginFromGit(url) {
           stdio: ['ignore', 'pipe', 'pipe'],
         });
 
+        npmProcess.stdout.resume();
+        let npmError = '';
+        npmProcess.stderr.on('data', data => { npmError = (npmError + data.toString()).slice(-16_384); });
+
         npmProcess.on('close', (npmCode) => {
           if (npmCode !== 0) {
             cleanupTemp();
-            return reject(new Error(`npm install for ${repoName} failed (exit code ${npmCode})`));
+            return reject(new Error(`npm install for ${repoName} failed (exit code ${npmCode}): ${npmError.trim()}`));
           }
           runBuildIfNeeded(tempDir, packageJsonPath, () => finalize(manifest), (err) => { cleanupTemp(); reject(err); });
         });
@@ -369,12 +398,8 @@ export function installPluginFromGit(url) {
   });
 }
 
-export function updatePluginFromGit(name) {
+function updateStagedPlugin(pluginDir, name) {
   return new Promise((resolve, reject) => {
-    const pluginDir = getPluginDir(name);
-    if (!pluginDir) {
-      return reject(new Error(`Plugin "${name}" not found`));
-    }
 
     // Only fast-forward to avoid silent divergence
     const gitProcess = spawn('git', ['pull', '--ff-only', '--'], {
@@ -382,8 +407,9 @@ export function updatePluginFromGit(name) {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
+    gitProcess.stdout.resume();
     let stderr = '';
-    gitProcess.stderr.on('data', (data) => { stderr += data.toString(); });
+    gitProcess.stderr.on('data', (data) => { stderr = (stderr + data.toString()).slice(-16_384); });
 
     gitProcess.on('close', (code) => {
       if (code !== 0) {
@@ -411,9 +437,13 @@ export function updatePluginFromGit(name) {
           cwd: pluginDir,
           stdio: ['ignore', 'pipe', 'pipe'],
         });
+        npmProcess.stdout.resume();
+        let npmError = '';
+        npmProcess.stderr.on('data', data => { npmError = (npmError + data.toString()).slice(-16_384); });
+
         npmProcess.on('close', (npmCode) => {
           if (npmCode !== 0) {
-            return reject(new Error(`npm install for ${name} failed (exit code ${npmCode})`));
+            return reject(new Error(`npm install for ${name} failed (exit code ${npmCode}): ${npmError.trim()}`));
           }
           runBuildIfNeeded(pluginDir, packageJsonPath, () => resolve(manifest), (err) => reject(err));
         });
@@ -427,6 +457,30 @@ export function updatePluginFromGit(name) {
       reject(new Error(`Failed to spawn git: ${err.message}`));
     });
   });
+}
+
+/** Registry adapter used by Plugins service; failed updates leave the previous plugin intact. */
+export async function updatePluginFromGit(name) {
+  const pluginDir = getPluginDir(name);
+  if (!pluginDir) throw new Error(`Plugin "${name}" not found`);
+  // Hidden staging stays out of scanPlugins, including while git changes its manifest.
+  const temporary = fs.mkdtempSync(path.join(getPluginsDir(), '.tmp-update-'));
+  const staged = path.join(temporary, 'plugin');
+  const previous = path.join(temporary, 'previous');
+  try {
+    // Preserve relative package-manager .bin links so staged builds resolve
+    // their staged tools rather than reaching back into the live plugin.
+    fs.cpSync(pluginDir, staged, { recursive: true, dereference: false, verbatimSymlinks: true });
+    const manifest = await updateStagedPlugin(staged, name);
+    validateBuiltPlugin(staged, manifest, name);
+    fs.renameSync(pluginDir, previous);
+    try { fs.renameSync(staged, pluginDir); }
+    catch (error) { fs.renameSync(previous, pluginDir); throw error; }
+    return manifest;
+  } finally {
+    // Never remove the only remaining copy if a filesystem rollback itself fails.
+    if (!fs.existsSync(previous) || fs.existsSync(pluginDir)) fs.rmSync(temporary, { recursive: true, force: true });
+  }
 }
 
 export async function uninstallPlugin(name) {

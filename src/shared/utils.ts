@@ -249,6 +249,7 @@ export function readSessionRuntimeState(value: Record<string, unknown>): Session
     ...(typeof value.foregroundStartedAt === 'string' && Number.isFinite(Date.parse(value.foregroundStartedAt)) ? { foregroundStartedAt: value.foregroundStartedAt } : {}),
     ...(value.phase === 'foreground' || value.phase === 'background' ? { phase: value.phase } : {}),
     ...(typeof value.acceptsInput === 'boolean' ? { acceptsInput: value.acceptsInput } : {}),
+    ...(Array.isArray(value.inputModes) ? { inputModes: [...new Set(value.inputModes.filter((mode): mode is 'queue' | 'interrupt' => mode === 'queue' || mode === 'interrupt'))] } : {}),
     ...(typeof value.backgroundTasks === 'number' && Number.isSafeInteger(value.backgroundTasks) && value.backgroundTasks >= 0 ? { backgroundTasks: value.backgroundTasks } : {}),
     ...(typeof value.executionId === 'string' && value.executionId ? { executionId: value.executionId } : {}),
   };

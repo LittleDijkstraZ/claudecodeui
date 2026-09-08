@@ -7,6 +7,7 @@ import SettingsCard from '@/modules/settings/SettingsCard';
 import SettingsRow from '@/modules/settings/SettingsRow';
 import SettingsSection from '@/modules/settings/SettingsSection';
 import SettingsToggle from '@/modules/settings/SettingsToggle';
+import { useToolTabAppearance } from '@/shared/hooks/useToolTabAppearance';
 
 type AppearanceSettingsTabProps = {
   projectSortOrder: ProjectSortOrder;
@@ -18,7 +19,7 @@ type AppearanceSettingsTabProps = {
   onCodeEditorFontSizeChange: (value: string) => void;
 };
 
-/** Rendered by Settings for the "appearance" tab, covering theme, project sorting and code editor preferences. */
+/** Rendered by Settings for the "appearance" tab, covering theme, browser tool labels, project sorting and editor preferences. */
 export default function AppearanceSettingsTab({
   projectSortOrder,
   onProjectSortOrderChange,
@@ -29,6 +30,7 @@ export default function AppearanceSettingsTab({
   onCodeEditorFontSizeChange,
 }: AppearanceSettingsTabProps) {
   const { t } = useTranslation('settings');
+  const [toolTabAppearance, setToolTabAppearance] = useToolTabAppearance();
 
   return (
     <div className="space-y-8">
@@ -46,6 +48,25 @@ export default function AppearanceSettingsTab({
       <SettingsSection title={t('mainTabs.appearance')}>
         <SettingsCard>
           <LanguageSelector />
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title={t('appearanceSettings.toolTabs.label')}>
+        <SettingsCard>
+          <SettingsRow
+            label={t('appearanceSettings.toolTabs.label')}
+            description={t('appearanceSettings.toolTabs.description')}
+          >
+            <select
+              aria-label={t('appearanceSettings.toolTabs.label')}
+              value={toolTabAppearance}
+              onChange={(event) => setToolTabAppearance(event.target.value === 'icons-and-text' ? 'icons-and-text' : 'icons')}
+              className="w-full touch-manipulation rounded-lg border border-input bg-card p-2.5 text-sm text-foreground focus:border-primary focus:ring-1 focus:ring-primary sm:w-44"
+            >
+              <option value="icons">{t('appearanceSettings.toolTabs.icons')}</option>
+              <option value="icons-and-text">{t('appearanceSettings.toolTabs.iconsAndText')}</option>
+            </select>
+          </SettingsRow>
         </SettingsCard>
       </SettingsSection>
 

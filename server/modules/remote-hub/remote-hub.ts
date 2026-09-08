@@ -82,7 +82,7 @@ export function createRemoteHub(options: {
   });
   const wsServer = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
   server.on('upgrade', (req, socket, head) => {
-    const match = req.url?.match(/^\/remote\/([a-z0-9-]+)(\/(?:ws|shell)(?:\?.*)?)$/);
+    const match = req.url?.match(/^\/remote\/([a-z0-9-]+)(\/(?:ws|shell|plugin-ws\/[a-zA-Z0-9_-]+)(?:\?.*)?)$/);
     const remote = remotes.find(r => r.id === match?.[1]);
     if (!validSource(req) || req.headers.origin !== origin || !remote || !match) { socket.destroy(); return; }
     wsServer.handleUpgrade(req, socket, head, downstream => {

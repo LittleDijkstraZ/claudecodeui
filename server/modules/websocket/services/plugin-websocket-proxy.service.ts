@@ -20,9 +20,14 @@ export function handlePluginWsProxy(
     return;
   }
 
-  const upstream = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+  const upstream = new WebSocket(`ws://127.0.0.1:${port}/ws`, { handshakeTimeout: 8000 });
+  const pending: Array<{ data: Buffer; binary: boolean }> = [];
+  let pendingBytes = 0;
 
   upstream.on('open', () => {
+    if (clientWs.readyState !== WebSocket.OPEN) { upstream.terminate(); return; }
+    for (const item of pending) upstream.send(item.data, { binary: item.binary });
+    pending.length = 0; pendingBytes = 0;
     console.log(`[Plugins] WS proxy connected to "${pluginName}" on port ${port}`);
   });
 
@@ -35,6 +40,12 @@ export function handlePluginWsProxy(
   clientWs.on('message', (data, isBinary) => {
     if (upstream.readyState === WebSocket.OPEN) {
       upstream.send(data, { binary: isBinary });
+    } else if (upstream.readyState === WebSocket.CONNECTING) {
+      const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
+      if ((pendingBytes += buffer.length) > 1024 * 1024) {
+        clientWs.close(1013, 'Plugin is not ready; retry the connection');
+        upstream.terminate();
+      } else pending.push({ data: buffer, binary: isBinary });
     }
   });
 
@@ -45,9 +56,9 @@ export function handlePluginWsProxy(
   });
 
   clientWs.on('close', () => {
-    if (upstream.readyState === WebSocket.OPEN) {
-      upstream.close();
-    }
+    pending.length = 0; pendingBytes = 0;
+    if (upstream.readyState === WebSocket.OPEN) upstream.close();
+    else if (upstream.readyState === WebSocket.CONNECTING) upstream.terminate();
   });
 
   upstream.on('error', (error) => {
@@ -58,8 +69,8 @@ export function handlePluginWsProxy(
   });
 
   clientWs.on('error', () => {
-    if (upstream.readyState === WebSocket.OPEN) {
-      upstream.close();
-    }
+    pending.length = 0; pendingBytes = 0;
+    if (upstream.readyState === WebSocket.OPEN) upstream.close();
+    else if (upstream.readyState === WebSocket.CONNECTING) upstream.terminate();
   });
 }

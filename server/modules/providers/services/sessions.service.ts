@@ -472,6 +472,7 @@ export const sessionsService = {
         offset: 0,
         projectPath,
         providerSessionId,
+        deferEnrichment: Boolean(providerSessions.enrichHistoryPage),
       }),
     });
 
@@ -482,7 +483,9 @@ export const sessionsService = {
       const { page, hasMore } = sliceTailPage(fullHistory.messages, requestedLimit, Math.max(0, requestedOffset));
       result = {
         ...fullHistory,
-        messages: page,
+        messages: providerSessions.enrichHistoryPage
+          ? await providerSessions.enrichHistoryPage(sessionId, page, providerSessionId)
+          : page,
         hasMore,
         offset: requestedOffset,
         limit: requestedLimit,

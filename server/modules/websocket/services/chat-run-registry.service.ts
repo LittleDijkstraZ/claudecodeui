@@ -29,7 +29,7 @@ type ChatRunStatus = 'running' | 'completed';
 type ChatRun = {
   appSessionId: string;
   runId: string;
-  runtimeState?: { phase: 'foreground' | 'background'; acceptsInput: boolean; backgroundTasks: number; executionId?: string; foregroundTurnId?: string; foregroundStartedAt?: string };
+  runtimeState?: { phase: 'foreground' | 'background'; acceptsInput: boolean; inputModes?: Array<'queue' | 'interrupt'>; backgroundTasks: number; executionId?: string; foregroundTurnId?: string; foregroundStartedAt?: string };
   provider: LLMProvider;
   providerSessionId: string | null;
   status: ChatRunStatus;
@@ -159,7 +159,9 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
 
   const runtimeStateChanged = message.kind === 'status' && message.text === 'claude_runtime_state'
     && (message.phase === 'foreground' || message.phase === 'background') && typeof message.acceptsInput === 'boolean';
-  if (runtimeStateChanged) run.runtimeState = { phase: message.phase!, acceptsInput: message.acceptsInput!, backgroundTasks: Math.max(0, Number(message.backgroundTasks) || 0), executionId: message.executionId, foregroundTurnId: typeof message.foregroundTurnId === 'string' ? message.foregroundTurnId : undefined, foregroundStartedAt: typeof message.foregroundStartedAt === 'string' ? message.foregroundStartedAt : undefined };
+  if (runtimeStateChanged) run.runtimeState = { phase: message.phase!, acceptsInput: message.acceptsInput!,
+    inputModes: Array.isArray(message.inputModes) ? message.inputModes.filter((mode): mode is 'queue' | 'interrupt' => mode === 'queue' || mode === 'interrupt') : undefined,
+    backgroundTasks: Math.max(0, Number(message.backgroundTasks) || 0), executionId: message.executionId, foregroundTurnId: typeof message.foregroundTurnId === 'string' ? message.foregroundTurnId : undefined, foregroundStartedAt: typeof message.foregroundStartedAt === 'string' ? message.foregroundStartedAt : undefined };
 
   if (message.kind === 'complete') {
     // The provider may report its own id here; the frontend only ever knows
@@ -364,7 +366,7 @@ export const chatRunRegistry = {
     provider: LLMProvider;
     startedAt: number;
     lastSeq: number;
-    phase?: 'foreground' | 'background'; acceptsInput?: boolean; backgroundTasks?: number; executionId?: string;
+    phase?: 'foreground' | 'background'; acceptsInput?: boolean; inputModes?: Array<'queue' | 'interrupt'>; backgroundTasks?: number; executionId?: string;
   }> {
     return Array.from(runs.values())
       .filter((run) => run.status === 'running')

@@ -522,6 +522,10 @@ export type FetchHistoryOptions = {
   limit?: number | null;
   offset?: number;
   providerSessionId?: string;
+  /** Internal cache read only: defer separate agent-file hydration until after
+   * pagination. A provider implementing this must also implement enrichHistoryPage;
+   * direct history callers leave it unset to receive fully hydrated rows. */
+  deferEnrichment?: boolean;
 };
 
 /**

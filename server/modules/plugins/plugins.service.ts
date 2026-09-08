@@ -55,6 +55,7 @@ function normalizePluginManifest(value: unknown): PluginManifest {
 /** Creates plugin-management workflows around loader and process adapters. */
 export function createPluginsService(dependencies: PluginDependencies) {
   const serverErrors = new Map<string, string>();
+  const updatingPlugins = new Set<string>();
   const inventory = () => dependencies.scanPlugins().map((plugin) => ({
     ...plugin,
     serverRunning: plugin.server ? dependencies.isServerRunning(plugin.name) : false,
@@ -100,6 +101,7 @@ export function createPluginsService(dependencies: PluginDependencies) {
       if (typeof enabled !== 'boolean') {
         throw new AppError('"enabled" must be a boolean', { code: 'INVALID_PLUGIN_ENABLED', statusCode: 400 });
       }
+      if (updatingPlugins.has(pluginName)) throw new AppError('Plugin is updating; retry after the update completes', { code: 'PLUGIN_UPDATING', statusCode: 409 });
       const plugin = this.getManifest(pluginName);
       const config = dependencies.readConfig();
       config[pluginName] = { ...config[pluginName], enabled };
@@ -126,14 +128,25 @@ export function createPluginsService(dependencies: PluginDependencies) {
     },
     async update(pluginName: string) {
       validatePluginName(pluginName);
+      if (updatingPlugins.has(pluginName)) throw new AppError('Plugin update is already in progress', { code: 'PLUGIN_UPDATING', statusCode: 409 });
+      const previous = this.getManifest(pluginName);
+      updatingPlugins.add(pluginName);
       const wasRunning = dependencies.isServerRunning(pluginName);
-      if (wasRunning) await dependencies.stopServer(pluginName);
-      const plugin = normalizePluginManifest(await dependencies.update(pluginName));
-      if (wasRunning) await startServerIfAvailable(plugin);
-      return { success: true, plugin, warning: serverErrors.get(plugin.name) ?? null };
+      try {
+        if (wasRunning) await dependencies.stopServer(pluginName);
+        const plugin = normalizePluginManifest(await dependencies.update(pluginName));
+        if (wasRunning) await startServerIfAvailable(plugin);
+        return { success: true, plugin, warning: serverErrors.get(plugin.name) ?? null };
+      } catch (error) {
+        // The registry only promotes validated artifacts. Restore service for the
+        // retained previous files when its staged update fails.
+        if (wasRunning) await startServerIfAvailable(previous);
+        throw error;
+      } finally { updatingPlugins.delete(pluginName); }
     },
     async prepareRpc(pluginName: string) {
       validatePluginName(pluginName);
+      if (updatingPlugins.has(pluginName)) throw new AppError('Plugin is updating; retry after the update completes', { code: 'PLUGIN_UPDATING', statusCode: 503 });
       let port = dependencies.getServerPort(pluginName);
       if (!port) {
         const plugin = this.getManifest(pluginName);
@@ -151,6 +164,7 @@ export function createPluginsService(dependencies: PluginDependencies) {
     },
     async uninstall(pluginName: string) {
       validatePluginName(pluginName);
+      if (updatingPlugins.has(pluginName)) throw new AppError('Plugin is updating; retry after the update completes', { code: 'PLUGIN_UPDATING', statusCode: 409 });
       if (dependencies.isServerRunning(pluginName)) await dependencies.stopServer(pluginName);
       await dependencies.uninstall(pluginName);
       serverErrors.delete(pluginName);

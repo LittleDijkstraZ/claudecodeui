@@ -180,6 +180,12 @@
         "label": "字体大小",
         "description": "编辑器字体大小（px）"
       }
+    },
+    "toolTabs": {
+      "label": "工具标签显示",
+      "description": "选择工作区工具的显示方式。保存在当前浏览器，适用于工作台中的所有机器。",
+      "icons": "只显示图标",
+      "iconsAndText": "图标和文字"
     }
   },
   "mcpForm": {
@@ -481,14 +487,23 @@
     }
   },
   "mcpAuth": {
-    "title": "连接远端 MCP", "currentRemote": "当前远端", "close": "关闭",
-    "connect": "连接 / 授权", "explanation": "在本机浏览器完成登录，凭据由对应远端的 Claude 保存。这里会继续检查远端 MCP 是否已连接。",
-    "connected": "已连接 — 已通过远端 MCP 连接检查。", "waiting": "等待浏览器授权。",
-    "verifying": "正在确认远端 MCP 连接…", "incomplete": "授权尚未完成。", "starting": "正在远端启动授权…",
-    "preparing": "正在准备本机回调…", "openBrowser": "打开授权网页",
+    "title": "连接远端 MCP",
+    "currentRemote": "当前远端",
+    "close": "关闭",
+    "connect": "连接 / 授权",
+    "explanation": "在本机浏览器完成登录，凭据由对应远端的 Claude 保存。这里会继续检查远端 MCP 是否已连接。",
+    "connected": "已连接 — 已通过远端 MCP 连接检查。",
+    "waiting": "等待浏览器授权。",
+    "verifying": "正在确认远端 MCP 连接…",
+    "incomplete": "授权尚未完成。",
+    "starting": "正在远端启动授权…",
+    "preparing": "正在准备本机回调…",
+    "openBrowser": "打开授权网页",
     "automatic": "本机回调已准备好，并固定回到这台远端。如果浏览器仍提示连接失败，可在下方粘贴完整回调地址。",
     "manual": "登录后浏览器可能提示 localhost 连接失败。请复制该页面地址栏里的完整地址，粘贴到下方，就能送回这台远端。",
-    "callback": "完整回调 URL", "sendCallback": "送回这台远端", "retry": "重新开始授权",
+    "callback": "完整回调 URL",
+    "sendCallback": "送回这台远端",
+    "retry": "重新开始授权",
     "limit": "不会创建或发送聊天。已经运行的对话可能需要刷新 MCP 连接，才能看到新授权的工具。"
   },
   "pluginSettings": {
@@ -499,6 +514,7 @@
     "refreshPlugins": "刷新插件列表",
     "notAvailable": "这台远端尚未安装此插件。",
     "retryOpen": "重新打开插件",
+    "bundleRequirement": "请检查插件是否构建为独立的单文件浏览器 bundle。当前鉴权加载器不支持相对模块导入，或通过 import.meta.url 读取同目录资源。",
     "title": "插件",
     "description": "通过自定义插件扩展界面。从 git 安装或直接将文件夹放入 ~/.claude-code-ui/plugins/",
     "installPlaceholder": "https://github.com/user/my-plugin",

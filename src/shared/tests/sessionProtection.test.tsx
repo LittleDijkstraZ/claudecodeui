@@ -2,6 +2,7 @@ import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 import { useSessionProtection } from '@/shared/hooks/useSessionProtection';
+import { readSessionRuntimeState } from '@/shared/utils';
 
 const CLIENT_NOW = Date.parse('2026-09-07T12:00:00Z');
 const BACKGROUND = { executionId: 'execution-one', phase: 'background' as const, acceptsInput: true, backgroundTasks: 2 };
@@ -70,4 +71,17 @@ test('switching to background in a partial snapshot clears the foreground timer'
   expect(activity?.acceptsInput).toBe(true);
   expect(activity?.foregroundTurnId).toBeUndefined();
   expect(activity?.foregroundStartedAt).toBeUndefined();
+});
+
+test('input modes are validated, retained for the owning execution and removed on a replacement', () => {
+  const { result } = renderHook(useSessionProtection);
+  const parsed = readSessionRuntimeState({ ...BACKGROUND, inputModes: ['queue', 'interrupt', 'interrupt', 'unsafe', null] });
+  expect(parsed.inputModes).toEqual(['queue', 'interrupt']);
+  act(() => result.current.markSessionProcessing('session-a', parsed));
+  act(() => result.current.syncProcessingSessions([{ sessionId: 'session-a', executionId: BACKGROUND.executionId }]));
+  expect(result.current.processingSessions.get('session-a')?.inputModes).toEqual(['queue', 'interrupt']);
+  act(() => result.current.markSessionProcessing('session-a', { ...BACKGROUND, inputModes: ['queue'] }));
+  expect(result.current.processingSessions.get('session-a')?.inputModes).toEqual(['queue']);
+  act(() => result.current.syncProcessingSessions([{ sessionId: 'session-a', executionId: 'replacement' }]));
+  expect(result.current.processingSessions.get('session-a')?.inputModes).toBeUndefined();
 });

@@ -187,6 +187,13 @@ export interface IProviderSessions {
   normalizeMessage(raw: unknown, sessionId: string | null): NormalizedMessage[];
   fetchHistory(sessionId: string, options?: FetchHistoryOptions): Promise<FetchHistoryResult>;
 
+  /** Sessions service hydrates only the requested page after reading its cached
+   * main transcript. Separate agent files can change without a main-file append;
+   * implementations must return fresh rows without mutating the cached input.
+   * expectedProviderSessionId prevents a concurrent rewind from hydrating old
+   * rows using a newly mapped native conversation's child files. */
+  enrichHistoryPage?(sessionId: string, messages: NormalizedMessage[], expectedProviderSessionId?: string): Promise<NormalizedMessage[]>;
+
   /**
    * Resolves where a conversation must resume from so that the turn identified
    * by `anchorId`, and everything after it, is replaced.

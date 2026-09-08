@@ -146,14 +146,20 @@
       "pausedHint": "不会自动发送",
       "retainedFiles": "保留的文件：{{names}}。若复制这段文字重新发送，请重新选择所需附件。",
       "copyPaused": "把暂停的文字复制到输入框",
-      "copyPausedHint": "复制文字到输入框；附件副本会保留在这里供检查"
+      "copyPausedHint": "复制文字到输入框；附件副本会保留在这里供检查",
+      "afterReply": "等当前回复结束后发送，后台 Workflow 继续运行"
     },
     "commands": {
       "reported": "远端已确认",
       "documented": "文档支持",
       "compactNeedsHistory": "/compact 需要已有对话的历史上下文，请先正常发送一条消息。"
     },
-    "streamUnavailable": "当前无法接收输入；草稿会保留在这里"
+    "streamUnavailable": "当前无法接收输入；草稿会保留在这里",
+    "interrupt": "中断",
+    "interruptAndSend": "中断并发送",
+    "interruptUnavailable": "此远端执行尚未确认支持中断并发送。草稿未发送；请等待状态更新或使用排队发送。",
+    "interruptEditing": "请先完成或取消对旧消息的编辑，再中断并发送新消息。",
+    "interruptHint": "中断当前回复并立即发送这份草稿，保留已有排队消息和后台 Workflow。"
   },
   "providerSelection": {
     "title": "选择您的 AI 助手",

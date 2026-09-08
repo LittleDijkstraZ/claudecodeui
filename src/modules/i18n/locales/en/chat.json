@@ -146,14 +146,20 @@
       "pausedHint": "Will not send automatically",
       "retainedFiles": "Retained files: {{names}}. Select them again if you copy this text into a new send.",
       "copyPaused": "Copy paused text to composer",
-      "copyPausedHint": "Copy text to composer; retained files stay here for review"
+      "copyPausedHint": "Copy text to composer; retained files stay here for review",
+      "afterReply": "Queue until the current reply ends; background Workflows keep running"
     },
     "commands": {
       "reported": "This session",
       "documented": "Documented default",
       "compactNeedsHistory": "/compact needs an existing conversation with prior messages. Send a normal message first."
     },
-    "streamUnavailable": "Input unavailable; your draft will stay here"
+    "streamUnavailable": "Input unavailable; your draft will stay here",
+    "interrupt": "Interrupt",
+    "interruptAndSend": "Interrupt and send",
+    "interruptUnavailable": "This remote execution has not confirmed interrupt-and-send support. Your draft has not been sent; wait for its state to update or use Queue.",
+    "interruptEditing": "Finish or cancel editing the earlier message before interrupting with a new message.",
+    "interruptHint": "Interrupt the current reply and send this draft now. Existing queued messages and background Workflows remain."
   },
   "composer": {
     "ultracodeDescription": "xhigh reasoning with automatic workflows. Uses more API tokens.",

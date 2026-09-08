@@ -347,3 +347,68 @@ test('subscribe replays the new run from zero when a client carries an older run
     assert.equal(connection.frames.some(frame => frame.text === 'message_delivery' && frame.seq === 2), true);
   });
 });
+
+
+test('an explicitly supported interrupt-and-send forwards the mode through the same active runtime', { concurrency: false }, async () => {
+  await withFixture(async ({ sessionId, connection, run, enqueueCalls }) => {
+    run.writer.send({ kind: 'status', text: 'claude_runtime_state', provider: 'claude', phase: 'foreground', acceptsInput: true, inputModes: ['queue', 'interrupt'], backgroundTasks: 1 });
+    await connection.receive({ type: 'chat.send', sessionId, clientMessageId: CLIENT_ID, content: 'Interrupt and send', options: { deliveryMode: 'interrupt' } });
+    assert.equal(enqueueCalls.length, 1);
+    assert.equal(enqueueCalls[0].options.deliveryMode, 'interrupt');
+    assert.equal(chatRunRegistry.getRun(sessionId), run);
+    assert.equal(run.status, 'running');
+    assert.equal(connection.frames.some(frame => frame.kind === 'complete'), false);
+    await connection.receive({ type: 'chat.subscribe', sessions: [{ sessionId }] });
+    assert.deepEqual(connection.frames.find(frame => frame.kind === 'chat_subscribed')?.inputModes, ['queue', 'interrupt']);
+    assert.deepEqual(chatRunRegistry.listRunningRuns()[0].inputModes, ['queue', 'interrupt']);
+  });
+});
+
+for (const invalid of ['later', 'now', '', null, 1, {}]) {
+  test(`invalid delivery mode ${JSON.stringify(invalid)} never reaches a runtime`, { concurrency: false }, async () => {
+    await withFixture(async ({ sessionId, connection, enqueueCalls }) => {
+      await connection.receive({ type: 'chat.send', sessionId, clientMessageId: CLIENT_ID, content: 'Invalid mode', options: { deliveryMode: invalid } });
+      assert.equal(enqueueCalls.length, 0);
+      assert.equal(connection.frames.at(-1)?.code, 'INVALID_DELIVERY_MODE');
+    });
+  });
+}
+
+for (const unavailable of ['unadvertised', 'completed', 'closed'] as const) {
+  test(`interrupt-and-send cannot replace an ${unavailable} process`, { concurrency: false }, async () => {
+    await withFixture(async ({ sessionId, connection, run, enqueueCalls }) => {
+      if (unavailable !== 'unadvertised') run.writer.send({ kind: 'status', text: 'claude_runtime_state', provider: 'claude', phase: 'background', acceptsInput: false, inputModes: ['queue', 'interrupt'], backgroundTasks: 1 });
+      if (unavailable === 'completed') run.writer.sendComplete({ exitCode: 0 });
+      await connection.receive({ type: 'chat.send', sessionId, clientMessageId: CLIENT_ID, content: 'Not accepted', options: { deliveryMode: 'interrupt' } });
+      assert.equal(enqueueCalls.length, unavailable === 'closed' ? 1 : 0);
+      const error = connection.frames.find(frame => frame.code === 'INPUT_NOT_ACCEPTED');
+      assert.equal(error?.clientMessageId, CLIENT_ID);
+      assert.equal(error?.acceptsInput, false);
+      assert.equal(chatRunRegistry.getRun(sessionId), run);
+    }, { enqueue: async () => false });
+  });
+}
+
+for (const kind of ['missing-uuid', 'empty', 'edit', 'other-provider'] as const) {
+  test(`interrupt-and-send rejects ${kind} without abort or new runtime`, { concurrency: false }, async () => {
+    await withFixture(async ({ sessionId, connection, enqueueCalls }) => {
+      await connection.receive({ type: kind === 'edit' ? 'chat.edit-send' : 'chat.send', sessionId, anchorId: 'unused',
+        ...(kind === 'missing-uuid' ? {} : { clientMessageId: CLIENT_ID }), content: kind === 'empty' ? ' ' : 'Fixture', options: { deliveryMode: 'interrupt' } });
+      assert.equal(enqueueCalls.length, 0);
+      assert.equal(connection.frames.at(-1)?.code, 'INTERRUPT_NOT_SUPPORTED');
+    }, { provider: kind === 'other-provider' ? 'codex' : 'claude' });
+  });
+}
+
+for (const completed of [false, true]) {
+  test(`a ${completed ? 'completed' : 'running'} UUID cannot upgrade its delivery mode`, { concurrency: false }, async () => {
+    await withFixture(async ({ sessionId, connection, run, enqueueCalls }) => {
+      run.writer.send({ kind: 'status', text: 'claude_runtime_state', provider: 'claude', phase: 'foreground', acceptsInput: true, inputModes: ['queue', 'interrupt'], backgroundTasks: 1 });
+      run.writer.send({ kind: 'status', text: 'message_delivery', provider: 'claude', clientMessageId: CLIENT_ID, delivery: 'queued', deliveryMode: 'queue', content: 'Same original prompt' });
+      if (completed) run.writer.sendComplete({ exitCode: 0 });
+      await connection.receive({ type: 'chat.send', sessionId, clientMessageId: CLIENT_ID, content: 'Same original prompt', options: { deliveryMode: 'interrupt' } });
+      assert.equal(enqueueCalls.length, 0);
+      assert.equal(connection.frames.at(-1)?.code, 'MESSAGE_ID_CONFLICT');
+    });
+  });
+}

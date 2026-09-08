@@ -15,7 +15,7 @@ import { useDropzone } from 'react-dropzone';
 import { api } from '@/shared/api';
 import { PROVIDER_PERMISSION_PREFERENCE_KEYS } from '@/shared/constants';
 import { readUserPreference } from '@/shared/userSettings';
-import type { ClaudeSessionMutationEvent, CommandModalPayload, CostCommandData, HelpCommandData, MarkSessionProcessing, ModelCommandData, QueuedDraft, SessionActivityMap, StatusCommandData,QueuedSendOptions,ChatAttachment,ChatMessage,PendingPermissionRequest,PermissionMode,SessionEstablishedContext,Project,ProjectSession,LLMProvider,SlashCommand } from '@/shared/types';
+import type { ClaudeInputMode, ClaudeSessionMutationEvent, CommandModalPayload, CostCommandData, HelpCommandData, MarkSessionProcessing, ModelCommandData, QueuedDraft, SessionActivityMap, StatusCommandData,QueuedSendOptions,ChatAttachment,ChatMessage,PendingPermissionRequest,PermissionMode,SessionEstablishedContext,Project,ProjectSession,LLMProvider,SlashCommand } from '@/shared/types';
 import { grantClaudeToolPermission } from '@/modules/chat/utils/chatPermissions';
 import {
   clearQueuedMessage,
@@ -666,8 +666,20 @@ export function useChatComposerState({
       event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>,
       queuedSubmission?: QueuedDraft,
       onUserCopyCreated?: (clientMessageId: string) => void,
+      deliveryMode: ClaudeInputMode = 'queue',
     ) => {
       event.preventDefault();
+      if (deliveryMode === 'interrupt') {
+        const runtime = sessionKey ? processingSessions?.get(sessionKey) : undefined;
+        if (provider !== 'claude' || !runtime?.inputModes?.includes('interrupt') || runtime.acceptsInput !== true) {
+          addMessage({ type: 'error', content: t('input.interruptUnavailable', { defaultValue: 'This remote execution has not confirmed interrupt-and-send support. Your draft has not been sent; wait for its state to update or use Queue.' }), timestamp: new Date() });
+          return;
+        }
+        if (editingAnchorId) {
+          addMessage({ type: 'error', content: t('input.interruptEditing', { defaultValue: 'Finish or cancel editing the earlier message before interrupting with a new message.' }), timestamp: new Date() });
+          return;
+        }
+      }
       const mutationAtSubmission = sessionKey ? contextMutations.current.get(sessionKey) : undefined;
       if (mutationAtSubmission?.pending) {
         addMessage({ type: 'error', content: 'The conversation context is being restored. Your draft has not been sent.', timestamp: new Date() });
@@ -936,6 +948,7 @@ export function useChatComposerState({
           content: messageContent,
           options: {
             ...(queuedSubmission?.options ?? buildSendOptions(messageContent)),
+            ...(provider === 'claude' ? { deliveryMode } : {}),
             attachments: uploadedAttachments,
           },
         });
@@ -1242,6 +1255,11 @@ export function useChatComposerState({
     setIsTextareaExpanded(false);
   }, [resetCommandMenuState]);
 
+  const handleInterruptAndSend = useCallback((event: FormEvent<HTMLFormElement> | MouseEvent<HTMLButtonElement> | TouchEvent<HTMLButtonElement>) => {
+    // This is one native priority send, never Stop followed by a replacement process.
+    return handleSubmit(event, undefined, undefined, 'interrupt');
+  }, [handleSubmit]);
+
   const handleAbortSession = useCallback(() => {
     if (!canAbortSession) {
       return;
@@ -1394,6 +1412,7 @@ export function useChatComposerState({
     syncInputOverlayScroll,
     handleClearInput,
     handleAbortSession,
+    handleInterruptAndSend,
     handlePermissionDecision,
     handleGrantToolPermission,
     handleInputFocusChange,

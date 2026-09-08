@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState, type ReactNode, type KeyboardEvent }
 import { MoreHorizontal } from 'lucide-react';
 
 import { ActionMenu } from '@/shared/ui/ActionMenu';
+import { useToolTabAppearance } from '@/shared/hooks/useToolTabAppearance';
 
 type ToolTab = { id: string; label: string; icon: ReactNode };
 type OverflowToolTabsProps = { tabs: ToolTab[]; activeTab: string; onSelect: (id: string) => void; label: string; moreLabel: string };
@@ -9,8 +10,11 @@ const TAB_CLASS = 'flex h-11 min-h-11 min-w-11 shrink-0 items-center justify-cen
 
 /** Shared by the remote workspace and hub fallback; measured overflow stays reachable through More. */
 export function OverflowToolTabs({ tabs, activeTab, onSelect, label, moreLabel }: OverflowToolTabsProps) {
+  const [appearance] = useToolTabAppearance();
+  const showLabels = appearance === 'icons-and-text';
   const root = useRef<HTMLDivElement>(null);
   const measures = useRef<HTMLDivElement>(null);
+  // Keep only the tools that fit; all remaining tools stay available in More.
   const [visibleCount, setVisibleCount] = useState(tabs.length);
   const labels = JSON.stringify(tabs.map(tab => [tab.id, tab.label]));
   useLayoutEffect(() => {
@@ -36,7 +40,7 @@ export function OverflowToolTabs({ tabs, activeTab, onSelect, label, moreLabel }
     observer?.observe(container); observer?.observe(measurement);
     window.addEventListener('resize', measure);
     return () => { observer?.disconnect(); window.removeEventListener('resize', measure); };
-  }, [labels]);
+  }, [labels, appearance]);
   const shown = tabs.slice(0, visibleCount);
   const overflow = tabs.slice(visibleCount);
   const selectedVisible = shown.some(tab => tab.id === activeTab);
@@ -52,15 +56,15 @@ export function OverflowToolTabs({ tabs, activeTab, onSelect, label, moreLabel }
     const tab = shown[next];
     if (tab && tab.id !== activeTab) onSelect(tab.id);
   };
-  return <div ref={root} className="relative flex w-full min-w-0 items-center justify-end gap-1" data-testid="overflow-tool-tabs">
+  return <div ref={root} className="relative flex w-full min-w-0 items-center justify-end gap-1" data-testid="overflow-tool-tabs" data-appearance={appearance}>
     <div aria-hidden="true" className="pointer-events-none invisible absolute inset-0 overflow-hidden"><div ref={measures} className="flex w-max gap-1">
-      {tabs.map(tab => <span key={tab.id} className={TAB_CLASS}>{tab.icon}<span className="max-w-40 truncate">{tab.label}</span></span>)}
+      {tabs.map(tab => <span key={tab.id} className={TAB_CLASS}>{tab.icon}{showLabels && <span className="max-w-40 truncate">{tab.label}</span>}</span>)}
     </div></div>
     <div role="tablist" aria-label={label} className="flex min-w-0 items-center gap-1">
       {shown.map((tab, index) => <button key={tab.id} type="button" role="tab" title={tab.label} aria-label={tab.label} aria-selected={tab.id === activeTab}
         tabIndex={tab.id === activeTab || (!selectedVisible && index === 0) ? 0 : -1} onKeyDown={onKeyDown} onClick={() => onSelect(tab.id)}
         className={`${TAB_CLASS} ${tab.id === activeTab ? 'bg-accent font-medium text-accent-foreground' : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'}`}>
-        {tab.icon}<span className="max-w-40 truncate">{tab.label}</span>
+        <span aria-hidden="true" className="shrink-0">{tab.icon}</span>{showLabels && <span className="max-w-40 truncate">{tab.label}</span>}
       </button>)}
     </div>
     {overflow.length > 0 && <ActionMenu portal iconOnly icon={MoreHorizontal} variant="ghost" label={moreLabel} ariaLabel={selectedOverflow ? `${moreLabel} · ${selectedOverflow.label}` : moreLabel}

@@ -24,6 +24,7 @@ const sessionActivityMapsMatch = (
       || leftActivity.startedAt !== rightActivity.startedAt
       || leftActivity.phase !== rightActivity.phase
       || leftActivity.acceptsInput !== rightActivity.acceptsInput
+      || leftActivity.inputModes?.join(',') !== rightActivity.inputModes?.join(',')
       || leftActivity.backgroundTasks !== rightActivity.backgroundTasks
       || leftActivity.executionId !== rightActivity.executionId
       || leftActivity.foregroundTurnId !== rightActivity.foregroundTurnId
@@ -64,6 +65,7 @@ export function useSessionProtection() {
         foregroundTurnId: activity?.phase === 'background' ? undefined : activity?.foregroundTurnId ?? previous?.foregroundTurnId,
         foregroundStartedAt: activity?.phase === 'background' ? undefined : activity?.foregroundStartedAt ?? previous?.foregroundStartedAt,
         acceptsInput: activity?.acceptsInput ?? previous?.acceptsInput,
+        inputModes: activity?.inputModes ?? previous?.inputModes,
         backgroundTasks: activity?.backgroundTasks ?? previous?.backgroundTasks,
         executionId: activity?.executionId ?? previous?.executionId,
         statusText:
@@ -78,6 +80,7 @@ export function useSessionProtection() {
         && existing.canInterrupt === next.canInterrupt
         && existing.phase === next.phase
         && existing.acceptsInput === next.acceptsInput
+        && existing.inputModes?.join(',') === next.inputModes?.join(',')
         && existing.backgroundTasks === next.backgroundTasks
         && existing.executionId === next.executionId
         && existing.foregroundTurnId === next.foregroundTurnId
@@ -145,6 +148,7 @@ export function useSessionProtection() {
           foregroundTurnId: phase === 'background' ? undefined : snapshot.foregroundTurnId ?? previousRuntime?.foregroundTurnId,
           foregroundStartedAt: phase === 'background' ? undefined : snapshot.foregroundStartedAt ?? previousRuntime?.foregroundStartedAt,
           acceptsInput: snapshot.acceptsInput ?? previousRuntime?.acceptsInput,
+          inputModes: snapshot.inputModes ?? previousRuntime?.inputModes,
           backgroundTasks: snapshot.backgroundTasks ?? previousRuntime?.backgroundTasks,
           executionId: snapshot.executionId,
           statusText:

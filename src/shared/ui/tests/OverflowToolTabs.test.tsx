@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { OverflowToolTabs } from '@/shared/ui/OverflowToolTabs';
 let width = 400;
 beforeEach(() => {
+  localStorage.clear();
   width = 400;
   vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(() => width);
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(() => ({ width: 90, height: 44, top: 0, left: 0, right: 90, bottom: 44, x: 0, y: 0, toJSON: () => ({}) }));

@@ -2,7 +2,7 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 import WorkspaceMain from '@/modules/project-workspace/WorkspaceMain';
-import { WorkspacePanelsProvider } from '@/modules/workspace-panels';
+import { WorkspacePanelsProvider, useWorkspacePanelActions } from '@/modules/workspace-panels';
 import type { Project } from '@/shared/types';
 import { useModalPresence } from '@/shared/hooks/useModalVisibility';
 
@@ -21,7 +21,8 @@ vi.mock('@/modules/project-workspace/WorkspaceTerminals', () => ({ default: () =
 
 const project: Project = { projectId: 'one', displayName: 'Research', fullPath: '/remote/research' };
 const settings = vi.fn();
-const workspace = (selectedProject: Project | null = project) => <WorkspacePanelsProvider><WorkspaceMain
+function HubPanelControl() { const actions = useWorkspacePanelActions(); return window.__CLOUDCLI_EMBEDDED__ ? <button onClick={() => actions?.setPanelOpen(true)}>Open from hub</button> : null; }
+const workspace = (selectedProject: Project | null = project) => <WorkspacePanelsProvider><HubPanelControl /><WorkspaceMain
   selectedProject={selectedProject} selectedSession={null} activeTab="chat" setActiveTab={vi.fn()} ws={null} sendMessage={vi.fn()}
   isMobile={false} onMenuClick={vi.fn()} isLoading={false} onNavigateToSession={vi.fn()} onSessionEstablished={vi.fn()}
   onShowSettings={settings} externalMessageUpdate={0} newSessionTrigger={0} onProjectSelect={vi.fn()} onProjectsRefresh={vi.fn()}
@@ -33,16 +34,23 @@ beforeEach(() => {
 afterEach(() => { delete window.__CLOUDCLI_EMBEDDED__; delete window.__REMOTE_NAME__; });
 function ModalCoverage({ open }: { open: boolean }) { useModalPresence(open); return null; }
 
-test('tools remain outside the collapsed panel with visible labels while chat and preferences are not tabs', () => {
+test('tools live only in the right panel while Settings and the panel toggle stay in the single top header', () => {
   render(workspace());
-  expect(screen.queryByTestId('workspace-header')).toBeNull();
+  expect(screen.getAllByTestId('workspace-header')).toHaveLength(1);
+  expect(screen.queryByTestId('workspace-tool-bar')).toBeNull();
   expect(screen.queryByTestId('inline-preferences')).toBeNull();
-  const toolbar = screen.getByTestId('workspace-tool-bar');
+  const toolbar = screen.getByTestId('workspace-header');
   const panel = screen.getByTestId('workspace-right-panel');
-  const tools = within(toolbar).getAllByRole('tab');
+  expect(within(toolbar).queryByRole('tablist')).toBeNull();
+  expect(screen.queryByRole('tab')).toBeNull();
+  fireEvent.click(within(toolbar).getByRole('button', { name: 'Alpha · Machine settings' }));
+  expect(settings).toHaveBeenCalledTimes(1);
+  expect(screen.queryByTestId('inline-preferences')).toBeNull();
+  fireEvent.click(within(toolbar).getByRole('button', { name: 'Open workspace panel' }));
+  const tools = within(panel).getAllByRole('tab');
   expect(tools.map(tool => tool.getAttribute('aria-label'))).toEqual(['tabs.shell', 'tabs.files', 'workspacePanel.sourceControl', 'workspacePanel.agents', 'tabs.browser']);
-  expect(panel.classList.contains('hidden')).toBe(true);
-  expect(tools.every(tool => !panel.contains(tool) && tool.classList.contains('min-h-11') && !tool.querySelector('span')?.classList.contains('sr-only'))).toBe(true);
+  expect(panel.classList.contains('hidden')).toBe(false);
+  expect(tools.every(tool => panel.contains(tool) && tool.classList.contains('min-h-11') && tool.textContent === '' && tool.title === tool.getAttribute('aria-label'))).toBe(true);
   expect(screen.queryByRole('tab', { name: 'tabs.chat' })).toBeNull();
   expect(screen.queryByRole('tab', { name: 'workspacePanel.preferences' })).toBeNull();
   expect(tools[0].tabIndex).toBe(0);
@@ -50,30 +58,30 @@ test('tools remain outside the collapsed panel with visible labels while chat an
   expect(within(screen.getByTestId('workspace-tool-navigation')).getByTestId('overflow-tool-tabs')).toBeTruthy();
   fireEvent.click(tools[0]);
   expect(within(panel).getByRole('heading', { name: 'tabs.shell' })).toBeTruthy();
-  expect(within(panel).queryByRole('tablist')).toBeNull();
+  expect(within(panel).getByRole('tablist')).toBeTruthy();
   fireEvent.click(tools[0]);
   expect(panel.classList.contains('hidden')).toBe(true);
-  fireEvent.click(tools[0]);
+  fireEvent.click(within(toolbar).getByRole('button', { name: 'Open workspace panel' }));
   expect(panel.classList.contains('hidden')).toBe(false);
   fireEvent.click(screen.getByRole('button', { name: 'Preferences' }));
   expect(screen.getByTestId('inline-preferences')).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Alpha · Machine settings' }));
-  expect(settings).toHaveBeenCalledTimes(1);
+  expect(settings).toHaveBeenCalledTimes(2);
 });
 
 test('switching preferences and collapsing preserves the active terminal and chat draft', () => {
   render(workspace());
   const chat = screen.getByLabelText('chat draft');
   fireEvent.change(chat, { target: { value: 'unsent message' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Open workspace panel' }));
   fireEvent.click(screen.getByRole('tab', { name: 'tabs.shell' }));
   const terminal = screen.getByLabelText('retained terminal');
   fireEvent.change(terminal, { target: { value: 'ongoing remote work' } });
   fireEvent.click(screen.getByRole('button', { name: 'Preferences' }));
   fireEvent.click(screen.getByRole('tab', { name: 'tabs.shell' }));
   fireEvent.click(screen.getByRole('button', { name: 'Collapse panel; keep work running' }));
-  expect(screen.getByRole('tab', { name: 'tabs.shell' }).getAttribute('aria-selected')).toBe('false');
-  expect(screen.getByRole('tab', { name: 'tabs.shell' }).tabIndex).toBe(0);
-  fireEvent.click(screen.getByRole('tab', { name: 'tabs.shell' }));
+  expect(screen.queryByRole('tab')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Open workspace panel' }));
   expect(screen.getByLabelText('retained terminal')).toBe(terminal);
   expect((terminal as HTMLTextAreaElement).value).toBe('ongoing remote work');
   expect(screen.getByLabelText('chat draft')).toBe(chat);
@@ -82,6 +90,7 @@ test('switching preferences and collapsing preserves the active terminal and cha
 
 test('keyboard navigation starts at the first tool while chat is the main surface', () => {
   render(workspace());
+  fireEvent.click(screen.getByRole('button', { name: 'Open workspace panel' }));
   const shell = screen.getByRole('tab', { name: 'tabs.shell' });
   expect(shell.tabIndex).toBe(0);
   fireEvent.keyDown(shell, { key: 'ArrowRight' });
@@ -92,19 +101,32 @@ test('keyboard navigation starts at the first tool while chat is the main surfac
   expect(shell.tabIndex).toBe(-1);
   fireEvent.click(screen.getByRole('button', { name: 'Collapse panel; keep work running' }));
   expect(shell.tabIndex).toBe(0);
-  expect(screen.getAllByRole('tab').every(tool => tool.getAttribute('aria-selected') === 'false')).toBe(true);
+  expect(screen.queryByRole('tab')).toBeNull();
 });
 
-test('embedded tools stay visible and leave room for the parent sidebar toggle', () => {
+test('embedded header reserves symmetric parent sidebar toggles and keeps tools in the drawer', () => {
   window.__CLOUDCLI_EMBEDDED__ = true;
   render(workspace());
-  expect(screen.getByTestId('workspace-tool-bar').classList.contains('pl-14')).toBe(true);
-  expect(screen.getByRole('tab', { name: 'tabs.shell' })).toBeTruthy();
+  expect(screen.getByTestId('workspace-header').classList.contains('px-14')).toBe(true);
+  expect(screen.queryByRole('tab')).toBeNull();
+  fireEvent.click(within(screen.getByTestId('workspace-header')).getByRole('button', { name: 'Alpha · Machine settings' }));
+  expect(settings).toHaveBeenCalledTimes(1);
   expect(screen.queryByRole('button', { name: 'Open workspace panel' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Open from hub' }));
   fireEvent.click(screen.getByRole('tab', { name: 'tabs.shell' }));
   expect(screen.getByLabelText('retained terminal')).toBeTruthy();
-  fireEvent.click(screen.getByRole('button', { name: 'Collapse panel; keep work running' }));
-  expect(screen.getByRole('tab', { name: 'tabs.shell' }).tabIndex).toBe(0);
+  fireEvent.click(screen.getByRole('tab', { name: 'tabs.shell' }));
+  expect(screen.queryByRole('tab')).toBeNull();
+});
+
+test('top-level settings identity follows this workspace remote while another machine is selected', () => {
+  const view = render(workspace());
+  fireEvent.click(screen.getByRole('button', { name: 'Alpha · Machine settings' }));
+  window.__REMOTE_NAME__ = 'Beta';
+  view.rerender(workspace());
+  expect(screen.queryByRole('button', { name: 'Alpha · Machine settings' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Beta · Machine settings' }));
+  expect(settings).toHaveBeenCalledTimes(2);
 });
 
 test('the drawer and full machine settings stay available before selecting any project', () => {
@@ -113,6 +135,23 @@ test('the drawer and full machine settings stay available before selecting any p
   expect(screen.getByTestId('inline-preferences')).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Alpha · Machine settings' }));
   expect(settings).toHaveBeenCalledTimes(1);
+});
+
+test('the top-right toggle stays visible while maximizing, collapsing and restoring the right panel', () => {
+  render(workspace());
+  const header = screen.getByTestId('workspace-header');
+  fireEvent.click(within(header).getByRole('button', { name: 'Open workspace panel' }));
+  fireEvent.click(screen.getByRole('tab', { name: 'tabs.shell' }));
+  const terminal = screen.getByLabelText('retained terminal');
+  fireEvent.click(screen.getByRole('button', { name: 'Maximize panel' }));
+  const toggle = within(header).getByRole('button', { name: 'Collapse panel; keep work running' });
+  expect(toggle.getAttribute('aria-expanded')).toBe('true');
+  fireEvent.click(toggle);
+  fireEvent.click(within(header).getByRole('button', { name: 'Open workspace panel' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Maximize panel' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Restore split view' }));
+  expect(screen.getByLabelText('retained terminal')).toBe(terminal);
+  expect(within(header).getByRole('button', { name: 'Collapse panel; keep work running' })).toBeTruthy();
 });
 
 test('a modal temporarily suspends reading state while preserving drawer and conversation mounts', () => {

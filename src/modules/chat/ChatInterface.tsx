@@ -358,6 +358,7 @@ function ChatInterface({
     syncInputOverlayScroll,
     handleClearInput,
     handleAbortSession,
+    handleInterruptAndSend,
     handlePermissionDecision,
     handleGrantToolPermission,
     handleInputFocusChange,
@@ -686,6 +687,7 @@ function ChatInterface({
           hasInput={Boolean(input.trim())}
           onClearInput={handleClearInput}
           onSubmit={handleSubmit}
+          onInterruptAndSend={handleInterruptAndSend}
           isDragActive={isDragActive}
           queuedDraft={queuedDraft}
           onEditQueuedDraft={editQueuedDraft}

@@ -52,7 +52,10 @@ export default function PluginTabContent({
 }: PluginTabContentProps) {
   const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement>(null);
+  // Keep plugin errors outside its document so a broken UI cannot erase its recovery controls.
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Show progress until both import and the plugin's asynchronous mount complete.
+  const [opening, setOpening] = useState(false);
   // Retry a failed remote bundle without replacing the conversation or workspace.
   const [loadAttempt, setLoadAttempt] = useState(0);
   const { isDarkMode } = useTheme();
@@ -62,7 +65,6 @@ export default function PluginTabContent({
   const contextRef = useRef<PluginContext>(buildContext(isDarkMode, selectedProject, selectedSession));
   const contextCallbacksRef = useRef<Set<(ctx: PluginContext) => void>>(new Set());
 
-  const moduleRef = useRef<any>(null);
 
   const plugin = plugins.find(p => p.name === pluginName);
 
@@ -77,69 +79,118 @@ export default function PluginTabContent({
   }, [isDarkMode, selectedProject, selectedSession]);
 
   useEffect(() => {
-    // Drop any previous plugin's error before this load attempt starts, so a
-    // stale overlay never covers a different (or successfully loaded) plugin.
     setLoadError(null);
+    setOpening(Boolean(plugin?.enabled));
     if (!containerRef.current || !plugin?.enabled) return;
 
     let active = true;
+    let frame: HTMLIFrameElement | null = null;
+    let disposePlugin: (() => void) | undefined;
+    let blobUrl: string | undefined;
     const container = containerRef.current;
-    const entryFile = plugin?.entry ?? 'index.js';
     const contextCallbacks = contextCallbacksRef.current;
+    const reportError = (error: unknown) => {
+      if (!active) return;
+      clearTimeout(timeout);
+      setOpening(false);
+      setLoadError(error instanceof Error ? error.message : String(error));
+    };
+    const timeout = setTimeout(() => reportError('Plugin did not finish opening. Retry, or check the plugin build and backend in Settings.'), 20_000);
 
     (async () => {
       try {
-        // Fetch the plugin JS with auth headers (Cloudflare Worker requires auth on all routes).
-        // Then import it via a Blob URL so the browser never makes an unauthenticated request.
-        const res = await api.plugins.asset(pluginName, entryFile);
+        const res = await api.plugins.asset(pluginName, plugin.entry || 'index.js');
         if (!res.ok) throw new Error(`Failed to fetch plugin (HTTP ${res.status})`);
         const jsText = await res.text();
-        const blob = new Blob([jsText], { type: 'application/javascript' });
-        const blobUrl = URL.createObjectURL(blob);
-        // @vite-ignore
-        const mod = await import(/* @vite-ignore */ blobUrl).finally(() => URL.revokeObjectURL(blobUrl));
-        if (!active || !containerRef.current) return;
-
-        moduleRef.current = mod;
-
-        // The host surface handed to the plugin module, distinct from the
-        // app's own `api` client that backs `rpc` below.
-        const pluginHostApi = {
-          get context(): PluginContext { return contextRef.current; },
-
-          onContextChange(cb: (ctx: PluginContext) => void): () => void {
-            contextCallbacks.add(cb);
-            return () => contextCallbacks.delete(cb);
-          },
-
-          async rpc(method: string, path: string, body?: unknown): Promise<unknown> {
-            const res = await api.plugins.rpc(pluginName, method, path, body);
-            if (!res.ok) throw new Error(`RPC error ${res.status}`);
-            return res.json();
-          },
-        };
-
-        if (typeof mod.mount !== 'function') throw new Error('The plugin entry does not export mount(). Check the remote plugin build.');
-        await mod.mount(container, pluginHostApi);
-        if (!active) {
-          try { mod.unmount?.(container); } catch { /* ignore */ }
-          moduleRef.current = null;
-          return;
-        }
-      } catch (err) {
         if (!active) return;
-        console.error(`[Plugin:${pluginName}] Failed to load:`, err);
-        setLoadError(String(err));
-      }
+        blobUrl = URL.createObjectURL(new Blob([jsText], { type: 'application/javascript' }));
+        frame = document.createElement('iframe');
+        frame.title = plugin.displayName || pluginName;
+        frame.className = 'h-full w-full border-0';
+        // Separate document/JS realm prevents accidental body/root CSS and DOM
+        // writes from replacing CloudCLI. Installed plugins remain trusted code;
+        // same-origin compatibility is not a security sandbox.
+        frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups');
+        // A real same-origin document preserves location.host for plugin sockets.
+        frame.src = new URL('/plugin-host.html', window.location.origin).href;
+        frame.addEventListener('load', () => {
+          if (!active || !frame?.contentWindow || !frame.contentDocument) return;
+          const pluginWindow = frame.contentWindow;
+          const pluginDocument = frame.contentDocument;
+          // Reuse the owning workspace's already scoped transports/storage.
+          // Native iframe globals would otherwise bypass the remote hub routing.
+          Object.defineProperty(pluginWindow, 'localStorage', { configurable: true, value: window.localStorage });
+          pluginWindow.fetch = (input, init) => window.fetch(
+            typeof input === 'object' && 'url' in input ? new Request(input.url, input as Request) : String(input), init,
+          );
+          Object.assign(pluginWindow, {
+            WebSocket: window.WebSocket, EventSource: window.EventSource, XMLHttpRequest: window.XMLHttpRequest,
+            __REMOTE_BASE__: window.__REMOTE_BASE__, __REMOTE_ID__: window.__REMOTE_ID__, __REMOTE_NAME__: window.__REMOTE_NAME__,
+          });
+          const updateFrameTheme = (ctx: PluginContext) => {
+            pluginDocument.documentElement.classList.toggle('dark', ctx.theme === 'dark');
+            pluginDocument.documentElement.style.colorScheme = ctx.theme;
+            pluginDocument.body.style.color = ctx.theme === 'dark' ? '#e7e5e4' : '#1c1917';
+            pluginDocument.body.style.background = ctx.theme === 'dark' ? '#171717' : '#ffffff';
+          };
+          updateFrameTheme(contextRef.current);
+          contextCallbacks.add(updateFrameTheme);
+          const hostApi = {
+            get context(): PluginContext { return contextRef.current; },
+            onContextChange(cb: (ctx: PluginContext) => void): () => void {
+              contextCallbacks.add(cb);
+              return () => contextCallbacks.delete(cb);
+            },
+            async rpc(method: string, path: string, body?: unknown): Promise<unknown> {
+              if (!active) throw new Error('Plugin workspace closed');
+              const response = await api.plugins.rpc(pluginName, method, path, body);
+              if (!response.ok) {
+                const detail = await response.text();
+                throw new Error(`RPC error ${response.status}: ${detail.slice(0, 500)}`);
+              }
+              if (response.status === 204) return null;
+              return response.headers.get('content-type')?.includes('json') ? response.json() : response.text();
+            },
+          };
+          Object.assign(pluginWindow, { __cloudcliPluginHost: {
+            api: hostApi,
+            ready(unmount: () => void) {
+              if (!active) { unmount(); return; }
+              disposePlugin = unmount;
+              clearTimeout(timeout);
+              setOpening(false);
+            },
+            failed: reportError,
+          } });
+          const script = pluginDocument.createElement('script');
+          script.type = 'module';
+          script.textContent = `
+            const host = window.__cloudcliPluginHost;
+            window.addEventListener('error', event => { if (event.message) host.failed(event.message); });
+            window.addEventListener('unhandledrejection', event => host.failed(String(event.reason)));
+            try {
+              const mod = await import(${JSON.stringify(blobUrl)});
+              if (typeof mod.mount !== 'function') throw new Error('The plugin entry must export mount(). Check the remote plugin build.');
+              const root = document.getElementById('plugin-root');
+              await mod.mount(root, host.api);
+              host.ready(() => mod.unmount?.(root));
+            } catch (error) { host.failed(String(error)); }
+          `;
+          pluginDocument.body.appendChild(script);
+        }, { once: true });
+        container.replaceChildren(frame);
+      } catch (err) { reportError(err); }
     })();
 
     return () => {
       active = false;
-      try { moduleRef.current?.unmount?.(container); } catch { /* ignore */ }
+      clearTimeout(timeout);
+      try { disposePlugin?.(); } catch { /* Recovery remains owned by the host. */ }
+      frame?.remove();
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
       contextCallbacks.clear();
-      moduleRef.current = null;
     };
-  }, [pluginName, plugin?.entry, plugin?.enabled, plugin?.version, loadAttempt]);
+  }, [pluginName, plugin?.entry, plugin?.enabled, plugin?.version, plugin?.assetRevision, plugin?.displayName, loadAttempt]);
 
   return (
     <div className="relative h-full w-full overflow-auto">
@@ -148,9 +199,11 @@ export default function PluginTabContent({
         {loading ? t('settings:pluginSettings.scanningPlugins') : plugin ? t('settings:pluginSettings.enableToOpen') : pluginsError || t('settings:pluginSettings.notAvailable')}
         <Button variant="outline" className="mt-3 block" onClick={() => void refreshPlugins()}>{t('settings:pluginSettings.refreshPlugins')}</Button>
       </div>}
+      {opening && !loadError && <div role="status" className="absolute inset-0 bg-background p-4 text-sm text-muted-foreground">{t('common:misc.loading', { defaultValue: 'Opening plugin…' })}</div>}
       {loadError && (
-        <div className="absolute inset-0 p-4 text-[13px] text-red-600">
+        <div role="alert" className="absolute inset-0 overflow-auto bg-background p-4 text-[13px] text-red-600">
           {t('common:misc.pluginLoadFailed', { error: loadError })}
+          <p className="mt-2 text-sm text-muted-foreground">{t('settings:pluginSettings.bundleRequirement', { defaultValue: 'Check that this plugin builds a self-contained, single-file browser bundle. Relative module imports and sibling assets resolved through import.meta.url are not supported by the authenticated loader.' })}</p>
           <Button variant="outline" className="mt-3 block" onClick={() => setLoadAttempt(value => value + 1)}>{t('settings:pluginSettings.retryOpen')}</Button>
         </div>
       )}
