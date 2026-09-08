@@ -23,3 +23,23 @@ export function moveHubMember(state: HubGroupState, groupId: string, source: str
   group.members.splice(group.members.findIndex(m => memberKey(m) === target) + (position === 'after' ? 1 : 0), 0, member);
   return state;
 }
+
+/** Reorder against the latest saved state without changing either pin section or group contents. */
+export function moveHubGroup(state: HubGroupState, sourceGroupId: string, targetGroupId: string, position: 'before' | 'after'): HubGroupState {
+  const source = state.groups.find(group => group.id === sourceGroupId);
+  const target = state.groups.find(group => group.id === targetGroupId);
+  if (!source || !target) throw new Error('分组已被删除，请刷新后重试');
+  if (sourceGroupId === targetGroupId) return state;
+  if (source.isPinned !== target.isPinned) throw new Error('只能在同一置顶区域内排序，请先通过菜单置顶或取消置顶');
+
+  const section = state.groups.filter(group => group.isPinned === source.isPinned && group.id !== sourceGroupId);
+  const targetIndex = section.findIndex(group => group.id === targetGroupId);
+  section.splice(targetIndex + (position === 'after' ? 1 : 0), 0, source);
+
+  // Persist only this section's order, keeping every other section slot and all metadata intact.
+  let sectionIndex = 0;
+  return {
+    ...state,
+    groups: state.groups.map(group => group.isPinned === source.isPinned ? section[sectionIndex++] : group)
+  };
+}

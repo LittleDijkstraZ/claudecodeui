@@ -523,6 +523,14 @@ preferred width preserved across narrow windows and reloads. Conversation and
 group hit targets include their full row height; drag handles and menus retain
 separate actions.
 
+In the multi-remote hub, drag a group heading with the mouse or use its grip to
+reorder whole groups. Pinned and ordinary groups keep separate ordering; dragging
+does not change pin status. The grip supports Up/Down keys, and the group menu
+also provides move actions. The ordered group array is saved by the local hub and
+broadcast to other windows. A conflicting save reapplies the move against the
+latest revision, preserving concurrent edits and group contents. The detached
+single-group view hides sorting controls. Existing conversation dragging is unchanged.
+
 The right-edge control opens the retained workspace panel. The panel contains
 its selected tool, a compact tool heading and size controls. Closing, resizing
 or maximizing it does not replace its remote frame or running terminal. The hub

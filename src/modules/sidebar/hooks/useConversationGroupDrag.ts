@@ -13,6 +13,9 @@ type DragOptions = {
   onMove: (groupId: string, sessionId: string, targetSessionId: string, position: 'before' | 'after') => Promise<void>;
   disabled?: boolean;
   onError?: (error: unknown) => void;
+  /** Hub group headings share pointer handling but use their own DOM identity and pinned scope. */
+  targetSelector?: string;
+  targetIdentity?: (element: HTMLElement) => GroupDragSource;
 };
 
 function findScrollContainer(element: HTMLElement): HTMLElement | null {
@@ -82,11 +85,11 @@ export function useConversationGroupDrag(options: DragOptions) {
     let lastDropKey = '';
 
     const hitTarget = () => {
-      const row = doc.elementFromPoint(point.x, point.y)?.closest<HTMLElement>('[data-session-id][data-group-id]');
+      const config = latestOptions.current;
+      const row = doc.elementFromPoint(point.x, point.y)?.closest<HTMLElement>(config.targetSelector ?? '[data-session-id][data-group-id]');
       const bounds = row?.getBoundingClientRect();
       return getGroupDropTarget(source, row && bounds ? {
-        groupId: row.dataset.groupId ?? '',
-        sessionId: row.dataset.sessionId ?? '',
+        ...(config.targetIdentity?.(row) ?? { groupId: row.dataset.groupId ?? '', sessionId: row.dataset.sessionId ?? '' }),
         top: bounds.top,
         height: bounds.height,
       } : null, point.y);

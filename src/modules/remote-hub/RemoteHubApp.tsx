@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Bell, GitFork, Pencil, ChevronDown, ChevronRight, ExternalLink, Folder, Layers, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pin, Plus, RefreshCw, Server, Settings, Trash2, X } from 'lucide-react';
+import { Bell, GitFork, GripVertical, Pencil, ChevronDown, ChevronRight, ExternalLink, Folder, Layers, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pin, Plus, RefreshCw, Server, Settings, Trash2, X } from 'lucide-react';
 
 import { HubDialog } from '@/modules/remote-hub/modals/HubDialog';
 import { HubConversationDialog } from '@/modules/remote-hub/modals/HubConversationDialog';
@@ -11,7 +11,7 @@ import type { HubRemote, HubConversation, HubGroup, HubGroupState, HubDialogStat
 import { ThemeProvider } from '@/shared/context/ThemeContext';
 import { SessionAttentionIndicator, SessionRunningIndicator, ActionMenu, Button, Input } from '@/shared/ui';
 import { useConversationGroupDrag } from '@/modules/sidebar';
-import { memberKey, moveHubMember, normalizeConversation } from '@/modules/remote-hub/utils/hubClient';
+import { memberKey, moveHubGroup, moveHubMember, normalizeConversation } from '@/modules/remote-hub/utils/hubClient';
 import { useHubConnections } from '@/modules/remote-hub/hooks/useHubConnections';
 const emptyGroups: HubGroupState = {
   revision: 0,
@@ -147,6 +147,16 @@ function Hub() {
     onMove,
     disabled: saving,
     onError: () => {}
+  });
+  const onMoveGroup = useCallback(async (_scope: string, source: string, target: string, position: 'before' | 'after') => {
+    await update(state => moveHubGroup(state, source, target, position));
+  }, [update]);
+  const groupDrag = useConversationGroupDrag({
+    onMove: onMoveGroup,
+    disabled: saving || Boolean(groupWindow) || drag.isMoving || Boolean(drag.dragState),
+    onError: () => {}, // The shared update path already displays storage failures.
+    targetSelector: '[data-hub-sort-group]',
+    targetIdentity: element => ({ groupId: element.dataset.hubSortScope ?? '', sessionId: element.dataset.hubSortGroup ?? '' }),
   });
   const expand = (id: string) => setExpanded(current => {
     const next = new Set(current);
@@ -402,8 +412,28 @@ function Hub() {
           }}>显示所有分组</button>}
         {groupsToShow.map(group => {
             const isOpen = expanded.has(group.id) || Boolean(query) || Boolean(groupWindow);
-            return <section key={group.id} data-testid="hub-group" data-group-id={group.id}>
-          <div className="flex h-9 items-stretch rounded-md hover:bg-accent"><button type="button" className="flex h-full min-w-0 flex-1 items-center gap-1.5 rounded px-1 text-left text-xs font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring" aria-expanded={isOpen} onClick={() => expand(group.id)}>{isOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}<span className="min-w-0 flex-1 truncate">{group.name}</span>{group.isPinned && <Pin className="h-3 w-3" />}<span className="text-[10px] text-muted-foreground">{group.members.length}</span></button>
+            const scope = group.isPinned ? 'pinned' : 'regular';
+            const handle = groupDrag.dragHandleProps(scope, group.id);
+            const drop = groupDrag.dropTarget?.sessionId === group.id ? groupDrag.dropTarget.position : null;
+            const peers = groupsToShow.filter(other => other.isPinned === group.isPinned);
+            const groupIndex = peers.findIndex(other => other.id === group.id);
+            const previousGroup = peers[groupIndex - 1], nextGroup = peers[groupIndex + 1];
+            const sortingDisabled = saving || Boolean(groupWindow) || groupDrag.isMoving;
+            return <section key={group.id} data-testid="hub-group" data-group-id={group.id} data-hub-sort-group={group.id} data-hub-sort-scope={scope}
+              className={`relative ${groupDrag.dragState?.sessionId === group.id ? 'opacity-50' : ''}`}>
+          {drop && <div aria-hidden="true" className={`pointer-events-none absolute inset-x-0 z-10 h-0.5 rounded bg-primary ${drop === 'before' ? 'top-0' : 'bottom-0'}`} />}
+          <div className="flex h-9 items-stretch rounded-md hover:bg-accent">
+          {!groupWindow && <button {...handle} aria-label={`拖动分组 ${group.name}`} title="拖动分组排序（置顶与未置顶分开）" disabled={sortingDisabled}
+            className="flex h-full w-5 shrink-0 cursor-grab items-center justify-center rounded text-muted-foreground/60 hover:bg-accent hover:text-foreground active:cursor-grabbing disabled:cursor-default focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            onKeyDown={event => {
+              const target = event.key === 'ArrowUp' ? previousGroup : event.key === 'ArrowDown' ? nextGroup : null;
+              if (!target || sortingDisabled) return;
+              event.preventDefault();
+              void onMoveGroup(scope, group.id, target.id, event.key === 'ArrowUp' ? 'before' : 'after').catch(() => {});
+            }}><GripVertical className="h-3.5 w-3.5" /></button>}
+          <button type="button" className="flex h-full min-w-0 flex-1 select-none items-center gap-1.5 rounded px-1 text-left text-xs font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring" aria-expanded={isOpen}
+            onPointerDown={event => { if (event.pointerType === 'mouse' && !sortingDisabled) handle.onPointerDown?.(event); }} onDragStart={handle.onDragStart}
+            onClick={() => expand(group.id)}>{isOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}<span className="min-w-0 flex-1 truncate">{group.name}</span>{group.isPinned && <Pin className="h-3 w-3" />}<span className="text-[10px] text-muted-foreground">{group.members.length}</span></button>
           <ActionMenu label="分组菜单" ariaLabel={`${group.name} 分组菜单`} icon={MoreHorizontal} iconOnly portal variant="ghost" triggerClassName="h-9 w-8 shrink-0 p-0" disabled={saving} items={[{
                   key: 'new',
                   label: '新建对话',
@@ -430,6 +460,12 @@ function Hub() {
                     kind: 'group',
                     group
                   })
+                }, {
+                  key: 'up', label: '上移分组', disabled: sortingDisabled || !previousGroup,
+                  onSelect: () => { if (previousGroup) void onMoveGroup(scope, group.id, previousGroup.id, 'before').catch(() => {}); }
+                }, {
+                  key: 'down', label: '下移分组', disabled: sortingDisabled || !nextGroup,
+                  onSelect: () => { if (nextGroup) void onMoveGroup(scope, group.id, nextGroup.id, 'after').catch(() => {}); }
                 }, {
                   key: 'window',
                   label: '在新窗口打开整个分组',
