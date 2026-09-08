@@ -602,6 +602,12 @@ entire conversation is not required to show the latest messages correctly.
 Unmatched copies keep their original text, delivery state and manual actions;
 this display repair never resends them or rewrites Claude's transcript.
 
+While the viewport is at the bottom, it follows streaming text within an existing
+message and delayed Markdown layout changes. Scrolling up pauses that follow;
+returning to the bottom or using the down-arrow button resumes it. Loading older
+history, jumping to a search result or edit, and switching away retain their own
+scroll position instead of being pulled to the latest output.
+
 Rewind previews its target and effects on background work, queued drafts, and scheduled messages. The original native branch remains available. The commit transaction isolates old queued/scheduled work on that branch, and late saves or already-claimed dispatchers cannot silently feed it into the new branch. Active execution conflicts are reported rather than stopped automatically. File recovery still covers only recorded native checkpoints, not arbitrary shell, database, or external side effects.
 
 The Agents panel includes Workflows, with recorded task IDs, progress, final results, duration where known, and a link to the originating tool call. An old launch receipt is not proof a task is still running; unverified state is explicit. Inspecting a task does not issue resume or stop commands. Only foreground generation drives the main composer timer.

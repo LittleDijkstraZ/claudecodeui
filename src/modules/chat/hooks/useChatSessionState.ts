@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { MutableRefObject } from 'react';
+import type { MutableRefObject, SetStateAction } from 'react';
 
 import { api } from '@/shared/api';
 import { acceptClaudeUsageSnapshot, isClaudeUsageSnapshot } from '@/modules/chat/utils/claudeUsageSnapshot';
@@ -200,7 +200,7 @@ export function useChatSessionState({
   const [isLoadingMoreMessages, setIsLoadingMoreMessages] = useState(false);
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const [totalMessages, setTotalMessages] = useState(0);
-  const [isUserScrolledUp, setIsUserScrolledUp] = useState(false);
+  const [isUserScrolledUp, setRawIsUserScrolledUp] = useState(false);
   const [rawTokenBudget, setRawTokenBudget] = useState<Record<string, unknown> | null>(null);
   // Embedded remote panes have independent closures; explicit scope also guards
   // asynchronous requests if a pane is ever reused for another machine.
@@ -244,6 +244,13 @@ export function useChatSessionState({
    * time, a scroll-up inside that window is silently undone.
    */
   const isUserScrolledUpRef = useRef(false);
+  // Input handlers and deferred layout callbacks share one synchronous intent
+  // value; waiting for a state effect can otherwise undo an upward gesture.
+  const setIsUserScrolledUp = useCallback((next: SetStateAction<boolean>) => {
+    const value = typeof next === 'function' ? next(isUserScrolledUpRef.current) : next;
+    isUserScrolledUpRef.current = value;
+    setRawIsUserScrolledUp(value);
+  }, []);
   // Async history work may finish after a newer context jump; only its own
   // navigation generation is allowed to restore the viewport.
   const navigationGenerationRef = useRef(0);
@@ -255,6 +262,8 @@ export function useChatSessionState({
   const pendingInitialScrollRef = useRef(true);
   const messagesOffsetRef = useRef(0);
   const scrollPositionRef = useRef({ height: 0, top: 0 });
+  // Coalesce fast stream updates without restarting a delay on every token.
+  const bottomFollowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadAllFinishedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadAllOverlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastLoadedSessionKeyRef = useRef<string | null>(null);
@@ -466,7 +475,7 @@ export function useChatSessionState({
     setIsUserScrolledUp(true);
     setVisibleMessageCount((count) => Math.max(count, transcriptMessages.length - index));
     return true;
-  }, [transcriptMessages]);
+  }, [transcriptMessages, setIsUserScrolledUp]);
 
   const finishMessageReveal = useCallback(() => {
     messageRevealActiveRef.current = false;
@@ -490,28 +499,41 @@ export function useChatSessionState({
     }
   }, [activeSessionId, sessionStore]);
 
-  // Mirrors the state into a ref so the two deferred scroll-to-bottom timers
-  // can re-read it at fire time. An effect rather than assignments next to each
-  // `setIsUserScrolledUp` call, because the setter is also returned from this
-  // hook and driven from the composer.
-  useEffect(() => {
-    isUserScrolledUpRef.current = isUserScrolledUp;
-  }, [isUserScrolledUp]);
-
   const scrollToBottom = useCallback(() => {
     const container = scrollContainerRef.current;
-    if (!container) return;
+    if (!isActiveRef.current || !container || container.clientHeight === 0) return;
     container.scrollTop = container.scrollHeight;
+    scrollPositionRef.current = { height: container.scrollHeight, top: container.scrollTop };
   }, []);
 
   const scrollToBottomAndReset = useCallback(() => {
+    // This is an explicit navigation choice, so older searches/page restores
+    // cannot take the viewport back after the user asks for the latest output.
+    navigationGenerationRef.current++;
+    if (bottomFollowTimerRef.current !== null) clearTimeout(bottomFollowTimerRef.current);
+    bottomFollowTimerRef.current = null;
+    searchScrollActiveRef.current = false;
+    messageRevealActiveRef.current = false;
+    pendingInitialScrollRef.current = false;
+    pendingScrollRestoreRef.current = null;
+    if (searchScrollTimerRef.current) clearTimeout(searchScrollTimerRef.current);
+    searchScrollTimerRef.current = null;
+    setSearchTarget(null);
+    setIsUserScrolledUp(false);
     scrollToBottom();
     if (allMessagesLoaded) {
       setVisibleMessageCount(INITIAL_VISIBLE_MESSAGES);
       setAllMessagesLoaded(false);
       allMessagesLoadedRef.current = false;
     }
-  }, [allMessagesLoaded, scrollToBottom]);
+  }, [allMessagesLoaded, scrollToBottom, setIsUserScrolledUp]);
+
+  const pauseBottomFollowing = useCallback(() => {
+    if (bottomFollowTimerRef.current !== null) clearTimeout(bottomFollowTimerRef.current);
+    bottomFollowTimerRef.current = null;
+    pendingInitialScrollRef.current = false;
+    setIsUserScrolledUp(true);
+  }, [setIsUserScrolledUp]);
 
   const isNearBottom = useCallback(() => {
     const container = scrollContainerRef.current;
@@ -588,7 +610,7 @@ export function useChatSessionState({
     [hasMoreMessages, isActive, isLoadingMoreMessages, selectedProject, selectedSession, sessionStore],
   );
 
-  const handleScroll = useCallback(async () => {
+  const handleScroll = useCallback(async (event?: { type: string; deltaY?: number; ctrlKey?: boolean }) => {
     if (!isActive) return;
     const container = scrollContainerRef.current;
     if (!container) return;
@@ -601,7 +623,18 @@ export function useChatSessionState({
     }
 
     const nearBottom = isNearBottom();
-    setIsUserScrolledUp(!nearBottom);
+    const upwardWheel = event?.type === 'wheel' && !event.ctrlKey && typeof event.deltaY === 'number' && event.deltaY < 0;
+    const scrollable = container.scrollHeight > container.clientHeight;
+    if (upwardWheel && scrollable) {
+      pauseBottomFollowing();
+    } else if (!event || event.type === 'scroll') {
+      const reachedBottom = container.scrollHeight - container.scrollTop - container.clientHeight <= 2;
+      // Growing content can move the bottom away while scrollTop is unchanged.
+      // Actual upward movement wins even inside the usual near-bottom margin.
+      if (container.scrollTop < scrollPositionRef.current.top - 1
+        && container.scrollHeight >= scrollPositionRef.current.height) pauseBottomFollowing();
+      else if (nearBottom && (!isUserScrolledUpRef.current || reachedBottom)) setIsUserScrolledUp(false);
+    }
     scrollPositionRef.current = {
       height: container.scrollHeight,
       top: container.scrollTop,
@@ -634,7 +667,7 @@ export function useChatSessionState({
       const didLoad = await loadOlderMessages(container);
       if (didLoad) topLoadLockRef.current = true;
     }
-  }, [hasMoreMessages, isActive, isNearBottom, loadOlderMessages]);
+  }, [hasMoreMessages, isActive, isNearBottom, loadOlderMessages, pauseBottomFollowing, setIsUserScrolledUp]);
 
   const wasChatActiveRef = useRef(isActive);
   useLayoutEffect(() => {
@@ -654,16 +687,18 @@ export function useChatSessionState({
       } else {
         container.scrollTop = top + Math.max(container.scrollHeight - height, 0);
       }
+      scrollPositionRef.current = { height: container.scrollHeight, top: container.scrollTop };
       pendingScrollRestoreRef.current = null;
       return;
     }
 
     if (becameActive) {
-      container.scrollTop = isUserScrolledUp
+      container.scrollTop = isUserScrolledUpRef.current
         ? scrollPositionRef.current.top
         : container.scrollHeight;
+      scrollPositionRef.current = { height: container.scrollHeight, top: container.scrollTop };
     }
-  }, [chatMessages.length, isActive, isUserScrolledUp]);
+  }, [chatMessages, isActive, isUserScrolledUp, isLoadingMoreMessages, isLoadingAllMessages]);
 
   // Reset scroll/pagination state on session change
   useEffect(() => {
@@ -693,7 +728,7 @@ export function useChatSessionState({
     isLoadingMoreRef.current = false;
     messageRevealActiveRef.current = false;
     setIsUserScrolledUp(false);
-  }, [selectedProject?.projectId, selectedSession?.id]);
+  }, [selectedProject?.projectId, selectedSession?.id, setIsUserScrolledUp]);
 
   // Initial scroll to bottom — robust to lazy content reflow.
   // The previous implementation fired one scrollToBottom() at +200ms and
@@ -717,9 +752,14 @@ export function useChatSessionState({
     let stableCount = 0;
     let rafId = 0;
 
+    const navigationGeneration = navigationGenerationRef.current;
+    const sessionId = activeSessionIdRef.current;
     const tick = () => {
-      if (!pendingInitialScrollRef.current || !scrollContainerRef.current) return;
-      container.scrollTop = container.scrollHeight;
+      if (!pendingInitialScrollRef.current || !isActiveRef.current || scrollContainerRef.current !== container
+        || activeSessionIdRef.current !== sessionId || navigationGenerationRef.current !== navigationGeneration
+        || isUserScrolledUpRef.current || searchScrollActiveRef.current || messageRevealActiveRef.current
+        || isLoadingMoreRef.current || pendingScrollRestoreRef.current) return;
+      scrollToBottom();
       if (container.scrollHeight === lastHeight) {
         stableCount++;
       } else {
@@ -890,7 +930,8 @@ export function useChatSessionState({
           setTimeout(() => {
             if (navigationGenerationRef.current === navigationGeneration
               && activeSessionIdRef.current === selectedSession.id
-              && isActiveRef.current
+              && isActiveRef.current && !isLoadingMoreRef.current && !pendingScrollRestoreRef.current
+              && !searchScrollActiveRef.current && !messageRevealActiveRef.current
               && !isUserScrolledUpRef.current) scrollToBottom();
           }, 200);
         }
@@ -1075,34 +1116,78 @@ export function useChatSessionState({
   }, [transcriptMessages, visibleMessageCount]);
 
   useEffect(() => {
-    if (!isActive) return;
-    const container = scrollContainerRef.current;
-    if (!container) return;
-    scrollPositionRef.current = { height: container.scrollHeight, top: container.scrollTop };
-  });
-
-  useEffect(() => {
-    if (!isActive) return;
-    if (!scrollContainerRef.current || chatMessages.length === 0) return;
+    if (!isActive || !scrollContainerRef.current || chatMessages.length === 0) return;
     if (isLoadingMoreRef.current || isLoadingMoreMessages || pendingScrollRestoreRef.current) return;
-    if (searchScrollActiveRef.current || messageRevealActiveRef.current) return;
+    if (searchScrollActiveRef.current || messageRevealActiveRef.current || isUserScrolledUpRef.current) return;
+    if (bottomFollowTimerRef.current !== null) return;
+    const sessionId = activeSessionIdRef.current;
+    const navigationGeneration = navigationGenerationRef.current;
+    bottomFollowTimerRef.current = setTimeout(() => {
+      bottomFollowTimerRef.current = null;
+      if (isActiveRef.current && activeSessionIdRef.current === sessionId
+        && navigationGenerationRef.current === navigationGeneration
+        && !isLoadingMoreRef.current && !pendingScrollRestoreRef.current
+        && !isUserScrolledUpRef.current && !searchScrollActiveRef.current && !messageRevealActiveRef.current) scrollToBottom();
+    }, 50);
+  }, [chatMessages, isActive, isLoadingMoreMessages, isLoadingAllMessages, isUserScrolledUp, scrollToBottom]);
 
-    if (!isUserScrolledUp) {
-      const timer = setTimeout(() => {
-        if (!isUserScrolledUpRef.current && !searchScrollActiveRef.current && !messageRevealActiveRef.current) {
-          scrollToBottom();
-        }
-      }, 50);
-      return () => clearTimeout(timer);
-    }
-  }, [chatMessages.length, isActive, isLoadingMoreMessages, isUserScrolledUp, scrollToBottom]);
+  useEffect(() => () => {
+    if (bottomFollowTimerRef.current !== null) clearTimeout(bottomFollowTimerRef.current);
+    bottomFollowTimerRef.current = null;
+  }, [activeSessionId, isActive]);
+
+  // Markdown, images and code blocks can resize an existing row without a new
+  // message. Observe the content as well as viewport size, coalescing writes to
+  // one frame while respecting the same user/navigation owner as live updates.
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    const content = container?.querySelector('[data-chat-content]');
+    if (!isActive || !container || !content || typeof ResizeObserver === 'undefined') return;
+    const sessionId = activeSessionIdRef.current;
+    let frame: number | null = null;
+    const observer = new ResizeObserver(() => {
+      if (frame !== null || isUserScrolledUpRef.current) return;
+      const navigationGeneration = navigationGenerationRef.current;
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        if (isActiveRef.current && activeSessionIdRef.current === sessionId && scrollContainerRef.current === container
+          && navigationGenerationRef.current === navigationGeneration
+          && !isLoadingMoreRef.current && !pendingScrollRestoreRef.current
+          && !isUserScrolledUpRef.current && !searchScrollActiveRef.current && !messageRevealActiveRef.current) scrollToBottom();
+      });
+    });
+    observer.observe(content);
+    observer.observe(container);
+    return () => { observer.disconnect(); if (frame !== null) cancelAnimationFrame(frame); };
+  }, [activeSessionId, isActive, scrollToBottom]);
 
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
+    let touchY: number | null = null;
+    const onTouchStart = (event: TouchEvent) => { touchY = event.touches[0]?.clientY ?? null; };
+    const onTouchMove = (event: TouchEvent) => {
+      const nextY = event.touches[0]?.clientY ?? null;
+      if (isActiveRef.current && nextY !== null && touchY !== null && nextY > touchY
+        && container.scrollHeight > container.clientHeight) pauseBottomFollowing();
+      touchY = nextY;
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+      if (isActiveRef.current && ['ArrowUp', 'PageUp', 'Home'].includes(event.key)
+        && container.scrollHeight > container.clientHeight) pauseBottomFollowing();
+    };
     container.addEventListener('scroll', handleScroll);
-    return () => container.removeEventListener('scroll', handleScroll);
-  }, [handleScroll]);
+    container.addEventListener('touchstart', onTouchStart, { passive: true });
+    container.addEventListener('touchmove', onTouchMove, { passive: true });
+    container.addEventListener('keydown', onKeyDown);
+    return () => {
+      container.removeEventListener('scroll', handleScroll);
+      container.removeEventListener('touchstart', onTouchStart);
+      container.removeEventListener('touchmove', onTouchMove);
+      container.removeEventListener('keydown', onKeyDown);
+    };
+  }, [handleScroll, pauseBottomFollowing]);
 
   // "Load all" overlay visibility is driven by scroll-to-top in handleScroll;
   // timers are cleared on session change via the reset effect above.

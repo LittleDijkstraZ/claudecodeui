@@ -4,6 +4,7 @@ import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { NormalizedMessage, Project, ProjectSession, SessionActivityMap } from '@/shared/types';
+import { getIntrinsicMessageKey } from '@/modules/chat/utils/messageKeys';
 
 /**
  * The transcript's scroll position is written from five places coordinated by
@@ -47,6 +48,9 @@ const buildMessage = (index: number, timestamp: string): NormalizedMessage => ({
  */
 function createContainer(scrollHeight: number, clientHeight: number) {
   const element = document.createElement('div');
+  const content = document.createElement('div');
+  content.setAttribute('data-chat-content', '');
+  element.appendChild(content);
   const writes: number[] = [];
   let scrollTop = scrollHeight - clientHeight;
 
@@ -55,12 +59,17 @@ function createContainer(scrollHeight: number, clientHeight: number) {
   Object.defineProperty(element, 'scrollTop', {
     get: () => scrollTop,
     set: (next: number) => {
-      scrollTop = next;
+      scrollTop = Math.max(0, Math.min(next, scrollHeight - clientHeight));
       writes.push(next);
     },
   });
 
-  return { element: element as HTMLDivElement, writes, scrollHeight };
+  return {
+    element: element as HTMLDivElement, content, writes, scrollHeight,
+    grow: (height: number) => { scrollHeight = height; },
+    resize: (height: number) => { clientHeight = height; },
+    userScroll: (top: number) => { scrollTop = top; element.dispatchEvent(new Event('scroll')); },
+  };
 }
 
 function createStore(messagesBySession: Map<string, NormalizedMessage[]>) {
@@ -97,6 +106,7 @@ async function renderChatSessionState(options: {
   session: ProjectSession;
   store: ReturnType<typeof createStore>;
   processingSessions?: SessionActivityMap;
+  active?: boolean;
 }) {
   const { useChatSessionState } = await import('@/modules/chat/hooks/useChatSessionState');
 
@@ -114,7 +124,7 @@ async function renderChatSessionState(options: {
         lastSeqRef: { current: new Map() },
         sessionStore: options.store as never,
       }),
-    { initialProps: { session: options.session } as { session: ProjectSession; active?: boolean; update?: number } },
+    { initialProps: { session: options.session, active: options.active } as { session: ProjectSession; active?: boolean; update?: number } },
   );
 }
 
@@ -294,4 +304,172 @@ it('a first-send echo targets its allocated session directly without a pending s
   expect(store.appendRealtime.mock.calls.map(([id, message]) => [id, message.provider, message.clientMessageId, message.delivery])).toEqual([
     ['allocated-session', 'claude', 'fixture-input', 'queued'], ['allocated-session', 'claude', 'fixture-input', 'failed'],
   ]);
+});
+
+class DrivenResizeObserver {
+  static instances: DrivenResizeObserver[] = [];
+  disconnected = false;
+  targets: Element[] = [];
+  constructor(private callback: ResizeObserverCallback) { DrivenResizeObserver.instances.push(this); }
+  observe(target: Element) { this.targets.push(target); }
+  disconnect() { this.disconnected = true; }
+  fire() { this.callback([], this as unknown as ResizeObserver); }
+}
+
+async function followingFixture(withObserver = true, settleInitial = true) {
+  DrivenResizeObserver.instances = [];
+  if (withObserver) vi.stubGlobal('ResizeObserver', DrivenResizeObserver);
+  else vi.stubGlobal('ResizeObserver', undefined);
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => setTimeout(() => callback(performance.now()), 16));
+  vi.stubGlobal('cancelAnimationFrame', (handle: number) => clearTimeout(handle));
+  const session = { id: SESSION_A } as ProjectSession;
+  const messages = new Map([[SESSION_A, [buildMessage(1, '2026-09-08T00:00:00Z')]]]);
+  const store = createStore(messages);
+  const hook = await renderChatSessionState({ session, store, active: false });
+  const container = createContainer(5000, 500);
+  (hook.result.current.scrollContainerRef as { current: HTMLDivElement | null }).current = container.element;
+  await act(async () => { hook.rerender({ session, active: true }); });
+  if (settleInitial) await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+  container.writes.length = 0;
+  return { hook, container, messages, store, session, observer: DrivenResizeObserver.instances.at(-1)! };
+}
+
+describe('following growing replies', () => {
+  it('follows fast same-row token updates without waiting for a new message or starving its delay', async () => {
+    const { hook, container, messages, session } = await followingFixture(false);
+    for (let step = 1; step <= 12; step++) {
+      await act(async () => {
+        container.grow(5000 + 100 * step);
+        messages.set(SESSION_A, [{ ...buildMessage(1, '2026-09-08T00:00:00Z'), content: `same reply growing ${step}` }]);
+        hook.rerender({ session });
+        await vi.advanceTimersByTimeAsync(10);
+      });
+    }
+    expect(hook.result.current.chatMessages).toHaveLength(1);
+    expect(container.writes.length).toBeGreaterThanOrEqual(2);
+    expect(container.element.scrollTop).toBeGreaterThanOrEqual(5500);
+  });
+
+  it('follows async Markdown height and viewport changes without classifying growth as a user scroll', async () => {
+    const { hook, container, observer } = await followingFixture();
+    expect(observer.targets).toContain(container.content);
+    expect(observer.targets).toContain(container.element);
+    await act(async () => {
+      container.grow(5600);
+      container.element.dispatchEvent(new Event('scroll'));
+      observer.fire();
+      await vi.advanceTimersByTimeAsync(20);
+    });
+    expect(hook.result.current.isUserScrolledUp).toBe(false);
+    expect(container.element.scrollTop).toBe(5100);
+    await act(async () => {
+      container.resize(350);
+      observer.fire();
+      await vi.advanceTimersByTimeAsync(20);
+    });
+    expect(container.element.scrollTop).toBe(5250);
+  });
+
+  it('small upward wheel gestures pause immediately, keep their position through resize, and resume only at the bottom', async () => {
+    const { hook, container, observer } = await followingFixture();
+    await act(async () => {
+      observer.fire();
+      await hook.result.current.handleScroll({ type: 'wheel', deltaY: -20 });
+      container.userScroll(4480);
+      container.grow(5600);
+      observer.fire();
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    expect(hook.result.current.isUserScrolledUp).toBe(true);
+    expect(container.element.scrollTop).toBe(4480);
+    expect(container.writes).toEqual([]);
+    await act(async () => {
+      container.userScroll(5100);
+      container.grow(5800);
+      observer.fire();
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    expect(hook.result.current.isUserScrolledUp).toBe(false);
+    expect(container.element.scrollTop).toBe(5300);
+  });
+
+  it.each([20, 1300])('scrollbar movement of %i pixels pauses following and the jump button explicitly restores it', async distance => {
+    const { hook, container, observer } = await followingFixture();
+    await act(async () => { container.userScroll(4500 - distance); });
+    expect(hook.result.current.isUserScrolledUp).toBe(true);
+    await act(async () => {
+      container.grow(5600);
+      observer.fire();
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    expect(container.element.scrollTop).toBe(4500 - distance);
+    await act(async () => {
+      hook.result.current.scrollToBottomAndReset();
+      container.grow(5800);
+      observer.fire();
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    expect(hook.result.current.isUserScrolledUp).toBe(false);
+    expect(container.element.scrollTop).toBe(5300);
+  });
+
+  it('a reveal owns the viewport while content expands and a hidden pane cannot receive a late resize write', async () => {
+    const { hook, container, observer, session } = await followingFixture();
+    act(() => { expect(hook.result.current.revealMessage(getIntrinsicMessageKey(hook.result.current.chatMessages[0])!)).toBe(true); });
+    container.writes.length = 0;
+    await act(async () => {
+      container.grow(5600);
+      observer.fire();
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    expect(container.writes).toEqual([]);
+    await act(async () => {
+      hook.result.current.finishMessageReveal();
+      hook.result.current.scrollToBottomAndReset();
+    });
+    container.writes.length = 0;
+    act(() => {
+      observer.fire();
+      hook.rerender({ session, active: false });
+    });
+    expect(observer.disconnected).toBe(true);
+    await act(async () => { observer.fire(); await vi.advanceTimersByTimeAsync(100); });
+    expect(container.writes).toEqual([]);
+  });
+});
+
+
+it('an upward gesture cancels the pending initial-scroll frame as well as resize following', async () => {
+  const { hook, container, observer } = await followingFixture(true, false);
+  await act(async () => {
+    await hook.result.current.handleScroll({ type: 'wheel', deltaY: -20 });
+    container.userScroll(4480);
+    container.grow(5500);
+    observer.fire();
+    await vi.advanceTimersByTimeAsync(200);
+  });
+  expect(container.writes).toEqual([]);
+  expect(container.element.scrollTop).toBe(4480);
+  expect(hook.result.current.isUserScrolledUp).toBe(true);
+});
+
+it('an explicit jump replaces an old queued follow timer so one later chunk still follows without ResizeObserver', async () => {
+  const { hook, container, messages, session } = await followingFixture(false);
+  await act(async () => {
+    messages.set(SESSION_A, [{ ...buildMessage(1, '2026-09-08T00:00:00Z'), content: 'first live chunk' }]);
+    hook.rerender({ session });
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10);
+    hook.result.current.scrollToBottomAndReset();
+  });
+  container.writes.length = 0;
+  await act(async () => {
+    container.grow(5600);
+    messages.set(SESSION_A, [{ ...buildMessage(1, '2026-09-08T00:00:00Z'), content: 'last live chunk' }]);
+    hook.rerender({ session });
+  });
+  await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+  expect(container.element.scrollTop).toBe(5100);
+  expect(container.writes).toContain(5600);
 });
