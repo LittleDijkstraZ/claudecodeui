@@ -833,7 +833,32 @@ export const claudeExecutionSettingsApi = {
     `/api/providers/claude/sessions/${encodeURIComponent(sessionId)}/execution-settings`, { method: 'PUT', body: JSON.stringify(settings) }),
 };
 
-/** Native ephemeral /btw answer on the selected session's owning remote. */
-export function askClaudeBtw(sessionId: string, question: string, signal: AbortSignal, history: ClaudeBtwHistoryTurn[] = []): Promise<{ answer: string }> {
-  return requestClaudeSessionAction(sessionId, '/btw', { question, ...(history.length ? { history } : {}) }, signal);
+// Old remotes accept only a 16,000-character question. Keep this compatibility
+// envelope entirely inside the native side-question channel, never the main chat.
+function legacyBtwQuestion(question: string, history: ClaudeBtwHistoryTurn[]): string {
+  const prefix = 'Use these earlier BTW exchanges as context for the follow-up. This is a separate side discussion. Recent context may be shortened:\n';
+  const suffix = `\n\nCurrent follow-up question:\n${question}`;
+  const budget = 16000 - prefix.length - suffix.length;
+  if (budget < 256) throw new Error('This server needs a shorter follow-up question to include the previous BTW context.');
+  const recent = history.map(turn => ({ ...turn }));
+  while (recent.length > 1 && JSON.stringify(recent).length > budget) recent.shift();
+  // Bound serialized size too: quotes, newlines and backslashes expand in JSON.
+  while (JSON.stringify(recent).length > budget) {
+    const turn = recent[0];
+    const key = turn.response.length >= turn.question.length ? 'response' : 'question';
+    turn[key] = turn[key].slice(0, Math.floor(turn[key].length / 2)) + '…';
+  }
+  return prefix + JSON.stringify(recent) + suffix;
+}
+
+/** Native ephemeral /btw answer on the selected session's owning remote, including older servers. */
+export async function askClaudeBtw(sessionId: string, question: string, signal: AbortSignal, history: ClaudeBtwHistoryTurn[] = []): Promise<{ answer: string }> {
+  try {
+    return await requestClaudeSessionAction(sessionId, '/btw', { question, ...(history.length ? { history } : {}) }, signal);
+  } catch (error) {
+    // The old route rejects this field before starting any model request. Retry
+    // only that exact validation failure; never replay timeouts or provider errors.
+    if (!history.length || signal.aborted || !(error instanceof Error) || error.message !== 'Unexpected action field.') throw error;
+    return requestClaudeSessionAction(sessionId, '/btw', { question: legacyBtwQuestion(question, history) }, signal);
+  }
 }

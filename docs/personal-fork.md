@@ -671,3 +671,9 @@ from completed exchanges in the same tab. The composer clears immediately after
 sending and stays available for follow-ups; failed requests can be retried. History
 is limited to the most recent 32 exchanges / 64,000 characters (with a notice when
 limited), while the full discussion remains visible until the tab is closed.
+
+When a remote still runs the older question-only route, the local UI retries its
+explicit history-field rejection with recent exchanges packaged into a new native
+BTW question (within that server's 16,000-character limit). This keeps follow-ups
+working during a local-only rollout without restarting active remote sessions.
+Timeouts, cancellation and provider failures are never retried automatically.
