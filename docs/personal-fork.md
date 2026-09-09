@@ -655,7 +655,7 @@ The authenticated plugin loader still requires a built, self-contained single-fi
 
 The workspace tab strip ends with an extensible add menu (currently **New BTW**).
 Each BTW stays bound to the Claude conversation selected when it was created;
-its question and answer live only in that browser tab's memory. Closing asks for
+its questions and answers live only in that browser tab's memory. Closing asks for
 confirmation, cancels a pending answer, and discards the tab. Reloading also drops
 these ephemeral tabs. Re-selecting any tool tab keeps the panel open; use the
 explicit panel button to collapse it. Existing saved side-chat forks are unchanged.
@@ -666,5 +666,8 @@ an idle conversation uses a control-only resume with `forkSession: true` and
 `persistSession: false`, without hooks or tools. Responses are never broadcast
 into the main chat. SDK 0.3.263 contains this method at runtime but omits its public
 TypeScript declaration, so the narrow adapter checks availability and reports an
-unsupported remote instead of falling back to a normal prompt. Each tab asks one
-side question; create another BTW for another question.
+unsupported remote instead of falling back to a normal prompt. Each follow-up starts a fresh native side-question request with explicit `history`
+from completed exchanges in the same tab. The composer clears immediately after
+sending and stays available for follow-ups; failed requests can be retried. History
+is limited to the most recent 32 exchanges / 64,000 characters (with a notice when
+limited), while the full discussion remains visible until the tab is closed.

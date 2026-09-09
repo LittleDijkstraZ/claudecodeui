@@ -18,3 +18,14 @@ test('missing native support and empty answers fail explicitly without prompt fa
   await assert.rejects(askClaudeSideQuestion({} as Query, 'question', signal), /does not support/);
   await assert.rejects(askClaudeSideQuestion({ askSideQuestion: async () => null } as unknown as Query, 'question', signal), /no side answer/);
 });
+
+
+test('native follow-ups forward explicit history independently of the main prompt stream', async () => {
+  const signal = new AbortController().signal;
+  const history = [{ question: 'previous question', response: 'previous answer' }];
+  const native = { askSideQuestion: async (question: string, options: unknown) => {
+    assert.equal(question, 'follow-up'); assert.deepEqual(options, { signal, history });
+    return { response: 'follow-up answer', synthetic: false };
+  } } as unknown as Query;
+  assert.equal(await askClaudeSideQuestion(native, 'follow-up', signal, history), 'follow-up answer');
+});

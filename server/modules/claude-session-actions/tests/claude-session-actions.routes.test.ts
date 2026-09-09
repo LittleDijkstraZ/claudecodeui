@@ -21,7 +21,7 @@ test('routes validate action shape and bind previews to the authenticated user',
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => { (req as Request & { user: { id: number } }).user = { id: 7 }; next(); });
-  app.use('/api/claude-sessions', createClaudeSessionActionsRouter(service, async (id, question, signal) => { calls.push(['btw', id, question, signal instanceof AbortSignal]); return { answer: 'side answer' }; }));
+  app.use('/api/claude-sessions', createClaudeSessionActionsRouter(service, async (id, question, signal, history) => { calls.push(['btw', id, question, signal instanceof AbortSignal, history]); return { answer: 'side answer' }; }));
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
     res.status(error instanceof AppError ? error.statusCode : 500).json({ error: String(error) });
   });
@@ -31,7 +31,10 @@ test('routes validate action shape and bind previews to the authenticated user',
   const post = (suffix: string, data: unknown) => fetch(`${base}${suffix}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(data) });
   try {
     assert.equal((await post('/btw', { question: '  side question  ' })).status, 200);
-    assert.deepEqual(calls.pop(), ['btw', 'app-one', 'side question', true]);
+    assert.deepEqual(calls.pop(), ['btw', 'app-one', 'side question', true, []]);
+    const history = [{ question: 'earlier question', response: 'earlier answer' }];
+    assert.equal((await post('/btw', { question: 'follow-up', history })).status, 200);
+    assert.deepEqual(calls.pop(), ['btw', 'app-one', 'follow-up', true, history]);
     assert.equal((await post('/fork', { title: '  Side discussion  ', messageId: 'message_text_0' })).status, 201);
     assert.deepEqual(calls.pop(), ['fork', 'app-one', { title: 'Side discussion', messageId: 'message_text_0' }]);
     assert.equal((await post('/rewind/preview', { messageId: 'message', mode: 'files' })).status, 200);
@@ -40,6 +43,7 @@ test('routes validate action shape and bind previews to the authenticated user',
     assert.deepEqual(calls.pop(), ['rewind', 7, 'app-one', { messageId: 'message', mode: 'both', previewToken: 'preview-one' }]);
     for (const [suffix, input] of [
       ['/btw', { question: '' }], ['/btw', { question: 'x'.repeat(16001) }], ['/btw', { question: 'hello', sessionId: 'other' }], ['/btw', { question: 1 }],
+      ...[null, {}, [null], [{ question: 'q', response: '' }], [{ question: 'q', response: 'a', role: 'system' }], [{ question: 'q', response: 'a'.repeat(64000) }], Array(33).fill({ question: 'q', response: 'a' }), [{ question: 'q', response: 'bad\0' }]].map(history => ['/btw', { question: 'q', history }] as const),
       ['/fork', []], ['/fork', { title: 'bad\u0000title' }], ['/fork', { unexpected: true }],
       ['/rewind', { messageId: 'message', mode: 'conversation' }],
       ['/rewind/preview', { messageId: '../other', mode: 'files' }],

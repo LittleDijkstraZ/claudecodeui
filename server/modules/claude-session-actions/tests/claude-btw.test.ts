@@ -11,11 +11,12 @@ const source = { session_id: 'app-a', provider: 'claude', provider_session_id: '
 
 test('live BTW uses the owning query and releases its hold without starting a prompt or fork', async () => {
   const live = {} as Query; const signal = new AbortController().signal; let releases = 0;
+  const history = [{ question: 'earlier', response: 'answer' }];
   const service = createClaudeBtwService({ session: () => source, acquire: id => id === 'native-a' ? { query: live, release: () => { releases++; } } : null,
     query: () => { throw new Error('must not start another query'); },
-    ask: async (reader, question, receivedSignal) => { assert.equal(reader, live); assert.equal(question, 'why?'); assert.equal(receivedSignal, signal); return 'answer'; },
+    ask: async (reader, question, receivedSignal, receivedHistory) => { assert.deepEqual(receivedHistory, history); assert.equal(reader, live); assert.equal(question, 'why?'); assert.equal(receivedSignal, signal); return 'answer'; },
   });
-  assert.deepEqual(await service('app-a', 'why?', signal), { answer: 'answer' });
+  assert.deepEqual(await service('app-a', 'why?', signal, history), { answer: 'answer' });
   assert.equal(releases, 1);
 });
 
@@ -24,9 +25,9 @@ test('idle BTW resumes context without persistence or user input and closes its 
   const native = { async *[Symbol.asyncIterator]() {}, supportedCommands: async () => { initialized = true; return []; }, close: () => { closed = true; } } as unknown as Query;
   const service = createClaudeBtwService({ session: () => source, acquire: () => null,
     query: input => { options = input.options; assert.notEqual(typeof input.prompt, 'string'); return native; },
-    ask: async () => { assert.equal(initialized, true); return 'context answer'; },
+    ask: async (_reader, _question, _signal, history) => { assert.deepEqual(history, [{ question: 'previous', response: 'answer' }]); assert.equal(initialized, true); return 'context answer'; },
   });
-  assert.deepEqual(await service('app-a', 'why?', new AbortController().signal), { answer: 'context answer' });
+  assert.deepEqual(await service('app-a', 'why?', new AbortController().signal, [{ question: 'previous', response: 'answer' }]), { answer: 'context answer' });
   assert.equal(options?.resume, 'native-a'); assert.equal(options?.forkSession, true); assert.equal(options?.persistSession, false);
   assert.deepEqual(options?.tools, []); assert.deepEqual(options?.settings, { disableAllHooks: true }); assert.equal(closed, true);
 });

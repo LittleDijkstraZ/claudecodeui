@@ -3,6 +3,7 @@ import type { Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 
 import { sessionsDb } from '@/modules/database/index.js';
 import { acquireClaudeSideQuestionQuery, askClaudeSideQuestion } from '@/modules/providers/index.js';
+import type { ClaudeBtwHistoryTurn } from '@/shared/index.js';
 import { AppError, resolveClaudeCodeExecutablePath } from '@/shared/index.js';
 
 type Dependencies = {
@@ -15,13 +16,13 @@ type Dependencies = {
 /** Used by authenticated session routes and tests; side answers are never persisted or broadcast to chat. */
 export function createClaudeBtwService(overrides: Partial<Dependencies> = {}) {
   const dependencies = { session: sessionsDb.getSessionById, acquire: acquireClaudeSideQuestionQuery, query, ask: askClaudeSideQuestion, ...overrides };
-  return async (sessionId: string, question: string, signal: AbortSignal) => {
+  return async (sessionId: string, question: string, signal: AbortSignal, history: ClaudeBtwHistoryTurn[] = []) => {
     const session = dependencies.session(sessionId);
     if (!session) throw new AppError('Conversation was not found.', { code: 'SESSION_NOT_FOUND', statusCode: 404 });
     if (session.provider !== 'claude') throw new AppError('/btw requires a Claude conversation.', { code: 'CLAUDE_SESSION_REQUIRED', statusCode: 400 });
     const live = dependencies.acquire(sessionId) ?? (session.provider_session_id ? dependencies.acquire(session.provider_session_id) : null);
     if (live) {
-      try { return { answer: await dependencies.ask(live.query, question, signal) }; }
+      try { return { answer: await dependencies.ask(live.query, question, signal, history) }; }
       finally { live.release(); }
     }
     if (!session.provider_session_id || !session.project_path) throw new AppError('Send a main-chat message before using /btw.', { code: 'CLAUDE_HISTORY_UNAVAILABLE', statusCode: 409 });
@@ -53,7 +54,7 @@ export function createClaudeBtwService(overrides: Partial<Dependencies> = {}) {
       drained = (async () => { for await (const _message of activeReader) { /* control-only */ } })();
       void drained.catch(() => {});
       await reader.supportedCommands();
-      return { answer: await dependencies.ask(reader, question, signal) };
+      return { answer: await dependencies.ask(reader, question, signal, history) };
     } finally {
       release(); reader?.close();
       signal.removeEventListener('abort', abort);

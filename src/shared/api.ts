@@ -1,4 +1,4 @@
-import type { HubDirectoryListing, HubRemote, HubGroupState, ClaudeSessionCapabilities, ClaudeSessionSettings, ForkedClaudeSession, RewindMode, RewindPreview, RewindResult,LLMProvider,ConversationGroup,ConversationGroupsSnapshot,CreatedGroupConversation,GroupConversationsPage } from '@/shared/types';
+import type { ClaudeBtwHistoryTurn, HubDirectoryListing, HubRemote, HubGroupState, ClaudeSessionCapabilities, ClaudeSessionSettings, ForkedClaudeSession, RewindMode, RewindPreview, RewindResult,LLMProvider,ConversationGroup,ConversationGroupsSnapshot,CreatedGroupConversation,GroupConversationsPage } from '@/shared/types';
 import { isValidRefreshedToken } from '@/shared/authToken';
 import { remoteStorageKey } from '@/shared/utils';
 import {
@@ -834,6 +834,6 @@ export const claudeExecutionSettingsApi = {
 };
 
 /** Native ephemeral /btw answer on the selected session's owning remote. */
-export function askClaudeBtw(sessionId: string, question: string, signal: AbortSignal): Promise<{ answer: string }> {
-  return requestClaudeSessionAction(sessionId, '/btw', { question }, signal);
+export function askClaudeBtw(sessionId: string, question: string, signal: AbortSignal, history: ClaudeBtwHistoryTurn[] = []): Promise<{ answer: string }> {
+  return requestClaudeSessionAction(sessionId, '/btw', { question, ...(history.length ? { history } : {}) }, signal);
 }

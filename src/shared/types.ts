@@ -1934,6 +1934,9 @@ export type WorkspacePanelTab = Exclude<AppTab, 'chat'> | 'agents' | 'sideChat' 
 /** An ephemeral BTW tab stays bound to the Claude conversation that created it. */
 export type WorkspaceBtwTab = { id: `btw:${string}`; sessionId: string; sourceLabel: string; label: string };
 
+/** One completed ephemeral BTW exchange, passed only as context for that tab's next side question. */
+export type ClaudeBtwHistoryTurn = { question: string; response: string };
+
 /** The normalized agents in the viewed conversation and callbacks back to that conversation. */
 export type WorkspaceAgentsSnapshot = {
   records?: NormalizedMessage[];

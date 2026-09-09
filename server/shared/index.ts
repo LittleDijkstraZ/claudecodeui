@@ -2,6 +2,7 @@
 export type {
   AnyRecord,
   ClaudeSessionRewindMode,
+  ClaudeBtwHistoryTurn,
   ConversationGroupPageOptions,
   ConversationGroupUpdate,
   ConversationGroupMemberMove,

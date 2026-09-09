@@ -292,6 +292,9 @@
     "thinking": "思考中…",
     "question": "BTW 問題",
     "placeholder": "針對目前對話提個旁支問題…",
-    "send": "傳送 BTW"
+    "send": "傳送 BTW",
+    "retry": "重試",
+    "followupPlaceholder": "繼續追問…",
+    "contextLimited": "討論較長，追問將使用最近的脈絡。"
   }
 }

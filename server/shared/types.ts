@@ -1420,6 +1420,12 @@ export type SandboxCommandService = {
   execute(argumentsList: string[]): Promise<number>;
 };
 
+//----------------- CLAUDE SIDE QUESTIONS ------------
+/** Completed native BTW exchange supplied by the client as ephemeral follow-up context.
+ * Only question/response text is accepted; never persist or append it to the main conversation.
+ */
+export type ClaudeBtwHistoryTurn = { question: string; response: string };
+
 //----------------- CLAUDE CONVERSATION RESTORE ------------
 /** Modes accepted by the authenticated Claude rewind routes and service. Conversation restore
  * retains the selected user message and replaces subsequent SDK context; files restores only

@@ -4,7 +4,7 @@ import type { Request } from 'express';
 import { claudeBtwService } from '@/modules/claude-session-actions/claude-btw.service.js';
 import { claudeSessionActionsService } from '@/modules/claude-session-actions/claude-session-actions.service.js';
 import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/index.js';
-import type { ClaudeSessionRewindMode } from '@/shared/index.js';
+import type { ClaudeSessionRewindMode, ClaudeBtwHistoryTurn } from '@/shared/index.js';
 
 function invalid(message: string): never { throw new AppError(message, { code: 'INVALID_CLAUDE_SESSION_ACTION', statusCode: 400 }); }
 function identifier(value: unknown): string {
@@ -21,6 +21,21 @@ function body(request: Request, fields: string[]): Record<string, unknown> {
   if (Object.keys(request.body).some(key => !fields.includes(key))) invalid('Unexpected action field.');
   return request.body;
 }
+function btwHistory(value: unknown): ClaudeBtwHistoryTurn[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 32) invalid('BTW history must contain at most 32 exchanges.');
+  let characters = 0;
+  return value.map(turn => {
+    if (!turn || typeof turn !== 'object' || Array.isArray(turn)
+      || Object.keys(turn).some(key => key !== 'question' && key !== 'response')
+      || typeof turn.question !== 'string' || !turn.question.trim() || turn.question.length > 16000
+      || typeof turn.response !== 'string' || !turn.response.trim()
+      || turn.question.includes('\0') || turn.response.includes('\0')) invalid('Invalid BTW history exchange.');
+    characters += turn.question.length + turn.response.length;
+    if (characters > 64000) invalid('BTW history exceeds 64000 characters.');
+    return { question: turn.question, response: turn.response };
+  });
+}
 function rewindInput(request: Request) {
   const value = body(request, ['messageId', 'mode', 'previewToken']);
   if (value.mode !== 'conversation' && value.mode !== 'files' && value.mode !== 'both') invalid('Choose conversation, files, or both.');
@@ -36,14 +51,15 @@ export function createClaudeSessionActionsRouter(service = claudeSessionActionsS
   }));
   router.post('/:id/btw', asyncHandler(async (req, res) => {
     userId(req);
-    const input = body(req, ['question']);
+    const input = body(req, ['question', 'history']);
     if (typeof input.question !== 'string' || !input.question.trim() || input.question.length > 16000 || input.question.includes('\0')) invalid('Question must contain 1–16000 characters.');
+    const history = btwHistory(input.history);
     const controller = new AbortController();
     const cancel = () => controller.abort();
     const timeout = setTimeout(cancel, 120_000);
     res.on('close', cancel);
     try {
-      const result = await btw(identifier(req.params.id), input.question.trim(), controller.signal);
+      const result = await btw(identifier(req.params.id), input.question.trim(), controller.signal, history);
       if (!res.destroyed) res.json(createApiSuccessResponse(result));
     } finally { clearTimeout(timeout); res.off('close', cancel); }
   }));

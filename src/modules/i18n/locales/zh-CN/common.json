@@ -350,6 +350,9 @@
     "thinking": "思考中…",
     "question": "BTW 问题",
     "placeholder": "针对当前对话提个旁支问题…",
-    "send": "发送 BTW"
+    "send": "发送 BTW",
+    "retry": "重试",
+    "followupPlaceholder": "继续追问…",
+    "contextLimited": "讨论较长，追问将使用最近的上下文。"
   }
 }
