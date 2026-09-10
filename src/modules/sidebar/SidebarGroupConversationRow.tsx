@@ -60,7 +60,7 @@ export default function SidebarGroupConversationRow({
         isDragging && 'opacity-50',
       )}
     >
-      <SessionAttentionIndicator needsAttention={needsAttention} className="absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2" />
+      <SessionAttentionIndicator needsAttention={needsAttention} isProcessing={isProcessing} className="absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2" />
       {dropPosition && <span aria-hidden className={cn('pointer-events-none absolute inset-x-0 z-10 h-0.5 rounded bg-primary', dropPosition === 'before' ? 'top-0' : 'bottom-0')} />}
       <button
         {...dragHandleProps}

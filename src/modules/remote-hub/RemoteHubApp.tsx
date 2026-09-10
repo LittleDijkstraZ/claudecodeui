@@ -330,7 +330,7 @@ function Hub() {
       after = group?.members[index + 1];
     const target = drag.dropTarget?.sessionId === key ? drag.dropTarget.position : null;
     return <div key={key} data-testid="hub-conversation-row" data-group-id={group?.id} data-session-id={key} {...group ? drag.rowProps(group.id, key) : {}} className={`relative flex h-8 min-w-0 items-stretch rounded-md hover:bg-accent ${selection && memberKey(selection) === key ? 'bg-primary/10' : ''} ${drag.dragState?.sessionId === key ? 'opacity-50' : ''}`}>
-      <SessionAttentionIndicator needsAttention={attention} className="pointer-events-none absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2" />
+      <SessionAttentionIndicator needsAttention={attention} isProcessing={running} className="pointer-events-none absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2" />
       {target && <span className={`pointer-events-none absolute inset-x-0 h-0.5 bg-primary ${target === 'before' ? 'top-0' : 'bottom-0'}`} />}
       {group && <button {...drag.dragHandleProps(group.id, key)} disabled={saving} aria-label={`拖动 ${member.title}`} className="h-full w-6 shrink-0 cursor-grab rounded-l-md text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring">⋮</button>}
       <a href={`/?remote=${member.remoteId}&session=${member.sessionId}`} className="flex h-full min-w-0 flex-1 items-center gap-1.5 rounded px-1.5 text-[13px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring" title={`${member.title}\n${remotes.find(r => r.id === member.remoteId)?.name}\n${member.projectPath}`} onClick={e => {

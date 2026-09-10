@@ -12,10 +12,11 @@ export function SessionRunningIndicator({ isProcessing }: { isProcessing: boolea
   return <Tooltip content={label} position="top"><span role="status" aria-label={label} data-session-status="running" className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-amber-500"><Loader2 className="h-3 w-3 animate-spin" /></span></Tooltip>;
 }
 
-/** Used by sidebar and remote-hub rows only for unread messages, independently of running state. */
-export function SessionAttentionIndicator({ needsAttention, className }: { needsAttention: boolean; className?: string }) {
+/** Used by sidebar and remote-hub rows to show unread messages once the session stops running. */
+export function SessionAttentionIndicator({ needsAttention, isProcessing, className }: { needsAttention: boolean; isProcessing: boolean; className?: string }) {
   const { t } = useTranslation('sidebar');
-  if (!needsAttention) return null;
+  // Keep unread state intact, but let the running indicator take visual priority.
+  if (!needsAttention || isProcessing) return null;
   const label = t('tooltips.unreadMessagesIndicator', { defaultValue: 'Unread messages' });
   return <span className={cn('inline-flex shrink-0', className)}><Tooltip content={label} position="right"><span role="status" aria-label={label} data-session-status="attention" className="block h-2 w-2 rounded-full bg-green-500" /></Tooltip></span>;
 }

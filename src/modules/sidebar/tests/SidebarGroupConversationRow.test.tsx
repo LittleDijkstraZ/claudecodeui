@@ -73,14 +73,21 @@ test('modified anchor clicks preserve browser navigation behavior', () => {
   assert.deepEqual(calls, []);
 });
 
-test('running and attention state update in place without losing the single-line controls', () => {
+test('running takes priority over unread until completion without losing the single-line controls', () => {
   const base = { ...props(), selected: false, isProcessing: true, needsAttention: true };
   const { container, rerender } = render(<SidebarGroupConversationRow {...base} />);
   const row = container.querySelector('[data-testid="group-conversation-row"]');
   assert.ok(container.querySelector('[data-session-status="running"]'));
-  assert.ok(container.querySelector('[data-session-status="attention"].bg-green-500'));
+  assert.equal(container.querySelector('[data-session-status="attention"]'), null);
   assert.ok(container.querySelector('[data-session-status="running"].text-amber-500'));
   assert.ok(container.querySelector('button[aria-haspopup="menu"]'));
+  rerender(<SidebarGroupConversationRow {...base} isProcessing={false} />);
+  assert.equal(container.querySelector('[data-testid="group-conversation-row"]'), row);
+  assert.equal(container.querySelector('[data-session-status="running"]'), null);
+  assert.ok(container.querySelector('[data-session-status="attention"].bg-green-500'));
+  rerender(<SidebarGroupConversationRow {...base} />);
+  assert.ok(container.querySelector('[data-session-status="running"]'));
+  assert.equal(container.querySelector('[data-session-status="attention"]'), null);
   rerender(<SidebarGroupConversationRow {...base} isProcessing={false} needsAttention={false} selected />);
   assert.equal(container.querySelector('[data-testid="group-conversation-row"]'), row);
   assert.equal(container.querySelector('[data-session-status="running"]'), null);

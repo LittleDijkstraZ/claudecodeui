@@ -203,7 +203,7 @@ function SidebarSessionItem({
 
   return (
     <div className="group relative">
-      <SessionAttentionIndicator needsAttention={needsAttention} className="absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2" />
+      <SessionAttentionIndicator needsAttention={needsAttention} isProcessing={isProcessing} className="absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2" />
 
       {isCompact && (
       <div>

@@ -125,7 +125,7 @@ export default function SidebarRecentConversations({
 
           return (
             <div key={conversation.sessionId} className="group relative flex min-w-0 items-center">
-            <SessionAttentionIndicator needsAttention={needsAttention} className="absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2" />
+            <SessionAttentionIndicator needsAttention={needsAttention} isProcessing={isProcessing} className="absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2" />
             <a
               href={`/session/${conversation.sessionId}`}
               onClick={handleClick}

@@ -539,8 +539,10 @@ A failed local group save retries the completed remote result rather than forkin
 a second time.
 
 The green dot means an unread reply or attention event, never merely recent
-activity. A yellow spinner independently indicates a running session. Read state
-is scoped to machine and session, survives reconnects in the Hub, and clears only
+activity. While a session is running, its yellow spinner takes priority and hides
+the green dot. Unread state is retained, so the dot appears after the run stops
+unless the conversation has been read. Read state is scoped to machine and
+session, survives reconnects in the Hub, and clears only
 when that conversation is visible. Background machine frames and chat covered by
 a maximized panel do not consume unread state. Metadata-only renames do not make
 a conversation unread; older metadata events without message watermarks cannot
