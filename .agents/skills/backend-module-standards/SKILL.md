@@ -35,6 +35,14 @@ Apply these rules after the repository's basic scaffolding is in place. Limit th
 - Give every shared type, interface, and utility a detailed doc comment explaining its behavior, valid usage, and important constraints.
 - Keep related shared definitions adjacent. Introduce each group with `//----------------- DESCRIPTION OF GROUP ------------` and separate unrelated groups with `// ---------------------------`.
 
+
+## Portable contracts and existing ownership layers
+
+- Put network types genuinely shared by frontend and backend in root `shared/contracts/<domain>.ts`. This directory contains only type declarations and type-only imports/exports; it must not depend on `src/`, `server/`, React, Node, or database implementations.
+- Import portable contracts using `@contracts/<domain>.js`. Existing shared type files may re-export them to preserve consumer compatibility. Keep UI-only and database-only types in their existing owners; do not merge similarly named types without comparing their semantics.
+- Use existing focused shared owners when their responsibility already matches a helper (for example, frontend `userSettings.ts` for permission preferences), instead of adding another wrapper in a global utility file.
+- Other type, utility, constant, and API placement rules remain in effect. Add an explicit boundary rule before introducing any further shared layout.
+
 ## Design exports deliberately
 
 - Export a function or variable at its declaration, such as `export function loadSession()`. Do not collect ordinary exports at the end of an implementation file.

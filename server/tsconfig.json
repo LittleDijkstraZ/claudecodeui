@@ -10,6 +10,7 @@
     // include the "server/" prefix to match that layout.
     "baseUrl": "..",
     "paths": {
+      "@contracts/*": ["shared/contracts/*"],
       "@/*": ["server/*"]
     },
     // The backend is still mostly JavaScript today, so allowJs lets us add a real

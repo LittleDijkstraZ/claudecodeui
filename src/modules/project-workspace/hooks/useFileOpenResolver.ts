@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 
 import { api } from '@/shared/api';
 import type { Project } from '@/shared/types';
@@ -62,8 +62,16 @@ export function useFileOpenResolver(
   onFileOpen: OnFileOpen,
 ): OnFileOpen {
   const projectId = selectedProject?.projectId;
-  const cacheRef = useRef<{ projectId?: string; files: Promise<FlatFile[]> | null }>({
-    projectId: undefined,
+  const projectKey = JSON.stringify([projectId, selectedProject?.fullPath || selectedProject?.path]);
+  // A new epoch distinguishes returning to A from the earlier visit to A; metadata-only changes reuse it.
+  const projectEpoch = useMemo(() => ({ projectKey }), [projectKey]);
+  const activeEpoch = useRef<typeof projectEpoch | null>(projectEpoch);
+  useLayoutEffect(() => {
+    activeEpoch.current = projectEpoch;
+    return () => { activeEpoch.current = null; };
+  }, [projectEpoch]);
+  const cacheRef = useRef<{ epoch: typeof projectEpoch | null; files: Promise<FlatFile[]> | null }>({
+    epoch: null,
     files: null,
   });
 
@@ -71,7 +79,7 @@ export function useFileOpenResolver(
     if (!projectId) {
       return Promise.resolve([]);
     }
-    if (cacheRef.current.projectId === projectId && cacheRef.current.files) {
+    if (cacheRef.current.epoch === projectEpoch && cacheRef.current.files) {
       return cacheRef.current.files;
     }
 
@@ -91,18 +99,20 @@ export function useFileOpenResolver(
       }
     })();
 
-    cacheRef.current = { projectId, files: filesPromise };
+    cacheRef.current = { epoch: projectEpoch, files: filesPromise };
     return filesPromise;
-  }, [projectId]);
+  }, [projectId, projectEpoch]);
 
   return useCallback(
     (filePath: string, diffInfo?: any) => {
+      if (activeEpoch.current !== projectEpoch) return;
       const ref = normalize(filePath).trim();
       void loadFiles().then((files) => {
+        if (activeEpoch.current !== projectEpoch) return;
         const match = findBestMatch(files, ref);
         onFileOpen(match ?? filePath, diffInfo);
       });
     },
-    [loadFiles, onFileOpen],
+    [loadFiles, onFileOpen, projectEpoch],
   );
 }

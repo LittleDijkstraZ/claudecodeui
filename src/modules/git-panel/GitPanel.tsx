@@ -25,15 +25,25 @@ type GitPanelProps = {
 };
 
 /** Exported through the git-panel barrel; the project-workspace module renders it as the source-control sidebar tab. */
-export default function GitPanel({
+export default function GitPanel(props: GitPanelProps) {
+  // Keep the chosen tool view while repository data and actions follow the main conversation.
+  const [activeView, setActiveView] = useState<GitPanelView>('changes');
+  const projectKey = JSON.stringify([props.selectedProject?.projectId, props.selectedProject?.fullPath || props.selectedProject?.path]);
+  return <ProjectGitPanel key={projectKey} {...props} activeView={activeView} onViewChange={setActiveView} />;
+}
+
+// Recreate repository state together: late requests and old confirmation callbacks must
+// never populate or operate on the newly selected conversation's worktree.
+function ProjectGitPanel({
   selectedProject,
   isMobile = false,
   onFileOpen,
   onProjectSelect,
   onProjectsRefresh,
-}: GitPanelProps) {
+  activeView,
+  onViewChange,
+}: GitPanelProps & { activeView: GitPanelView; onViewChange: (view: GitPanelView) => void }) {
   const { t } = useTranslation();
-  const [activeView, setActiveView] = useState<GitPanelView>('changes');
   const [wrapText, setWrapText] = useState(true);
   const [hasExpandedFiles, setHasExpandedFiles] = useState(false);
   const [confirmAction, setConfirmAction] = useState<ConfirmationRequest | null>(null);
@@ -163,7 +173,7 @@ export default function GitPanel({
             activeView={activeView}
             isHidden={hasExpandedFiles}
             changeCount={changeCount}
-            onChange={setActiveView}
+            onChange={onViewChange}
           />
 
           {activeView === 'changes' && (

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { api } from '@/shared/api';
 import type { FileOpenHandler, GitApiErrorResponse, GitCommitSummary, GitDiffMap, GitOperationResponse, GitPanelView, GitRemoteStatus, GitStatusResponse, Project } from '@/shared/types';
@@ -132,9 +132,10 @@ export function useGitPanelController({
   // the user switches projects mid-flight.
   const selectedProjectIdRef = useRef<string | null>(selectedProject?.projectId ?? null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     selectedProjectIdRef.current = selectedProject?.projectId ?? null;
-  }, [selectedProject]);
+    return () => { selectedProjectIdRef.current = null; };
+  }, [selectedProject?.projectId]);
 
   const provider = useSelectedProvider();
 
@@ -735,6 +736,8 @@ export function useGitPanelController({
       try {
         const response = await api.git.fileWithDiff(selectedProject.projectId, filePath);
         const data = await readJson<GitFileWithDiffResponse>(response);
+        // The old panel's file read must not reopen its editor after a conversation switch.
+        if (selectedProjectIdRef.current !== selectedProject.projectId) return;
 
         if (data.error) {
           console.error('Error fetching file with diff:', data.error);
@@ -747,6 +750,7 @@ export function useGitPanelController({
           new_string: data.currentContent || '',
         });
       } catch (error) {
+        if (selectedProjectIdRef.current !== selectedProject.projectId) return;
         console.error('Error opening file:', error);
         onFileOpen(filePath);
       }

@@ -8,7 +8,7 @@ import {
 } from '@/shared/authToken';
 import { IS_PLATFORM } from '@/shared/utils';
 import { readVoiceConfig, voiceConfigHeaders } from '@/shared/voiceConfig';
-import type { McpAuthAttempt, ProviderMcpServer } from '@/shared/types';
+import type { McpAuthAttempt, ProviderCapabilities, ProviderMcpServer } from '@/shared/types';
 import type { ChatBackupBundle, ChatBackupGroupSnapshot, ChatBackupInventoryPage, ChatBackupObservation, ChatBackupScope, LocalChatBackupExport, LocalChatBackupStatus, LocalChatBackupSummary, RestoredChatBackup } from '@/shared/types';
 
 // Headers are a plain record rather than the full `HeadersInit` union so the
@@ -117,6 +117,33 @@ export async function readApiJson<T>(response: Response): Promise<T> {
   return data as T;
 }
 const get = (url: string, options: ApiRequestOptions = {}) => authenticatedFetch(url, options);
+
+/** Used by chat and sidebar capability consumers. Failed or malformed responses
+ * stay unknown and retryable, rather than becoming a cached unsupported matrix. */
+export async function fetchProviderCapabilities(): Promise<Partial<Record<LLMProvider, ProviderCapabilities>>> {
+  const response = await api.providers.capabilities();
+  const body = await readApiJson<{ success?: boolean; data?: { providers?: unknown } }>(response);
+  const invalid = () => new ApiRequestError('Invalid provider capabilities response.', {
+    code: 'INVALID_PROVIDER_CAPABILITIES', status: response.status,
+  });
+  if (!body || body.success !== true || !Array.isArray(body.data?.providers)) throw invalid();
+  const byProvider: Partial<Record<LLMProvider, ProviderCapabilities>> = {};
+  for (const value of body.data.providers) {
+    if (!value || typeof value !== 'object' || typeof value.provider !== 'string') throw invalid();
+    // A newer remote can include providers this client does not implement yet.
+    if (!['claude', 'codex', 'cursor', 'opencode'].includes(value.provider)) continue;
+    if (!Array.isArray(value.permissionModes) || !value.permissionModes.every((mode: unknown) => typeof mode === 'string')
+      || typeof value.defaultPermissionMode !== 'string'
+      || ['supportsImages', 'supportsFiles', 'supportsAbort', 'supportsPermissionRequests', 'supportsTokenUsage']
+        .some(key => typeof value[key] !== 'boolean')
+      || ['supportsEffort', 'supportsMessageEditing', 'supportsSessionForking']
+        .some(key => value[key] !== undefined && typeof value[key] !== 'boolean')) throw invalid();
+    const row = value as ProviderCapabilities;
+    if (byProvider[row.provider]) throw invalid();
+    byProvider[row.provider] = row;
+  }
+  return byProvider;
+}
 
 const withBody =
   (method: string) =>

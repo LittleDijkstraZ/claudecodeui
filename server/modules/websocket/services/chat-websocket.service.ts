@@ -208,6 +208,16 @@ function resolveSendTarget(
   return { sessionId, session, provider };
 }
 
+/** Admission failures are machine-readable; callers must never infer retryability from display text.
+ * A started run can still fail, and its receipts retain ownership of delivery certainty. */
+type ChatDispatchResult =
+  | { started: true; error: string | null }
+  | { started: false; error: string; code:
+    | 'INVALID_DELIVERY_MODE' | 'INVALID_MESSAGE_ID' | 'INTERRUPT_NOT_SUPPORTED'
+    | 'MESSAGE_ID_CONFLICT' | 'INPUT_NOT_ACCEPTED' | 'RUN_OWNER_MISMATCH'
+    | 'RUN_IN_PROGRESS' | 'SESSION_NOT_FOUND' | 'CONTEXT_CHANGED'
+    | 'UNSUPPORTED_PROVIDER' | 'ABORT_NOT_CONFIRMED' | 'RUN_CLOSING' };
+
 /**
  * Registers the run and hands the turn to the provider runtime.
  *
@@ -223,7 +233,7 @@ async function dispatchRun(
   dependencies: ChatWebSocketDependencies,
   extraRuntimeOptions: AnyRecord = {},
   beforeRun?: (run: NonNullable<ReturnType<typeof chatRunRegistry.startRun>>) => void | Promise<void>,
-): Promise<{ started: boolean; error: string | null }> {
+): Promise<ChatDispatchResult> {
   const provider = session.provider as LLMProvider;
 
   const clientOptions = (data.options ?? {}) as AnyRecord;
@@ -231,7 +241,7 @@ async function dispatchRun(
   const deliveryMode = clientOptions.deliveryMode ?? 'queue';
   if (clientOptions.deliveryMode !== undefined && clientOptions.deliveryMode !== 'queue' && clientOptions.deliveryMode !== 'interrupt') {
     if (ws) sendProtocolError(ws, 'INVALID_DELIVERY_MODE', 'Delivery mode must be queue or interrupt.', sessionId, data.clientMessageId);
-    return { started: false, error: 'Invalid delivery mode.' };
+    return { started: false, code: 'INVALID_DELIVERY_MODE', error: 'Invalid delivery mode.' };
   }
 
   const attachmentCandidates = [
@@ -268,11 +278,11 @@ async function dispatchRun(
   const clientMessageId = typeof data.clientMessageId === 'string' ? data.clientMessageId : undefined;
   if (data.clientMessageId !== undefined && (!clientMessageId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientMessageId))) {
     if (ws) sendProtocolError(ws, 'INVALID_MESSAGE_ID', 'A valid client message UUID is required.', sessionId, clientMessageId);
-    return { started: false, error: 'Invalid client message identifier.' };
+    return { started: false, code: 'INVALID_MESSAGE_ID', error: 'Invalid client message identifier.' };
   }
   if (deliveryMode === 'interrupt' && (provider !== 'claude' || beforeRun || Object.keys(extraRuntimeOptions).length > 0 || !clientMessageId || !command.trim() && uniqueAttachments.length === 0)) {
     if (ws) sendProtocolError(ws, 'INTERRUPT_NOT_SUPPORTED', 'Interrupt and send requires a regular Claude message with content and a message UUID.', sessionId, clientMessageId);
-    return { started: false, error: 'Interrupt and send is not supported for this request.' };
+    return { started: false, code: 'INTERRUPT_NOT_SUPPORTED', error: 'Interrupt and send is not supported for this request.' };
   }
   const existing = chatRunRegistry.getRun(sessionId);
   const previousReceipt = clientMessageId ? existing?.messageReceipts.get(clientMessageId) : undefined;
@@ -280,7 +290,7 @@ async function dispatchRun(
     if (String(existing.writer.userId) !== String(userId) || previousReceipt.content !== command || (previousReceipt.deliveryMode ?? 'queue') !== deliveryMode
       || JSON.stringify([previousReceipt.images ?? [], previousReceipt.files ?? []]) !== JSON.stringify([runtimeOptions.images ?? [], runtimeOptions.files ?? []])) {
       if (ws) sendProtocolError(ws, 'MESSAGE_ID_CONFLICT', 'This message identifier cannot be reused for another send.', sessionId, clientMessageId);
-      return { started: false, error: 'Message identifier conflict.' };
+      return { started: false, code: 'MESSAGE_ID_CONFLICT', error: 'Message identifier conflict.' };
     }
     if (existing.status === 'completed') {
       // A retry after completion may repeat its receipt, never launch the same prompt again.
@@ -290,12 +300,12 @@ async function dispatchRun(
   }
   if (deliveryMode === 'interrupt' && (existing?.status !== 'running' || !existing.runtimeState?.inputModes?.includes('interrupt'))) {
     if (ws) sendProtocolError(ws, 'INPUT_NOT_ACCEPTED', 'The current Claude process has not advertised interrupt-and-send support. No replacement process was started.', sessionId, clientMessageId);
-    return { started: false, error: 'The existing Claude input stream cannot accept interrupt and send.' };
+    return { started: false, code: 'INPUT_NOT_ACCEPTED', error: 'The existing Claude input stream cannot accept interrupt and send.' };
   }
   if (existing?.status === 'running' && provider === 'claude' && dependencies.runtime.enqueue && !beforeRun && Object.keys(extraRuntimeOptions).length === 0 && clientMessageId) {
     if (String(existing.writer.userId) !== String(userId)) {
       if (ws) sendProtocolError(ws, 'RUN_OWNER_MISMATCH', 'This process belongs to a different authenticated user.', sessionId, clientMessageId);
-      return { started: false, error: 'Run owner mismatch.' };
+      return { started: false, code: 'RUN_OWNER_MISMATCH', error: 'Run owner mismatch.' };
     }
     if (ws) chatRunRegistry.attachConnection(sessionId, ws);
     try {
@@ -306,13 +316,13 @@ async function dispatchRun(
         // False occurs before the runtime reserves input. A prior receipt still
         // owns its delivery outcome, so a UUID retry must never be relabeled unsent.
         if (ws) sendProtocolError(ws, 'INPUT_NOT_ACCEPTED', reason, sessionId, clientMessageId, !previousReceipt);
-        return { started: false, error: reason };
+        return { started: false, code: 'INPUT_NOT_ACCEPTED', error: reason };
       }
       return { started: true, error: null };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       if (ws) sendProtocolError(ws, 'INPUT_NOT_ACCEPTED', reason, sessionId, clientMessageId);
-      return { started: false, error: reason };
+      return { started: false, code: 'INPUT_NOT_ACCEPTED', error: reason };
     }
   }
 
@@ -334,7 +344,7 @@ async function dispatchRun(
         clientMessageId
       );
     }
-    return { started: false, error: 'A run is already in progress for this session.' };
+    return { started: false, code: 'RUN_IN_PROGRESS', error: 'A run is already in progress for this session.' };
   }
 
   // Admission is not delivery to Claude. Record the prompt before launch preparation
@@ -663,34 +673,34 @@ export async function runDetachedChatTurn(
     expectedProviderSessionId?: string | null;
   },
   dependencies: ChatWebSocketDependencies,
-): Promise<{ started: boolean; error: string | null }> {
+): Promise<ChatDispatchResult> {
   const session = sessionsDb.getSessionById(input.sessionId);
   if (!session) {
-    return { started: false, error: 'The session no longer exists.' };
+    return { started: false, code: 'SESSION_NOT_FOUND', error: 'The session no longer exists.' };
   }
 
   const contextMatches = () => input.expectedProviderSessionId === undefined || sessionsDb.getSessionById(input.sessionId)?.provider_session_id === input.expectedProviderSessionId;
-  const changedContext = { started: false, error: 'Conversation context changed before this queued message could start.' };
+  const changedContext: ChatDispatchResult = { started: false, code: 'CONTEXT_CHANGED', error: 'Conversation context changed before this queued message could start.' };
   if (!contextMatches()) return changedContext;
   const provider = session.provider as LLMProvider;
   if (!dependencies.runtime.hasRuntime(provider)) {
-    return { started: false, error: `Provider "${provider}" is not available.` };
+    return { started: false, code: 'UNSUPPORTED_PROVIDER', error: `Provider "${provider}" is not available.` };
   }
 
   const activeRun = chatRunRegistry.getRun(input.sessionId);
   if (activeRun && activeRun.status === 'running') {
     if (!input.interruptActiveRun) {
-      return { started: false, error: 'A run was already in progress for this session.' };
+      return { started: false, code: 'RUN_IN_PROGRESS', error: 'A run was already in progress for this session.' };
     }
     let aborted = false;
     try { aborted = await dependencies.runtime.abort(activeRun.provider, input.sessionId); }
     catch { /* The scheduled row records the rejection for a manual retry. */ }
     if (!contextMatches()) return changedContext;
-    if (!aborted) return { started: false, error: 'The provider did not confirm stopping the existing run. This message was not sent; retry manually after checking the session.' };
+    if (!aborted) return { started: false, code: 'ABORT_NOT_CONFIRMED', error: 'The provider did not confirm stopping the existing run. This message was not sent; retry manually after checking the session.' };
     if (activeRun.provider !== 'claude') chatRunRegistry.completeRunIfCurrent(activeRun, { exitCode: 0, aborted: true });
     // Claude owns completion until its query exits. Keep the scheduled row as
     // failed/reviewable instead of starting a replacement during stdin close.
-    if (chatRunRegistry.isProcessing(input.sessionId)) return { started: false, error: 'The previous process is still closing or another run started. This message was not sent; retry manually after checking the session.' };
+    if (chatRunRegistry.isProcessing(input.sessionId)) return { started: false, code: 'RUN_CLOSING', error: 'The previous process is still closing or another run started. This message was not sent; retry manually after checking the session.' };
   }
 
   if (!contextMatches()) return changedContext;

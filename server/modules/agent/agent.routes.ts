@@ -7,6 +7,8 @@ import type { ProviderRunFunction } from '@/shared/types.js';
 
 import { normalizeProjectPath } from '../../shared/utils.js';
 
+import { AgentResponseCollector } from './agent-response-collector.service.js';
+
 type AgentRouterDependencies = {
   fileSystem: typeof import('node:fs/promises');
   crypto: typeof import('node:crypto');
@@ -476,15 +478,15 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
   /**
    * SSE Stream Writer - Adapts SDK/CLI output to Server-Sent Events
    */
-  class SSEStreamWriter {
+  class SSEStreamWriter extends AgentResponseCollector {
     constructor(res, userId = null) {
+      super(userId, false);
       this.res = res;
-      this.sessionId = null;
-      this.userId = userId;
       this.isSSEStreamWriter = true;  // Marker for transport detection
     }
 
     send(data) {
+      super.send(data);
       if (this.res.writableEnded) {
         return;
       }
@@ -501,132 +503,8 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
     }
 
     setSessionId(sessionId) {
-      this.sessionId = sessionId;
+      super.setSessionId(sessionId);
       this.send({ type: 'session-id', sessionId });
-    }
-
-    getSessionId() {
-      return this.sessionId;
-    }
-  }
-
-  /**
-   * Non-streaming response collector
-   */
-  class ResponseCollector {
-    constructor(userId = null) {
-      this.messages = [];
-      this.sessionId = null;
-      this.userId = userId;
-    }
-
-    send(data) {
-      // Store ALL messages for now - we'll filter when returning
-      this.messages.push(data);
-
-      // Extract sessionId if present
-      if (typeof data === 'string') {
-        try {
-          const parsed = JSON.parse(data);
-          if (parsed.sessionId) {
-            this.sessionId = parsed.sessionId;
-          }
-        } catch (e) {
-          // Not JSON, ignore
-        }
-      } else if (data && data.sessionId) {
-        this.sessionId = data.sessionId;
-      }
-    }
-
-    end() {
-      // Do nothing - we'll collect all messages
-    }
-
-    setSessionId(sessionId) {
-      this.sessionId = sessionId;
-    }
-
-    getSessionId() {
-      return this.sessionId;
-    }
-
-    getMessages() {
-      return this.messages;
-    }
-
-    /**
-     * Get filtered assistant messages only
-     */
-    getAssistantMessages() {
-      const assistantMessages = [];
-
-      for (const msg of this.messages) {
-        // Skip initial status message
-        if (msg && msg.type === 'status') {
-          continue;
-        }
-
-        // Handle JSON strings
-        if (typeof msg === 'string') {
-          try {
-            const parsed = JSON.parse(msg);
-            // Only include claude-response messages with assistant type
-            if (parsed.type === 'claude-response' && parsed.data && parsed.data.type === 'assistant') {
-              assistantMessages.push(parsed.data);
-            }
-          } catch (e) {
-            // Not JSON, skip
-          }
-        }
-      }
-
-      return assistantMessages;
-    }
-
-    /**
-     * Calculate total tokens from all messages
-     */
-    getTotalTokens() {
-      let totalInput = 0;
-      let totalOutput = 0;
-      let totalCacheRead = 0;
-      let totalCacheCreation = 0;
-
-      for (const msg of this.messages) {
-        let data = msg;
-
-        // Parse if string
-        if (typeof msg === 'string') {
-          try {
-            data = JSON.parse(msg);
-          } catch (e) {
-            continue;
-          }
-        }
-
-        // Extract usage from claude-response messages
-        if (data && data.type === 'claude-response' && data.data) {
-          const msgData = data.data;
-          if (msgData.message && msgData.message.usage) {
-            const usage = msgData.message.usage;
-            totalInput += usage.input_tokens || 0;
-            totalOutput += usage.output_tokens || 0;
-            totalCacheRead += usage.cache_read_input_tokens || 0;
-            totalCacheCreation += usage.cache_creation_input_tokens || 0;
-          }
-        }
-      }
-
-      const inputTokens = totalInput + totalCacheRead + totalCacheCreation;
-
-      return {
-        inputTokens,
-        outputTokens: totalOutput,
-        cacheReadTokens: totalCacheRead,
-        cacheCreationTokens: totalCacheCreation,
-        totalTokens: inputTokens + totalOutput
-      };
     }
   }
 
@@ -811,18 +689,19 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
    *   Content-Type: text/event-stream
    *   Events:
    *     - { type: "status", message: "...", projectPath: "..." }
-   *     - { type: "claude-response", data: {...} }
+   *     - Provider normalized events (or legacy { type: "claude-response", data: {...} })
    *     - { type: "github-branch", branch: { name: "...", url: "..." } }
    *     - { type: "github-pr", pullRequest: { number: 42, url: "..." } }
    *     - { type: "github-error", error: "..." }
    *     - { type: "done" }
    *
    * Non-Streaming Response (stream=false):
+   * Failed provider runs return HTTP 500 with success: false and error, preserving partial output.
    *   Content-Type: application/json
    *   {
    *     success: true,
    *     sessionId: "session-123",
-   *     messages: [...],        // Assistant messages only (filtered)
+   *     messages: [...],        // Normalized assistant output; legacy Claude payloads remain unchanged
    *     tokens: {
    *       inputTokens: 150,
    *       outputTokens: 50,
@@ -968,7 +847,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
         });
       } else {
         // Non-streaming mode: collect messages
-        writer = new ResponseCollector(req.user.id);
+        writer = new AgentResponseCollector(req.user.id);
 
         // Collect initial status message
         writer.send({
@@ -1028,11 +907,13 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
         }, writer);
       }
 
-      // Handle GitHub branch and PR creation after successful agent completion
+      const runError = writer.getError();
+
+      // Handle GitHub branch and PR creation only after successful agent completion
       let branchInfo = null;
       let prInfo = null;
 
-      if (createBranch || createPR) {
+      if (!runError && (createBranch || createPR)) {
         try {
           console.log('🔄 Starting GitHub branch/PR creation workflow...');
 
@@ -1219,7 +1100,8 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
         const tokenSummary = writer.getTotalTokens();
 
         const response = {
-          success: true,
+          success: !runError,
+          ...(runError ? { error: runError } : {}),
           sessionId: writer.getSessionId(),
           messages: assistantMessages,
           tokens: tokenSummary,
@@ -1234,7 +1116,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
           response.pullRequest = prInfo;
         }
 
-        res.json(response);
+        res.status(runError ? 500 : 200).json(response);
       }
 
       // Clean up if requested

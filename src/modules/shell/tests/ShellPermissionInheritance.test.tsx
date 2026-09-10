@@ -1,13 +1,13 @@
 import { render } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { getClaudeSettings } from '@/modules/chat';
+import { getClaudeSettings } from '@/shared/userSettings';
 import Shell from '@/modules/shell/Shell';
 import { useShellRuntime } from '@/modules/shell/hooks/useShellRuntime';
 import type { Project, ProjectSession } from '@/shared/types';
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-vi.mock('@/modules/chat', () => ({ getClaudeSettings: vi.fn() }));
+vi.mock('@/shared/userSettings', () => ({ getClaudeSettings: vi.fn() }));
 vi.mock('@/modules/shell/hooks/useShellRuntime', () => ({ useShellRuntime: vi.fn(() => ({
   terminalContainerRef: { current: null }, terminalRef: { current: null }, wsRef: { current: null },
   isConnected: false, isInitialized: false, isConnecting: false, executionBinding: null,

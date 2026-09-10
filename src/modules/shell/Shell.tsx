@@ -8,7 +8,7 @@ import { useShellRuntime } from '@/modules/shell/hooks/useShellRuntime';
 import { sendSocketMessage } from '@/modules/shell/utils/socket';
 import { getSessionTitle } from '@/shared/utils';
 import { readSelectedProvider } from '@/shared/selectedProvider';
-import { getClaudeSettings } from '@/modules/chat';
+import { getClaudeSettings } from '@/shared/userSettings';
 import ShellConnectionOverlay from '@/modules/shell/ShellConnectionOverlay';
 import ShellEmptyState from '@/modules/shell/ShellEmptyState';
 import ShellHeader from '@/modules/shell/ShellHeader';

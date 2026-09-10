@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { api } from '@/shared/api';
 import type { MergeWorktreeOptions, Project, RemoveWorktreeOptions, WorktreeInfo } from '@/shared/types';
@@ -68,9 +68,12 @@ export function useWorktreesController({
 
   // Detects stale responses after the user switches projects mid-request.
   const selectedProjectIdRef = useRef<string | null>(selectedProject?.projectId ?? null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     selectedProjectIdRef.current = selectedProject?.projectId ?? null;
-  }, [selectedProject]);
+    // A retained request can finish after its project panel has been replaced.
+    // Invalidating it also prevents open/create from navigating back to that old folder.
+    return () => { selectedProjectIdRef.current = null; };
+  }, [selectedProject?.projectId]);
 
   const fetchWorktrees = useCallback(async () => {
     if (!selectedProject) {

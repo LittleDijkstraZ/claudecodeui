@@ -14,6 +14,7 @@ import ComposerModelMenu from '@/modules/chat/composer/ComposerModelMenu';
 
 const mocks = vi.hoisted(() => ({ models: vi.fn() }));
 vi.mock('@/shared/api', () => ({
+  fetchProviderCapabilities: async () => ({}),
   api: {
     user: {
       preferences: async () => ({ ok: true, json: async () => ({ success: true, preferences: {} }) }),

@@ -1,28 +1,17 @@
 import { useEffect, useState } from 'react';
 
-import { api } from '@/shared/api';
-import type { LLMProvider } from '@/shared/types';
-
-/**
- * The backend-owned answer to "what can this provider actually do".
- *
- * Only the fields consumers outside chat need are declared; the matrix itself
- * is larger and lives in `provider-capabilities.service.ts`.
- */
-type ProviderCapabilityRow = {
-  provider: LLMProvider;
-  supportsSessionForking?: boolean;
-};
+import { fetchProviderCapabilities } from '@/shared/api';
+import type { LLMProvider, ProviderCapabilities } from '@/shared/types';
 
 /**
  * Cached at module scope because the matrix is static for the life of the
  * server process and more than one part of the UI asks for it. Without this,
  * opening the sidebar would refetch it on every mount.
  */
-let cachedCapabilities: Partial<Record<LLMProvider, ProviderCapabilityRow>> | null = null;
-let inFlightRequest: Promise<Partial<Record<LLMProvider, ProviderCapabilityRow>>> | null = null;
+let cachedCapabilities: Partial<Record<LLMProvider, ProviderCapabilities>> | null = null;
+let inFlightRequest: Promise<Partial<Record<LLMProvider, ProviderCapabilities>>> | null = null;
 
-async function loadCapabilities(): Promise<Partial<Record<LLMProvider, ProviderCapabilityRow>>> {
+async function loadCapabilities(): Promise<Partial<Record<LLMProvider, ProviderCapabilities>>> {
   if (cachedCapabilities) {
     return cachedCapabilities;
   }
@@ -32,13 +21,7 @@ async function loadCapabilities(): Promise<Partial<Record<LLMProvider, ProviderC
 
   inFlightRequest = (async () => {
     try {
-      const response = await api.providers.capabilities();
-      const body = (await response.json()) as { success?: boolean; data?: { providers?: ProviderCapabilityRow[] } };
-      const rows = body.success && Array.isArray(body.data?.providers) ? body.data.providers : [];
-      const byProvider: Partial<Record<LLMProvider, ProviderCapabilityRow>> = {};
-      for (const row of rows) {
-        byProvider[row.provider] = row;
-      }
+      const byProvider = await fetchProviderCapabilities();
       cachedCapabilities = byProvider;
       return byProvider;
     } catch (error) {
@@ -61,6 +44,7 @@ async function loadCapabilities(): Promise<Partial<Record<LLMProvider, ProviderC
  * withdrawn.
  */
 export function useSessionForkingProviders(): Set<LLMProvider> {
+  // Retain the loaded server capability snapshot so sidebar affordances update after the request.
   const [providers, setProviders] = useState<Set<LLMProvider>>(() => new Set());
 
   useEffect(() => {

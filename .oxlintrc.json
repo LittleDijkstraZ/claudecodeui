@@ -41,6 +41,7 @@
       "node": { "extensions": [".mjs", ".cjs", ".js", ".json", ".node", ".ts", ".tsx"] }
     },
     "boundaries/include": [
+      "shared/contracts/**/*.ts",
       "server/**/*.js",
       "server/**/*.ts",
       "src/modules/**/*.ts",
@@ -54,6 +55,7 @@
       "src/shared/ui/**/*.tsx"
     ],
     "boundaries/elements": [
+      { "type": "portable-contract", "pattern": "shared/contracts/*.ts", "mode": "file" },
       {
         "type": "backend-shared-barrel",
         "pattern": "server/shared/index.ts",
@@ -239,6 +241,11 @@
             "checkInternals": false,
             "rules": [
               {
+                "to": { "type": "portable-contract" },
+                "disallow": { "dependency": { "kind": ["value", "typeof"] } },
+                "message": "Portable contracts contain type declarations only; consume them with import type or export type."
+              },
+              {
                 "from": { "type": "frontend-module" },
                 "to": { "type": "frontend-shared-type-contract" },
                 "disallow": { "dependency": { "kind": ["value", "typeof"] } },
@@ -296,6 +303,11 @@
             "default": "allow",
             "checkInternals": false,
             "rules": [
+              {
+                "to": { "type": "portable-contract" },
+                "disallow": { "dependency": { "kind": ["value", "typeof"] } },
+                "message": "Portable contracts contain type declarations only; consume them with import type or export type."
+              },
               {
                 "from": { "type": "backend-module" },
                 "to": { "type": "backend-shared-type-contract" },

@@ -567,7 +567,7 @@ function ChatInterface({
           revealTarget={activeReveal}
           scrollContainerRef={scrollContainerRef}
           onLayoutScroll={onTranscriptLayoutScroll}
-          // Not redundant with the `scroll` listener. A first page is 20 rows,
+          // Not redundant with the `scroll` listener. The first page is bounded,
           // tool results fold into their calls, and the "load earlier" link is
           // hidden while more pages exist — so a short transcript is often not
           // scrollable at all and never emits `scroll`. Wheel and touch are

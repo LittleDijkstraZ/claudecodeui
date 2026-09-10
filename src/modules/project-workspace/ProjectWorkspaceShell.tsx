@@ -5,6 +5,7 @@ import ProjectHubBridge from '@/modules/project-workspace/ProjectHubBridge';
 import ProjectGroupDialogs from '@/modules/project-workspace/ProjectGroupDialogs';
 import ProjectSettingsDialog from '@/modules/project-workspace/ProjectSettingsDialog';
 import ProjectEffects from '@/modules/project-workspace/controllers/ProjectEffects';
+import { useProjectActiveSessionState } from '@/modules/project-workspace/context/ProjectsStateContext';
 import type { ProjectWorkspaceShellProps } from '@/shared/types';
 import ProjectCommandPalette from '@/modules/project-workspace/ProjectCommandPalette';
 import ProjectMainRegion from '@/modules/project-workspace/ProjectMainRegion';
@@ -17,8 +18,9 @@ function ProjectWorkspaceShell({
   sendMessage,
   navigate,
 }: ProjectWorkspaceShellProps) {
+  const { activeSessionId } = useProjectActiveSessionState();
   return (
-    <WorkspacePanelsProvider>
+    <WorkspacePanelsProvider activeSessionId={activeSessionId}>
     <div
       className="fixed inset-0 flex bg-background"
       style={{ bottom: 'var(--keyboard-height, 0px)' }}

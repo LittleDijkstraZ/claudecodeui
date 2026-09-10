@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { api } from '@/shared/api';
+import { api, fetchProviderCapabilities } from '@/shared/api';
 import type { PendingPermissionRequest, PermissionMode,
   ProjectSession,
   LLMProvider,
@@ -8,7 +8,7 @@ import type { PendingPermissionRequest, PermissionMode,
   CustomProviderModelInput,
   ProviderModelActions,
   ProviderModelOption,
-  ProviderModelsDefinition } from '@/shared/types';
+  ProviderModelsDefinition, ProviderCapabilities } from '@/shared/types';
 import { DEFAULT_EFFORT_VALUE } from '@/shared/constants';
 import { readSelectedProvider, writeSelectedProvider } from '@/shared/selectedProvider';
 
@@ -50,27 +50,6 @@ const FALLBACK_PERMISSION_MODES: Record<LLMProvider, PermissionMode[]> = {
   cursor: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
   codex: ['default', 'acceptEdits', 'bypassPermissions'],
   opencode: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
-};
-
-type ProviderCapabilities = {
-  provider: LLMProvider;
-  permissionModes: string[];
-  defaultPermissionMode: string;
-  supportsImages: boolean;
-  supportsFiles: boolean;
-  supportsAbort: boolean;
-  supportsPermissionRequests: boolean;
-  supportsTokenUsage: boolean;
-  supportsEffort?: boolean;
-  supportsMessageEditing?: boolean;
-  supportsSessionForking?: boolean;
-};
-
-type ProviderCapabilitiesApiResponse = {
-  success?: boolean;
-  data?: {
-    providers?: ProviderCapabilities[];
-  };
 };
 
 type UseChatProviderStateArgs = {
@@ -236,16 +215,8 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
     const loadCapabilities = async () => {
       try {
-        const response = await api.providers.capabilities();
-        const body = (await response.json()) as ProviderCapabilitiesApiResponse;
-        if (cancelled || !body.success || !Array.isArray(body.data?.providers)) {
-          return;
-        }
-
-        const byProvider: Partial<Record<LLMProvider, ProviderCapabilities>> = {};
-        for (const capabilities of body.data.providers) {
-          byProvider[capabilities.provider] = capabilities;
-        }
+        const byProvider = await fetchProviderCapabilities();
+        if (cancelled) return;
         setProviderCapabilities(byProvider);
       } catch (error) {
         console.error('Error loading provider capabilities:', error);

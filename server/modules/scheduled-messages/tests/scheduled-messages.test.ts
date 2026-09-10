@@ -99,6 +99,32 @@ test('a queued message is sent by the server without a browser connection', asyn
   });
 });
 
+test('a run reservation race restores the queued turn and sends it exactly once on the next pass', async t => {
+  await withIsolatedDatabase(async userId => {
+    sessionsDb.assignProviderSessionId(SESSION_ID, 'race-native');
+    const queuedMessage = {
+      content: 'Keep this queued turn', providerSessionId: 'race-native',
+      options: { model: 'existing-choice' }, attachments: [{ path: '/tmp/retained-until-dispatch.png' }],
+    };
+    sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage });
+    const runs: RunCall[] = [];
+    // Another sender can reserve after the dispatcher's idle check. This must
+    // use the admission code, not the different wording of its two busy checks.
+    const reservation = t.mock.method(chatRunRegistry, 'startRun', () => null);
+    try {
+      assert.equal(await dispatchQueuedMessages(createRuntime(runs)), 1);
+      assert.deepEqual(sessionDraftsDb.getDrafts(userId)[0]?.queuedMessage, queuedMessage);
+      assert.equal(runs.length, 0);
+    } finally {
+      reservation.mock.restore();
+    }
+    assert.equal(await dispatchQueuedMessages(createRuntime(runs)), 1);
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0].command, queuedMessage.content);
+    assert.equal(await dispatchQueuedMessages(createRuntime(runs)), 0);
+  });
+});
+
 test('a queued message stays pending while its session is busy', async () => {
   await withIsolatedDatabase(async (userId) => {
     sessionsDb.assignProviderSessionId(SESSION_ID, 'queued-native-fixture');

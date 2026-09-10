@@ -440,17 +440,19 @@ question rendered twice in another.
 - **`finalizeStreaming` mutates the array slot in place.** It does not remove and append.
   The id changes underneath the same position, on purpose, so React reconciles the
   existing DOM and a text selection survives the end of the reply.
-- **A streaming reply does not re-trigger auto-scroll.** The follow effect depends on
-  `chatMessages.length`, and an in-place rewrite does not change it. Within one streamed
-  block the browser pins the pane; the next row that arrives re-follows. See
-  [scrolling](./05-scrolling.md).
+- **Streaming growth follows only while the reader owns the bottom.** Transcript
+  growth is observed even when an existing reply expands without adding a row.
+  User scrolling into history pauses following; late layout changes must not steal
+  the viewport. See [scrolling](./05-scrolling.md) and `transcriptScrollOwnership.test.tsx`.
 - **The 100 ms flush publishes the whole reply, not the delta.** Anyone optimising this
   into an incremental append has to also handle the case where a flush is skipped, which
   is exactly what the current design makes impossible to get wrong.
-- **`error` does not end a run and does not clear the spinner. `protocol_error` does
-  both.** A protocol error means the frame was rejected before a run existed —
-  `SESSION_NOT_FOUND`, `UNSUPPORTED_PROVIDER`, `RUN_IN_PROGRESS`, `NO_ACTIVE_RUN` — so no
-  `complete` will follow and nothing else would ever clear the busy state.
+- **Input rejection is not process completion.** `protocol_error` fails the
+  identified input, then uses the server's `isProcessing` observation to reconcile
+  the spinner. `INPUT_NOT_ACCEPTED` can arrive while the original Claude run is
+  still active. `definitelyNotSubmitted` distinguishes a known rejection before
+  submission from unknown delivery; neither permits silently duplicating a send.
+  See `useChatRealtimeHandlers` and `chat-queued-send.test.ts`.
 - **Only `protocol_error` synthesises a message row on the client.** Every other row
   originates from a provider or from the local optimistic echo.
 - **Realtime rows are capped at 500 per session** (`MAX_REALTIME_MESSAGES`), oldest

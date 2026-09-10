@@ -50,7 +50,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p server/tsconfig.json",
     "test": "tsx --tsconfig server/tsconfig.json --test \"server/**/*.test.ts\" \"server/**/*.test.js\"",
     "test:client": "vitest run",
-    "lint": "oxlint src/ server/",
+    "lint": "oxlint src/ server/ shared/ && node scripts/check-architecture.mjs",
     "lint:server": "oxlint server/",
     "lint:client": "oxlint src/",
     "lint:fix": "oxlint src/ server/ --fix",

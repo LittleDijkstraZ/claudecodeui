@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { FolderOpen } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -22,12 +22,22 @@ export default function WorkspaceFilesPanel({ project, editingFile, editingProje
   // Return to the file browser without unmounting an editor that may contain unsaved text.
   const [browsing, setBrowsing] = useState(true);
   useEffect(() => { if (editingFile) setBrowsing(false); }, [editingFile]);
+  // File-tree search and pending file actions belong to this folder; the editor stays independent.
+  const projectKey = JSON.stringify([project?.projectId, project?.fullPath || project?.path]);
+  const previousProjectKey = useRef(projectKey);
+  useLayoutEffect(() => {
+    if (previousProjectKey.current === projectKey) return;
+    previousProjectKey.current = projectKey;
+    // Follow the main conversation's folder while retaining any unsaved editor underneath.
+    setBrowsing(true);
+  }, [projectKey]);
+  const displayedProject = browsing ? project : editingProject;
   return <div className="flex h-full min-h-0 flex-col">
     {editingFile && <div className="flex shrink-0 items-center gap-2 border-b border-border px-2 py-1">
       <Button variant="ghost" size="sm" className="h-7 px-2 text-[11px]" onClick={() => setBrowsing(value => !value)}><FolderOpen className="h-3 w-3" />{t(browsing ? 'workspacePanel.returnEditor' : 'workspacePanel.browseFiles', { defaultValue: browsing ? 'Return to editor' : 'Browse files' })}</Button>
-      <span className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground" title={editingProject?.fullPath || editingProject?.path}>{editingProject?.displayName}</span>
+      <span className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground" title={displayedProject?.fullPath || displayedProject?.path}>{displayedProject?.displayName}</span>
     </div>}
-    <div className={`min-h-0 flex-1 ${browsing || !editingFile ? 'block' : 'hidden'}`}>{project ? <FileTree selectedProject={project} onFileOpen={onFileOpen} /> : <p className="p-4 text-sm text-muted-foreground">{t('workspacePanel.chooseProjectFiles', { defaultValue: 'Choose a project to browse its files.' })}</p>}</div>
+    <div className={`min-h-0 flex-1 ${browsing || !editingFile ? 'block' : 'hidden'}`}>{project ? <FileTree key={projectKey} selectedProject={project} onFileOpen={onFileOpen} /> : <p className="p-4 text-sm text-muted-foreground">{t('workspacePanel.chooseProjectFiles', { defaultValue: 'Choose a project to browse its files.' })}</p>}</div>
     {editingFile && <div className={`min-h-0 flex-1 ${browsing ? 'hidden' : 'block'}`}><CodeEditor key={`${editingFile.projectId}:${editingFile.path}`} file={editingFile} projectPath={editingProject?.fullPath || editingProject?.path} isSidebar isExpanded={panel?.maximized} onToggleExpand={actions?.toggleMaximized} onClose={() => { onClose(); setBrowsing(true); }} /></div>}
   </div>;
 }

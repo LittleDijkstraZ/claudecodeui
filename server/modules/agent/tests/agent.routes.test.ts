@@ -7,6 +7,8 @@ import test from 'node:test';
 
 import express from 'express';
 
+import { createCompleteMessage, createNormalizedMessage } from '@/shared/index.js';
+
 import { createAgentRouter } from '../agent.routes.js';
 
 type AgentDependencies = Parameters<typeof createAgentRouter>[0];
@@ -202,4 +204,101 @@ test('Agent route reuses a matching checkout without cloning or deleting it', as
 
   assert.deepEqual(spawnedArguments, [['config', '--get', 'remote.origin.url']]);
   assert.deepEqual(removedPaths, []);
+});
+
+function createRuntimeDependencies(
+  run: AgentDependencies['queryClaude'],
+  overrides: Partial<AgentDependencies> = {},
+): AgentDependencies {
+  return createDependencies({
+    fileSystem: { access: async () => undefined } as unknown as AgentDependencies['fileSystem'],
+    models: { getProviderModels: async () => ({ models: { DEFAULT: 'fixture-model' } }) } as unknown as AgentDependencies['models'],
+    queryClaude: run, queryCodex: run, queryCursor: run, queryOpenCode: run,
+    ...overrides,
+  });
+}
+
+for (const provider of ['claude', 'codex', 'cursor', 'opencode'] as const) {
+  test(`Agent JSON response includes normalized ${provider} output`, async () => {
+    await withAgentServer(createRuntimeDependencies(async (_command, _options, writer) => {
+      writer.setSessionId?.('fixture-session');
+      if (provider === 'cursor' || provider === 'opencode') {
+        writer.send(createNormalizedMessage({ kind: 'stream_delta', provider, content: 'Synthetic ' }));
+        writer.send(createNormalizedMessage({ kind: 'stream_delta', provider, content: 'answer' }));
+      } else {
+        writer.send(createNormalizedMessage({ kind: 'text', role: 'assistant', provider, content: 'Synthetic answer' }));
+      }
+      writer.send(createCompleteMessage({ provider, exitCode: 0 }));
+    }), async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/agent`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectPath: '/fixture', message: 'Run', provider, stream: false }),
+      });
+      const body = await response.json() as { success: boolean; sessionId: string; messages: Array<{ kind: string; content: string }> };
+      assert.equal(response.status, 200);
+      assert.equal(body.success, true);
+      assert.equal(body.sessionId, 'fixture-session');
+      assert.deepEqual(body.messages.map(message => [message.kind, message.content]), [['text', 'Synthetic answer']]);
+    });
+  });
+}
+
+for (const stream of [false, true]) {
+  test(`Agent failure blocks publication with stream=${stream}`, async () => {
+    let tokenReads = 0;
+    let spawnCalls = 0;
+    let githubCalls = 0;
+    const emitted = [
+      createNormalizedMessage({ kind: 'text', role: 'assistant', provider: 'claude', content: 'Partial result' }),
+      createNormalizedMessage({ kind: 'error', provider: 'claude', content: 'Synthetic failure' }),
+      createCompleteMessage({ provider: 'claude', exitCode: 1 }),
+    ];
+    await withAgentServer(createRuntimeDependencies(async (_command, _options, writer) => {
+      for (const event of emitted) writer.send(event);
+    }, {
+      githubTokens: { getActiveGithubToken: () => { tokenReads++; return 'fixture-token'; } },
+      spawnProcess: (() => { spawnCalls++; throw new Error('Must not publish'); }) as unknown as AgentDependencies['spawnProcess'],
+      GithubClient: class { constructor() { githubCalls++; } } as unknown as AgentDependencies['GithubClient'],
+    }), async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/agent`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectPath: '/fixture', message: 'Run', stream, createBranch: true, createPR: true }),
+      });
+      if (stream) {
+        assert.equal(response.status, 200); // Headers were sent before the provider failed.
+        const wire = await response.text();
+        for (const event of emitted) assert.ok(wire.includes(`data: ${JSON.stringify(event)}\n\n`));
+        assert.ok(wire.endsWith('data: {"type":"done"}\n\n'));
+        assert.equal(wire.includes('github-branch'), false);
+      } else {
+        const body = await response.json() as { success: boolean; error: string; messages: Array<{ content: string }> };
+        assert.equal(response.status, 500);
+        assert.equal(body.success, false);
+        assert.equal(body.error, 'Synthetic failure');
+        assert.equal(body.messages[0].content, 'Partial result');
+      }
+    });
+    assert.equal(tokenReads, 0);
+    assert.equal(spawnCalls, 0);
+    assert.equal(githubCalls, 0);
+  });
+}
+
+test('Agent SSE retains legacy framing and session-id events', async () => {
+  const legacy = JSON.stringify({ type: 'claude-response', data: { type: 'assistant', message: { content: 'Legacy answer' } } });
+  await withAgentServer(createRuntimeDependencies(async (_command, _options, writer) => {
+    assert.equal(writer.isSSEStreamWriter, true);
+    writer.setSessionId?.('legacy-session');
+    writer.send(legacy);
+    writer.send({ type: 'claude-complete', exitCode: 0 });
+  }), async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/agent`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ projectPath: '/fixture', message: 'Run', stream: true }),
+    });
+    const wire = await response.text();
+    assert.ok(wire.includes('data: {"type":"session-id","sessionId":"legacy-session"}\n\n'));
+    assert.ok(wire.includes(`data: ${JSON.stringify(legacy)}\n\n`));
+    assert.ok(wire.endsWith('data: {"type":"done"}\n\n'));
+  });
 });

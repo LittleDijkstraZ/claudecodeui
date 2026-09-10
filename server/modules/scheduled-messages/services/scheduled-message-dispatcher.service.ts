@@ -78,7 +78,7 @@ async function sendClaimedQueuedMessage(
 
   // The registry check and run reservation are separate operations. If a run
   // wins that tiny race, put the turn back so the next poll tries again.
-  if (!result.started && (result.error === 'A run was already in progress for this session.' || result.error === 'A run is already in progress for this session.')) {
+  if (!result.started && result.code === 'RUN_IN_PROGRESS') {
     sessionDraftsDb.restoreQueuedMessage(candidate);
     return;
   }

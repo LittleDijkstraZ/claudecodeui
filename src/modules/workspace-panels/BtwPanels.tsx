@@ -94,5 +94,6 @@ function BtwPanel({ tab, visible }: { tab: WorkspaceBtwTab; visible: boolean }) 
 /** Used by project-workspace to retain independent, disposable native /btw exchanges across navigation. */
 export function BtwPanels() {
   const panel = useWorkspacePanels();
-  return <>{panel?.btwTabs.map(tab => <BtwPanel key={tab.id} tab={tab} visible={panel.open && panel.tab === tab.id} />)}</>;
+  // Keep hidden tabs mounted so changing the main conversation does not abort requests or discard drafts.
+  return <>{panel?.btwTabs.map(tab => <BtwPanel key={tab.id} tab={tab} visible={panel.open && panel.activeSessionId === tab.sessionId && panel.tab === tab.id} />)}</>;
 }
