@@ -12,7 +12,7 @@ import type {
 import { useTranslation } from 'react-i18next';
 import { useDropzone } from 'react-dropzone';
 
-import { api } from '@/shared/api';
+import { api, claudeExecutionSettingsApi } from '@/shared/api';
 import { PROVIDER_PERMISSION_PREFERENCE_KEYS } from '@/shared/constants';
 import { readUserPreference } from '@/shared/userSettings';
 import type { ClaudeInputMode, ClaudeSessionMutationEvent, CommandModalPayload, CostCommandData, HelpCommandData, MarkSessionProcessing, ModelCommandData, QueuedDraft, SessionActivityMap, StatusCommandData,QueuedSendOptions,ChatAttachment,ChatMessage,PendingPermissionRequest,PermissionMode,SessionEstablishedContext,Project,ProjectSession,LLMProvider,SlashCommand } from '@/shared/types';
@@ -130,6 +130,7 @@ const restoreQueuedDraft = (sessionKey: string): QueuedDraft | null => {
     ? {
         content: saved.content,
         rewindPaused: saved.rewindPaused,
+        providerSessionId: saved.providerSessionId,
         attachments: [],
         uploadedAttachments: saved.attachments ?? saved.images,
         options: saved.options,
@@ -711,11 +712,22 @@ export function useChatComposerState({
           && inputValueRef.current === currentInput;
       };
 
-      // Claude input admission belongs to the remote process. A missed capability
-      // event (or an old loading flag after reconnect) cannot permanently block an
-      // explicit send/retry here. The server appends to the owner or rejects this
-      // UUID; it never stops that process to make room for the message.
-      if (isLoading && provider !== 'claude') {
+      const pendingQueuedMessage = sessionKey ? readQueuedMessage(sessionKey) : null;
+      if (!queuedSubmission && pendingQueuedMessage && !pendingQueuedMessage.rewindPaused) {
+        addMessage({ type: 'error', content: t('input.queue.alreadyQueued', { defaultValue: 'A message is already queued. Your new draft remains here; edit or remove the queued message first.' }), timestamp: new Date() });
+        return;
+      }
+
+      // An explicit closed-input snapshot means Queue must wait for the owner
+      // to finish. Unknown capabilities still ask the remote, so a missed event
+      // cannot permanently block a writable process after reconnect.
+      const waitForClaude = provider === 'claude' && sessionKey !== null
+        && processingSessions?.get(sessionKey)?.acceptsInput === false;
+      if ((isLoading && provider !== 'claude') || waitForClaude) {
+        if (waitForClaude && (queuedSubmission || submissionAnchorId)) {
+          addMessage({ type: 'error', content: t('input.queue.waitToRetry', { defaultValue: 'Claude is still finishing its current execution. Your saved message and draft remain available; send them after it finishes.' }), timestamp: new Date() });
+          return;
+        }
         // A run can restart in the tiny gap between scheduling and flushing a
         // queued submission. Put the same durable draft back without uploading
         // its files again.
@@ -727,18 +739,43 @@ export function useChatComposerState({
 
         const queuedOptions = buildSendOptions(currentInput);
         const queuedSessionKey = sessionKey;
+        if (queuedSessionKey && readQueuedMessage(queuedSessionKey)) {
+          addMessage({ type: 'error', content: t('input.queue.alreadyQueued', { defaultValue: 'A message is already queued. Your new draft remains here; edit or remove the queued message first.' }), timestamp: new Date() });
+          return;
+        }
+        const queuePreparationKey = `${provider}:${submittedDraft.scope || 'new-session'}`;
+        if (preparingSends.current.has(queuePreparationKey)) return;
+        preparingSends.current.add(queuePreparationKey);
         let uploadedAttachments: unknown[] = [];
+        let providerSessionId: string | undefined;
         try {
+          if (waitForClaude && queuedSessionKey) {
+            const response = await claudeExecutionSettingsApi.identity(queuedSessionKey);
+            const payload = await response.json();
+            if (!response.ok || !payload.success || payload.data?.sessionId !== queuedSessionKey
+              || typeof payload.data.providerSessionId !== 'string' || !payload.data.providerSessionId) {
+              throw new Error(t('input.queue.contextUnavailable', { defaultValue: 'Claude has not confirmed the conversation context yet. Your draft remains here; queue it when the current execution is ready.' }));
+            }
+            providerSessionId = payload.data.providerSessionId;
+          }
           uploadedAttachments = await uploadAttachmentFiles(currentAttachments);
+          const mutationNow = queuedSessionKey ? contextMutations.current.get(queuedSessionKey) : undefined;
+          if (mutationNow?.pending || mutationNow?.generation !== mutationAtSubmission?.generation) {
+            throw new Error(t('input.queue.contextChanged', { defaultValue: 'The conversation changed while this message was preparing. Your draft remains here for review.' }));
+          }
+          if (queuedSessionKey && readQueuedMessage(queuedSessionKey)) {
+            throw new Error(t('input.queue.alreadyQueued', { defaultValue: 'A message is already queued. Your new draft remains here; edit or remove the queued message first.' }));
+          }
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Unknown error';
-          console.error('Queued file upload failed:', error);
           addMessage({
             type: 'error',
-            content: `Failed to upload files: ${message}`,
+            content: message,
             timestamp: new Date(),
           });
           return;
+        } finally {
+          preparingSends.current.delete(queuePreparationKey);
         }
 
         const durableDraft: QueuedDraft = {
@@ -746,6 +783,7 @@ export function useChatComposerState({
           attachments: currentAttachments,
           uploadedAttachments,
           options: queuedOptions,
+          providerSessionId,
         };
         if (queuedSessionKey) {
           // Write the claim ticket synchronously after upload; this closes the
@@ -754,6 +792,7 @@ export function useChatComposerState({
             content: durableDraft.content,
             options: durableDraft.options,
             attachments: durableDraft.uploadedAttachments,
+            providerSessionId: durableDraft.providerSessionId,
           });
         }
 
@@ -1045,14 +1084,17 @@ export function useChatComposerState({
     if (!queuedDraft) {
       return;
     }
-    // A paused backup remains available for inspecting its uploaded file references.
-    // Copying its text must not silently delete those retained attachments.
-    if (!queuedDraft.rewindPaused) setQueuedDraft(null);
+    // Restored uploads have no browser File objects. Pause and retain their
+    // only durable copy while copying text, so editing cannot discard files or
+    // let the original queue dispatch behind the user's edited draft.
+    const retainUploadedCopy = Boolean(queuedDraft.uploadedAttachments?.length) && queuedDraft.attachments.length === 0;
+    if (!queuedDraft.rewindPaused && !retainUploadedCopy) setQueuedDraft(null);
+    else if (retainUploadedCopy && !queuedDraft.rewindPaused) setQueuedDraft({ ...queuedDraft, rewindPaused: true });
     setInput(queuedDraft.content);
     inputValueRef.current = queuedDraft.content;
     setAttachedFiles(queuedDraft.attachments);
     textareaRef.current?.focus();
-  }, [queuedDraft]);
+  }, [queuedDraft, setInput]);
 
   const deleteQueuedDraft = useCallback(() => {
     setQueuedDraft(null);
@@ -1120,6 +1162,7 @@ export function useChatComposerState({
       writeQueuedMessage(sessionKey, {
         content: queuedDraft.content,
         rewindPaused: queuedDraft.rewindPaused,
+        providerSessionId: queuedDraft.providerSessionId,
         options: queuedDraft.options,
         attachments: queuedDraft.uploadedAttachments,
       });

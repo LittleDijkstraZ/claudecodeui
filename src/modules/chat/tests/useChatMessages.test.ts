@@ -131,3 +131,12 @@ test('preserves both UI objects produced by an unchanged task notification', () 
   assert.equal(updated[0]?.isTaskNotification, true);
   assert.equal(updated[1]?.content, 'Detailed result');
 });
+
+test('a retained user copy preserves its confirmed non-admission and attachments in the visible transcript', () => {
+  const copy = message('saved-unsent', { role: 'user', content: 'Keep this question', delivery: 'failed', definitelyNotSubmitted: true,
+    clientMessageId: '22222222-2222-4222-8222-222222222222', files: [{ path: '/uploads/retained.txt' }] });
+  const visible = normalizedToChatMessages([copy]);
+  assert.equal(visible[0].definitelyNotSubmitted, true);
+  assert.equal(visible[0].delivery, 'failed');
+  assert.deepEqual(visible[0].files, [{ path: '/uploads/retained.txt' }]);
+});

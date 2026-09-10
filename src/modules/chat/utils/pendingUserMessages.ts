@@ -68,6 +68,7 @@ export function createPendingUserMessages(scope: string, onStorageFailure: () =>
       write(storageKey, { observedAt, message: { ...message,
         delivery: keepDelivery ? prior.delivery : message.delivery,
         deliveryError: keepDelivery ? prior.deliveryError : message.deliveryError,
+        definitelyNotSubmitted: keepDelivery ? prior.definitelyNotSubmitted : message.definitelyNotSubmitted,
         transcriptAnchorId: message.transcriptAnchorId || prior?.transcriptAnchorId,
         responseMessageId: message.responseMessageId || prior?.responseMessageId,
         runId: message.runId || prior?.runId,

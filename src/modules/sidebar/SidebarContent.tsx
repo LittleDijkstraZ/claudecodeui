@@ -219,6 +219,7 @@ export default function SidebarContent({
           <SidebarConversationGroups
             activeSessions={projectListProps.activeSessions}
             attentionSessionIds={projectListProps.attentionSessionIds}
+            onMarkSessionUnread={projectListProps.onMarkSessionUnread}
             selectedGroupId={selectedGroupId}
             onSelectGroup={onSelectGroup}
             query={searchFilter}
@@ -396,6 +397,7 @@ export default function SidebarContent({
           <SidebarRecentConversations
             activeSessions={projectListProps.activeSessions}
             attentionSessionIds={projectListProps.attentionSessionIds}
+            onMarkSessionUnread={projectListProps.onMarkSessionUnread}
             conversations={recentConversations}
             total={recentConversationsTotal}
             hasMore={recentConversationsHasMore}

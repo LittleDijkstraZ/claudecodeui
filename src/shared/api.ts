@@ -9,6 +9,7 @@ import {
 import { IS_PLATFORM } from '@/shared/utils';
 import { readVoiceConfig, voiceConfigHeaders } from '@/shared/voiceConfig';
 import type { McpAuthAttempt, ProviderMcpServer } from '@/shared/types';
+import type { ChatBackupBundle, LocalChatBackupStatus, LocalChatBackupSummary, RestoredChatBackup } from '@/shared/types';
 
 // Headers are a plain record rather than the full `HeadersInit` union so the
 // defaults below can be merged with a caller's headers by spreading.
@@ -777,7 +778,7 @@ export const hubApi = {
     return { path: result.path, suggestions: result.suggestions.filter((item: unknown) => item && typeof item === 'object' && 'path' in item && typeof item.path === 'string' && 'name' in item && typeof item.name === 'string') };
   },
   registerProject: (remoteId: string, path: string) => remoteRequest(remoteId, '/api/projects/create-project', { method: 'POST', body: JSON.stringify({ path }) }),
-  recent: (remoteId: string, offset = 0) => remoteRequest(remoteId, `/api/providers/sessions/recent?limit=100&offset=${offset}`),
+  recent: (remoteId: string, offset = 0, options: { signal?: AbortSignal } = {}) => remoteRequest(remoteId, `/api/providers/sessions/recent?limit=100&offset=${offset}`, options),
   running: (remoteId: string) => remoteRequest(remoteId, '/api/providers/sessions/running'),
   user: (remoteId: string) => remoteRequest(remoteId, '/api/auth/user'),
   groups: (remoteId: string) => remoteRequest(remoteId, '/api/conversation-groups'),
@@ -788,8 +789,34 @@ export const hubApi = {
   forkSession: (remoteId: string, sessionId: string, provider: string) => remoteRequest(remoteId, provider === 'claude' ? `/api/claude-sessions/${encodeURIComponent(sessionId)}/fork` : `/api/providers/sessions/${encodeURIComponent(sessionId)}/fork`, { method: 'POST', body: '{}' }),
   deleteSession: (remoteId: string, sessionId: string, permanent: boolean) => remoteRequest(remoteId, `/api/providers/sessions/${encodeURIComponent(sessionId)}?force=${permanent}`, { method: 'DELETE' }),
   renameSession: (remoteId: string, sessionId: string, summary: string) => remoteRequest(remoteId, `/api/providers/sessions/${encodeURIComponent(sessionId)}`, { method: 'PUT', body: JSON.stringify({ summary }) }),
+  exportChatBackup: (remoteId: string, sessionId: string, signal?: AbortSignal): Promise<ChatBackupBundle> => remoteRequest(remoteId, `/api/chat-backups/sessions/${encodeURIComponent(sessionId)}`, { signal: signal ?? AbortSignal.timeout(120_000) }),
+  restoreChatBackup: (remoteId: string, payload: { bundle: ChatBackupBundle; projectPath: string }): Promise<RestoredChatBackup> => remoteRequest(remoteId, '/api/chat-backups/restore', { method: 'POST', body: JSON.stringify(payload), signal: AbortSignal.timeout(120_000) }),
   socketUrl: (remoteId: string, token: string) => `${window.location.origin.replace(/^http/, 'ws')}/remote/${encodeURIComponent(remoteId)}/ws?token=${encodeURIComponent(token)}`,
 };
+
+//----------------- LOCAL HUB CHAT BACKUP API ------------
+
+async function localChatBackupRequest<T>(path = '', options: RequestInit = {}): Promise<T> {
+  const response = await fetch(`/hub-api/chat-backups${path}`, {
+    ...options,
+    headers: { 'Content-Type': 'application/json', ...options.headers },
+    signal: options.signal ?? AbortSignal.timeout(120_000),
+  });
+  return readApiJson<T>(response);
+}
+
+/** Reads only the local inventory and opt-in setting, never remote conversation contents. */
+export const getLocalChatBackups = (): Promise<LocalChatBackupStatus> => localChatBackupRequest();
+/** Persists opt-in on this Hub computer, independently of settings on remote machines. */
+export const setLocalChatBackupEnabled = (enabled: boolean): Promise<LocalChatBackupStatus> => localChatBackupRequest('/settings', { method: 'PUT', body: JSON.stringify({ enabled }) });
+/** Saves a fetched native archive only while local automatic backup is enabled. */
+export const saveLocalChatBackup = (payload: { remoteId: string; remoteName: string; sourceUpdatedAt: string | null; bundle: ChatBackupBundle }, signal?: AbortSignal): Promise<{ backup: LocalChatBackupSummary }> => localChatBackupRequest('', { method: 'PUT', body: JSON.stringify(payload), signal });
+/** Explicit file import works independently of the automatic backup switch. */
+export const importLocalChatBackup = (bundle: unknown): Promise<{ backup: LocalChatBackupSummary }> => localChatBackupRequest('/import', { method: 'POST', body: JSON.stringify({ bundle }) });
+/** Loads one archive for export or explicit restoration into another environment. */
+export const readLocalChatBackup = (id: string): Promise<ChatBackupBundle> => localChatBackupRequest(`/${encodeURIComponent(id)}`);
+/** Deletes only the local copy; remote conversations are unaffected. */
+export const deleteLocalChatBackup = async (id: string): Promise<void> => { await localChatBackupRequest(`/${encodeURIComponent(id)}`, { method: 'DELETE' }); };
 
 //----------------- CLAUDE SESSION ACTIONS API ------------
 

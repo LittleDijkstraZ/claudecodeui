@@ -1727,7 +1727,7 @@ async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryR
     }
   }
 
-  await attachCodexSubagentTranscripts(sessionFilePath, subagentsByCallId);
+  attachCodexSubagentIdentity(subagentsByCallId);
 
   // A rollback is recorded after the turns it retires, so a prompt can be
   // anchored and then retired later in the same file. Its rows still render —
@@ -1744,13 +1744,12 @@ async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryR
 }
 
 /**
- * Loads each spawned agent's own rollout and hangs its timeline off the
- * `Task` row that started it.
+ * Keeps the parent-file cache independent of spawned agents' mutable rollouts.
+ * Their timelines are loaded only after slicing the requested history page.
  */
-async function attachCodexSubagentTranscripts(
-  parentFilePath: string,
+function attachCodexSubagentIdentity(
   subagentsByCallId: Map<string, CodexSubagentRecord>,
-): Promise<void> {
+): void {
   for (const record of subagentsByCallId.values()) {
     let parsedInput: AnyRecord = {};
     try {
@@ -1765,26 +1764,10 @@ async function attachCodexSubagentTranscripts(
     // back to a neutral label.
     const subagent: SubagentInfo = {
       id: record.agentThreadId ?? record.toolCallId,
+      name: agentName,
       description: readNonEmptyString(parsedInput.description as string | undefined) ?? agentName,
       status: record.isComplete ? 'completed' : 'running',
     };
-
-    if (record.agentThreadId) {
-      const rolloutPath = await findCodexSubagentRollout(parentFilePath, record.agentThreadId);
-      if (rolloutPath) {
-        const transcript = await readCodexSubagentTranscript(rolloutPath);
-        if (transcript.activity.length > 0) {
-          record.message.subagentTools = transcript.activity
-            .slice(0, MAX_TRANSMITTED_SUBAGENT_ACTIVITIES)
-            .map(truncateSubagentActivity);
-          subagent.activityCount = transcript.activity.length;
-        }
-        subagent.name = transcript.nickname ?? agentName;
-        subagent.model = transcript.model;
-      }
-    }
-
-    subagent.name = subagent.name ?? agentName;
     record.message.subagent = subagent;
   }
 }
@@ -2209,6 +2192,61 @@ export class CodexSessionsProvider implements IProviderSessions {
   }
 
   /**
+   * Sessions service hydrates only the requested page after the parent cache
+   * has been sliced; direct provider reads use the same path. Child rollouts
+   * can change without a parent append, so never mutate cached message rows.
+   */
+  async enrichHistoryPage(
+    sessionId: string,
+    messages: NormalizedMessage[],
+    expectedProviderSessionId?: string,
+  ): Promise<NormalizedMessage[]> {
+    const session = sessionsDb.getSessionById(sessionId);
+    if (!session?.jsonl_path || !session.provider_session_id
+      || expectedProviderSessionId && session.provider_session_id !== expectedProviderSessionId) return messages;
+    const transcriptPath = session.jsonl_path;
+    const agentIds = [...new Set(messages.flatMap(message => {
+      // Missing native thread identities fall back to the launch's tool id.
+      // There is no child rollout to locate until Codex supplies that identity.
+      const agentId = message.subagent?.id;
+      return agentId && agentId !== message.toolId ? [agentId] : [];
+    }))];
+    if (!agentIds.length) return messages;
+    const agents = new Map<string, CodexSubagentTranscript>();
+    let nextAgent = 0;
+    const readNext = async () => {
+      while (nextAgent < agentIds.length) {
+        const agentId = agentIds[nextAgent++];
+        const rolloutPath = await findCodexSubagentRollout(transcriptPath, agentId);
+        if (!rolloutPath) continue;
+        try {
+          agents.set(agentId, await readCodexSubagentTranscript(rolloutPath));
+        } catch {
+          // A child can disappear between lookup and open. Its optional
+          // timeline must not prevent the main conversation from loading.
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(8, agentIds.length) }, readNext));
+    return messages.map(message => {
+      const transcript = message.subagent && agents.get(message.subagent.id);
+      if (!transcript || !message.subagent) return message;
+      return {
+        ...message,
+        subagentTools: transcript.activity.length
+          ? transcript.activity.slice(0, MAX_TRANSMITTED_SUBAGENT_ACTIVITIES).map(truncateSubagentActivity)
+          : undefined,
+        subagent: {
+          ...message.subagent,
+          name: transcript.nickname ?? message.subagent.name,
+          model: transcript.model ?? message.subagent.model,
+          activityCount: transcript.activity.length,
+        },
+      };
+    });
+  }
+
+  /**
    * Loads Codex JSONL history and keeps token usage metadata when the
    * transcript reported it.
    */
@@ -2256,7 +2294,9 @@ export class CodexSessionsProvider implements IProviderSessions {
     const { page, hasMore } = sliceTailPage(transcript, normalizedLimit, normalizedOffset);
 
     return {
-      messages: page,
+      messages: options.deferEnrichment
+        ? page
+        : await this.enrichHistoryPage(sessionId, page, options.providerSessionId),
       total,
       hasMore,
       offset: normalizedOffset,

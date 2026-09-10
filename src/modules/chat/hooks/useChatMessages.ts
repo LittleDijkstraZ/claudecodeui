@@ -257,6 +257,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
               delivery: msg.delivery,
               isUnlocatedLocalCopy: msg.isUnlocatedLocalCopy,
               deliveryError: msg.deliveryError,
+              definitelyNotSubmitted: msg.definitelyNotSubmitted,
               content,
               timestamp: msg.timestamp,
               images,

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { hubApi, remoteToken } from '@/shared/api';
 import type { HubRemote, HubRemoteState } from '@/shared/types';
-import { getHubUnread, readHubConversation, recordHubUnread } from '@/modules/remote-hub/utils/hubUnread';
+import { getHubUnread, markHubConversationUnread, readHubConversation, recordHubUnread } from '@/modules/remote-hub/utils/hubUnread';
 import { normalizeConversation } from '@/modules/remote-hub/utils/hubClient';
 const initial = (): HubRemoteState => ({
   status: 'loading',
@@ -107,6 +107,17 @@ export function useHubConnections(remotes: HubRemote[], onNotification: (remoteI
         socket.onmessage = event => {
           try {
             const message = JSON.parse(event.data);
+            if (message.kind === 'session_upserted' && typeof message.sessionId === 'string'
+              && typeof message.transcriptVersion === 'string' && message.transcriptVersion) {
+              const eventId = `transcript:${message.transcriptVersion}`;
+              const key = `${remote.id}:${message.sessionId}:${eventId}`;
+              if (!activityEventKeys.current.has(key)) {
+                activityEventKeys.current.add(key);
+                if (activityEventKeys.current.size > 1000) activityEventKeys.current.delete(activityEventKeys.current.values().next().value!);
+                const attention = recordHubUnread(remote.id, message.sessionId, eventId);
+                setStates(current => ({ ...current, [remote.id]: { ...(current[remote.id] ?? initial()), attention } }));
+              }
+            }
             const activityKey = `${remote.id}:${message.sessionId}:${String(message.eventId ?? `${message.runId}:${message.status}:${message.seq}`)}`;
             if (message.kind === 'session_activity' && typeof message.sessionId === 'string' && ['running', 'complete', 'error', 'permission', 'response_complete'].includes(message.status) && !activityEventKeys.current.has(activityKey)) {
               activityEventKeys.current.add(activityKey);
@@ -154,11 +165,19 @@ export function useHubConnections(remotes: HubRemote[], onNotification: (remoteI
       for (const socket of sockets) socket.close();
     };
   }, [remotes, refresh, tokenSignature]);
-  const markRead = useCallback((remoteId: string, sessionId: string) => {
-    readHubConversation(remoteId, sessionId);
+  const markRead = useCallback((remoteId: string, sessionId: string, automatic = false) => {
+    if (!readHubConversation(remoteId, sessionId, automatic)) return;
     setStates(current => current[remoteId]?.attention.includes(sessionId) ? { ...current, [remoteId]: { ...current[remoteId], attention: current[remoteId].attention.filter(id => id !== sessionId) } } : current);
   }, []);
+  const markUnread = useCallback((remoteId: string, sessionId: string) => {
+    markHubConversationUnread(remoteId, sessionId);
+    setStates(current => ({ ...current, [remoteId]: {
+      ...(current[remoteId] ?? initial()),
+      attention: [...new Set([...(current[remoteId]?.attention ?? []), sessionId])]
+    } }));
+  }, []);
   return {
+    markUnread,
     markRead,
     states,
     refresh,

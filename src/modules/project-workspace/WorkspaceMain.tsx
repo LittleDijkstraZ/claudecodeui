@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import { PanelRightClose, PanelRightOpen, Settings, SlidersHorizontal } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -13,6 +13,7 @@ import { TaskMasterPanel, useTaskMasterProjectSync, useTasksSettings } from '@/m
 import type { AppTab, CodeEditorDiffInfo, CodeEditorFile, Project, ProjectSession, SessionEstablishedContext, SessionNavigationOptions, SettingsMainTab, WorkspacePanelTab } from '@/shared/types';
 import { useUiPreferences } from '@/shared/context/UiPreferencesContext';
 import { useModalVisibility } from '@/shared/hooks/useModalVisibility';
+import { isConversationDocumentVisible, observeConversationVisibility } from '@/shared/utils';
 import { useFileOpenResolver } from '@/modules/project-workspace/hooks/useFileOpenResolver';
 import { BtwPanels, SideChatPanel, WorkspacePanelLayout, useWorkspacePanelActions, useWorkspacePanels } from '@/modules/workspace-panels';
 import WorkspaceTabs from '@/modules/project-workspace/WorkspaceTabs';
@@ -56,6 +57,15 @@ function WorkspaceMain({
   const preferences = useUiPreferences();
   const modalVisible = useModalVisibility();
   const mainCovered = settingsOpen || modalVisible;
+  // Retained remote and side-chat frames keep their streams but defer hidden history reads.
+  const [conversationVisible, setConversationVisible] = useState(false);
+  useLayoutEffect(() => {
+    const updateVisibility = () => setConversationVisible(isConversationDocumentVisible());
+    const stopObserving = observeConversationVisibility(updateVisibility);
+    // Wait for the layout boundary to mount before granting initial history requests.
+    updateVisibility();
+    return stopObserving;
+  }, []);
   const { showRawParameters, showThinking, sendByCtrlEnter } = preferences;
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
   const browserUseEnabled = useBrowserUseEnabled();
@@ -99,7 +109,7 @@ function WorkspaceMain({
     {isLoading ? <WorkspaceStateView mode="loading" isMobile={isMobile} onMenuClick={onMenuClick} />
       : !selectedProject ? <WorkspaceStateView mode="empty" isMobile={isMobile} onMenuClick={onMenuClick} />
         : <WorkspaceErrorBoundary showDetails><ChatInterface
-          isActive={!mainCovered}
+          isActive={!mainCovered && conversationVisible}
           selectedProject={selectedProject} selectedSession={selectedSession} ws={ws} sendMessage={sendMessage}
           onFileOpen={handleFileOpen} onNavigateToSession={onNavigateToSession} onSessionEstablished={onSessionEstablished}
           onShowSettings={onShowSettings} showRawParameters={showRawParameters} showThinking={showThinking}

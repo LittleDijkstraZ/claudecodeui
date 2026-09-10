@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'vitest';
 import React from 'react';
 import type { ComponentProps, MouseEvent, ReactElement } from 'react';
-import { render } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { createInstance } from 'i18next';
 import type { TFunction } from 'i18next';
 
@@ -92,4 +92,15 @@ test('recent activity alone never creates an unread indicator', () => {
   const base = props();
   const { container } = render(<SidebarGroupConversationRow {...base} conversation={{ ...base.conversation, lastActivity: base.currentTime.toISOString() }} selected={false} />);
   assert.equal(container.querySelector('[data-session-status]'), null);
+});
+
+
+test('the conversation menu marks unread without opening the conversation', () => {
+  const selected: unknown[][] = [];
+  const marked: string[] = [];
+  render(<SidebarGroupConversationRow {...props((...args) => selected.push(args))} onMarkSessionUnread={id => marked.push(id)} />);
+  fireEvent.click(screen.getByRole('button', { name: /Options for/ }));
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Mark as unread' }));
+  assert.deepEqual(marked, ['session-1']);
+  assert.deepEqual(selected, []);
 });

@@ -10,10 +10,10 @@ import { useSessionProtection } from '@/shared/hooks/useSessionProtection';
 import { readQueuedMessage, resetChatDrafts } from '@/shared/chatDrafts';
 import type { ChatMessage, Project, ServerEvent, SessionActivity } from '@/shared/types';
 
-const { uploadFiles, createSession } = vi.hoisted(() => ({ uploadFiles: vi.fn(), createSession: vi.fn() }));
+const { uploadFiles, createSession, readIdentity } = vi.hoisted(() => ({ uploadFiles: vi.fn(), createSession: vi.fn(), readIdentity: vi.fn() }));
 vi.mock('@/shared/api', () => {
   const ok = (data: unknown) => Promise.resolve({ ok: true, json: async () => data });
-  return { api: {
+  return { claudeExecutionSettingsApi: { identity: readIdentity }, api: {
     assets: { uploadFiles },
     user: { drafts: () => ok({ drafts: [] }), saveDraft: () => ok({}), deleteDraft: () => ok({}), preferences: () => ok({ preferences: {} }), savePreferences: () => ok({}) },
     commands: { list: () => ok({ commands: [] }) }, files: { search: () => ok({ files: [] }) },
@@ -24,7 +24,10 @@ vi.mock('@/shared/api', () => {
 const PROJECT: Project = { projectId: 'remote-project', displayName: 'Remote project', fullPath: '/remote/work' };
 const BACKGROUND: SessionActivity = { startedAt: 100, statusText: null, canInterrupt: true, phase: 'background', acceptsInput: true, backgroundTasks: 2, executionId: 'execution-one' };
 afterEach(() => { vi.restoreAllMocks(); });
-beforeEach(() => { localStorage.clear(); resetChatDrafts(); uploadFiles.mockReset(); createSession.mockReset(); });
+beforeEach(() => {
+  localStorage.clear(); resetChatDrafts(); uploadFiles.mockReset(); createSession.mockReset();
+  readIdentity.mockReset().mockResolvedValue({ ok: true, json: async () => ({ success: true, data: { sessionId: 'session-a', providerSessionId: 'native-a' } }) });
+});
 
 function composer(activity: SessionActivity, connected = true, sessionId: string | null = 'session-a') {
   const send = vi.fn<(message: unknown) => boolean>(() => connected);
@@ -60,7 +63,7 @@ test.each(['background', 'foreground'] as const)('a live %s query accepts multip
   expect(readQueuedMessage('session-a')).toBeNull();
 });
 
-test.each([undefined, false])('missing/stale input capability (%s) asks the remote to admit the explicit send', async acceptsInput => {
+test.each([undefined])('missing input capability (%s) asks the remote to admit the explicit send', async acceptsInput => {
   const view = composer({ startedAt: 100, statusText: null, canInterrupt: true, acceptsInput });
   await view.submit('Check this input');
   expect(view.send).toHaveBeenCalledTimes(1);
@@ -68,6 +71,69 @@ test.each([undefined, false])('missing/stale input capability (%s) asks the remo
   expect(readQueuedMessage('session-a')).toBeNull();
   expect(view.add.mock.calls.map(([message]) => message.delivery)).toEqual(['queued']);
   expect(view.processing).not.toHaveBeenCalled();
+});
+
+test('explicitly closed input keeps Queue in a durable context-bound draft without sending a websocket prompt', async () => {
+  const view = composer({ ...BACKGROUND, acceptsInput: false });
+  await view.submit('Wait for the current process');
+  expect(view.send).not.toHaveBeenCalled();
+  expect(view.add).not.toHaveBeenCalled();
+  expect(readIdentity).toHaveBeenCalledWith('session-a');
+  expect(readQueuedMessage('session-a')).toMatchObject({ content: 'Wait for the current process', providerSessionId: 'native-a' });
+  expect(view.result.current.queuedDraft).toMatchObject({ content: 'Wait for the current process', providerSessionId: 'native-a' });
+  expect(view.result.current.input).toBe('');
+  expect(view.processing).not.toHaveBeenCalled();
+});
+
+test('a second Queue keeps the existing queued message and retains the new draft', async () => {
+  const view = composer({ ...BACKGROUND, acceptsInput: false });
+  await view.submit('First queued message');
+  await view.submit('Second draft to keep');
+  expect(readQueuedMessage('session-a')?.content).toBe('First queued message');
+  expect(view.result.current.queuedDraft?.content).toBe('First queued message');
+  expect(view.result.current.input).toBe('Second draft to keep');
+  expect(view.send).not.toHaveBeenCalled();
+  expect(readIdentity).toHaveBeenCalledTimes(1);
+});
+
+test('a closed-input queue preserves uploaded attachments and its original context across remount', async () => {
+  uploadFiles.mockResolvedValueOnce({ ok: true, json: async () => ({ attachments: [{ path: '/uploads/queued.txt' }] }) });
+  const view = composer({ ...BACKGROUND, acceptsInput: false });
+  const file = new File(['saved'], 'queued.txt');
+  await act(async () => { view.result.current.setInput('Saved with attachment'); view.result.current.setAttachedFiles([file]); });
+  await act(async () => { await view.result.current.handleSubmit({ preventDefault() {} } as never); });
+  expect(readQueuedMessage('session-a')).toMatchObject({ providerSessionId: 'native-a', attachments: [{ path: '/uploads/queued.txt' }] });
+  expect(view.send).not.toHaveBeenCalled();
+  view.unmount();
+  const restored = composer({ ...BACKGROUND, acceptsInput: false });
+  expect(restored.result.current.queuedDraft).toMatchObject({ providerSessionId: 'native-a', uploadedAttachments: [{ path: '/uploads/queued.txt' }] });
+  await act(async () => restored.result.current.editQueuedDraft());
+  expect(restored.result.current.input).toBe('Saved with attachment');
+  expect(readQueuedMessage('session-a')).toMatchObject({ providerSessionId: 'native-a', rewindPaused: true, attachments: [{ path: '/uploads/queued.txt' }] });
+  expect(uploadFiles).toHaveBeenCalledOnce();
+});
+
+test('an unavailable native context keeps the unsent draft instead of creating an unbound deferred send', async () => {
+  readIdentity.mockResolvedValueOnce({ ok: true, json: async () => ({ success: true, data: { sessionId: 'session-a', providerSessionId: null } }) });
+  const view = composer({ ...BACKGROUND, acceptsInput: false });
+  await view.submit('Keep while starting');
+  expect(view.result.current.input).toBe('Keep while starting');
+  expect(readQueuedMessage('session-a')).toBeNull();
+  expect(view.send).not.toHaveBeenCalled();
+});
+
+test('rewind during closed-input queue preparation preserves the draft and never queues into the replacement context', async () => {
+  let release!: (value: unknown) => void;
+  readIdentity.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+  const view = composer({ ...BACKGROUND, acceptsInput: false });
+  await act(async () => view.result.current.setInput('Original context question'));
+  let pending!: Promise<void>;
+  await act(async () => { pending = view.result.current.handleSubmit({ preventDefault() {} } as never); await Promise.resolve(); });
+  act(() => window.dispatchEvent(new CustomEvent('cloudcli:session-mutation', { detail: { sessionId: 'session-a', requestId: 'rewind-during-queue', phase: 'started' } })));
+  await act(async () => { release({ ok: true, json: async () => ({ success: true, data: { sessionId: 'session-a', providerSessionId: 'native-a' } }) }); await pending; });
+  expect(readQueuedMessage('session-a')).toBeNull();
+  expect(view.result.current.input).toBe('Original context question');
+  expect(view.send).not.toHaveBeenCalled();
 });
 
 test('a disconnected send is explicitly not delivered and never stops the Workflow', async () => {
@@ -246,8 +312,13 @@ test.each([true, false])('upload completion preserves a same-text draft in anoth
   await act(async () => { view.result.current.setInput('Same wording'); });
   await act(async () => { release({ ok: true, json: async () => ({ attachments: [{ path: 'one.txt' }] }) }); await pending; });
   expect(view.result.current.input).toBe('Same wording');
-  expect(view.send.mock.calls[0][0]).toMatchObject({ sessionId: 'session-a' });
-  expect(readQueuedMessage('session-a')).toBeNull();
+  if (acceptsInput) {
+    expect(view.send.mock.calls[0][0]).toMatchObject({ sessionId: 'session-a' });
+    expect(readQueuedMessage('session-a')).toBeNull();
+  } else {
+    expect(view.send).not.toHaveBeenCalled();
+    expect(readQueuedMessage('session-a')).toMatchObject({ content: 'Same wording', providerSessionId: 'native-a', attachments: [{ path: 'one.txt' }] });
+  }
 });
 
 test.each([true, false])('upload completion preserves attachments added without changing the text (acceptsInput=%s)', async acceptsInput => {
@@ -371,7 +442,7 @@ test('status watermark snapshots do not consume text sequence frames or suppress
 });
 
 
-test.each([undefined, false])('retry reaches remote admission with a new UUID despite stale capability %s, preserving another edit draft', async acceptsInput => {
+test.each([undefined])('retry reaches remote admission with a new UUID despite unknown capability %s, preserving another edit draft', async acceptsInput => {
   const view = composer({ startedAt: 100, statusText: null, canInterrupt: true, acceptsInput });
   const failed: ChatMessage = { type: 'user', sessionId: 'session-a', timestamp: 1, content: 'Retained question', delivery: 'failed', clientMessageId: '22222222-2222-4222-8222-222222222222', files: [{ path: '/uploads/retry.txt' }] };
   await act(async () => { view.result.current.beginEditMessage({ type: 'user', content: 'Different edit draft', transcriptAnchorId: 'different-anchor', timestamp: 1 }); });
@@ -385,6 +456,54 @@ test.each([undefined, false])('retry reaches remote admission with a new UUID de
   expect(view.result.current.editingAnchorId).toBe('different-anchor');
   expect(failed.delivery).toBe('failed');
   expect(uploadFiles).not.toHaveBeenCalled();
+  expect(readQueuedMessage('session-a')).toBeNull();
+});
+
+test('a saved retry waits for explicit closed input without duplicating the queue or clearing a newer draft', async () => {
+  const view = composer({ ...BACKGROUND, acceptsInput: false });
+  const saved: ChatMessage = { type: 'user', sessionId: 'session-a', timestamp: 1, content: 'Saved unsent', delivery: 'failed', definitelyNotSubmitted: true, clientMessageId: '22222222-2222-4222-8222-222222222222', files: [{ path: '/uploads/saved.txt' }] };
+  await act(async () => view.result.current.setInput('Newer draft'));
+  await act(async () => view.result.current.retryUnconfirmedMessage(saved));
+  expect(view.send).not.toHaveBeenCalled();
+  expect(readQueuedMessage('session-a')).toBeNull();
+  expect(view.result.current.input).toBe('Newer draft');
+  expect(saved.files).toEqual([{ path: '/uploads/saved.txt' }]);
+});
+
+test.each([true, undefined])('only explicit pre-admission rejection marks a saved copy definitely unsent (%s)', definitelyNotSubmitted => {
+  const view = handlers();
+  view.emit({ ...receipt('queued'), files: [{ path: '/uploads/recover.txt' }] });
+  view.emit({ kind: 'protocol_error', code: 'INPUT_NOT_ACCEPTED', sessionId: 'session-a', clientMessageId: '16dfd601-35b0-409f-aec3-f6cb10b48441', error: 'Input unavailable', isProcessing: true, ...BACKGROUND, acceptsInput: false, definitelyNotSubmitted });
+  const saved = view.result.current.store.getMessages('session-a').find(message => message.clientMessageId)!;
+  expect(saved.delivery).toBe('failed');
+  expect(saved.definitelyNotSubmitted).toBe(definitelyNotSubmitted);
+  expect(saved.files).toEqual([{ path: '/uploads/recover.txt' }]);
+  expect(view.result.current.protection.processingSessions.has('session-a')).toBe(true);
+  view.emit(receipt('queued'));
+  expect(view.result.current.store.getMessages('session-a').find(message => message.clientMessageId)?.definitelyNotSubmitted).toBe(definitelyNotSubmitted);
+  expect(readQueuedMessage('session-a')).toBeNull();
+});
+
+test('definitely unsent copies display a deliberate send action, distinct from ambiguous delivery', () => {
+  const retry = vi.fn();
+  const view = render(<MessageDeliveryStatus message={{ type: 'user', timestamp: 1, delivery: 'failed', definitelyNotSubmitted: true }} onRetry={retry} />);
+  expect(view.getByRole('status').textContent).toMatch(/Not submitted|尚未提交/);
+  expect(view.getByRole('button').textContent).toMatch(/Send saved|发送已保存|傳送已儲存/);
+  expect(retry).not.toHaveBeenCalled();
+});
+
+test('definite pre-admission rejection survives reload and only native delivery clears its classification', () => {
+  const view = handlers();
+  view.emit({ ...receipt('queued'), files: [{ path: '/uploads/retained.txt' }] });
+  view.emit({ kind: 'protocol_error', code: 'INPUT_NOT_ACCEPTED', sessionId: 'session-a', clientMessageId: '16dfd601-35b0-409f-aec3-f6cb10b48441', definitelyNotSubmitted: true, error: 'Not admitted', isProcessing: true, ...BACKGROUND });
+  view.unmount();
+  const restored = handlers();
+  expect(restored.result.current.store.getMessages('session-a').find(message => message.clientMessageId)).toMatchObject({
+    delivery: 'failed', definitelyNotSubmitted: true, files: [{ path: '/uploads/retained.txt' }],
+  });
+  restored.emit(receipt('delivered'));
+  expect(restored.result.current.store.getMessages('session-a').find(message => message.clientMessageId)).toMatchObject({ delivery: 'delivered' });
+  expect(restored.result.current.store.getMessages('session-a').find(message => message.clientMessageId)?.definitelyNotSubmitted).toBeUndefined();
   expect(readQueuedMessage('session-a')).toBeNull();
 });
 

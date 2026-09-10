@@ -273,7 +273,8 @@ export function useChatRealtimeHandlers({
             // Input rejection is not process completion. Reconcile the remote
             // ownership snapshot without clearing a Workflow or a failed abort.
             if (typeof msg.clientMessageId === 'string') {
-              sessionStore.updateMessageDelivery(sid, msg.clientMessageId, 'failed', String(msg.error || 'Request failed'));
+              sessionStore.updateMessageDelivery(sid, msg.clientMessageId, 'failed', String(msg.error || 'Request failed'),
+                msg.code === 'INPUT_NOT_ACCEPTED' && msg.definitelyNotSubmitted === true ? true : undefined);
             }
             if (msg.isProcessing === true) onSessionProcessing?.(sid, readSessionRuntimeState(msg));
             else if (msg.isProcessing === false) onSessionIdle?.(sid);

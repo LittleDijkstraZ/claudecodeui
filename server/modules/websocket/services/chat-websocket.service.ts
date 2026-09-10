@@ -11,14 +11,14 @@ import {
   isImageAttachmentDescriptor,
   normalizeAttachmentDescriptors,
   type ChatAttachmentDescriptor,
-} from '@/shared/image-attachments.js';
+} from '@/shared/index.js';
 import type {
   AnyRecord,
   AuthenticatedWebSocketRequest,
   LLMProvider,
   ProviderPermissionDecision,
   ProviderRuntimeWriter,
-} from '@/shared/types.js';
+} from '@/shared/index.js';
 import { parseIncomingJsonObject, createNormalizedMessage } from '@/shared/index.js';
 
 /**
@@ -124,13 +124,15 @@ function sendProtocolError(
   code: string,
   error: string,
   sessionId?: string,
-  clientMessageId?: string
+  clientMessageId?: string,
+  definitelyNotSubmitted = false,
 ): void {
   sendJson(ws, {
     kind: 'protocol_error',
     code,
     error,
     ...(clientMessageId ? { clientMessageId } : {}),
+    ...(definitelyNotSubmitted ? { definitelyNotSubmitted: true } : {}),
     sessionId: sessionId ?? null,
     ...(sessionId ? chatRunRegistry.getRuntimeSnapshot(sessionId) : { isProcessing: false, acceptsInput: false }),
     timestamp: new Date().toISOString(),
@@ -294,7 +296,15 @@ async function dispatchRun(
     }
     if (ws) chatRunRegistry.attachConnection(sessionId, ws);
     try {
-      if (!await dependencies.runtime.enqueue(provider, sessionId, command, runtimeOptions)) throw new Error('The existing Claude input stream is not ready. This message was not submitted; retry after its state updates.');
+      if (!await dependencies.runtime.enqueue(provider, sessionId, command, runtimeOptions)) {
+        const reason = previousReceipt
+          ? 'The existing Claude input stream is not ready. Review the original message delivery status before sending another copy.'
+          : 'The existing Claude input stream is not ready. This message was not submitted; send the saved copy after its state updates.';
+        // False occurs before the runtime reserves input. A prior receipt still
+        // owns its delivery outcome, so a UUID retry must never be relabeled unsent.
+        if (ws) sendProtocolError(ws, 'INPUT_NOT_ACCEPTED', reason, sessionId, clientMessageId, !previousReceipt);
+        return { started: false, error: reason };
+      }
       return { started: true, error: null };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);

@@ -8,7 +8,7 @@ import type { WebSocket } from 'ws';
 
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import { sessionsService } from '@/modules/providers/index.js';
-import type { AnyRecord, AuthenticatedWebSocketRequest, LLMProvider } from '@/shared/types.js';
+import type { AnyRecord, AuthenticatedWebSocketRequest, LLMProvider } from '@/shared/index.js';
 
 import { chatRunRegistry } from '../services/chat-run-registry.service.js';
 import { handleChatConnection } from '../services/chat-websocket.service.js';
@@ -102,10 +102,23 @@ for (const rejection of ['false', 'throw'] as const) {
       assert.equal(error.isProcessing, true);
       assert.equal(error.runId, run.runId);
       assert.equal(error.acceptsInput, false);
+      assert.equal(error.definitelyNotSubmitted, rejection === 'false' ? true : undefined);
       assert.equal(connection.frames.filter(frame => frame.kind === 'complete').length, 0);
     }, { enqueue: async () => { if (rejection === 'throw') throw new Error('fixture input closed'); return false; } });
   });
 }
+
+test('a closed-input retry with an existing receipt never claims the original message was definitely unsent', { concurrency: false }, async () => {
+  await withFixture(async ({ sessionId, connection, run }) => {
+    run.writer.send({ kind: 'status', text: 'message_delivery', provider: 'claude', clientMessageId: CLIENT_ID,
+      sessionId, delivery: 'queued', content: 'Previously admitted', images: [], files: [] });
+    await connection.receive({ type: 'chat.send', sessionId, clientMessageId: CLIENT_ID, content: 'Previously admitted' });
+    const error = connection.frames.find(frame => frame.code === 'INPUT_NOT_ACCEPTED');
+    assert.ok(error);
+    assert.equal(error.definitelyNotSubmitted, undefined);
+    assert.equal(run.status, 'running');
+  }, { enqueue: async () => false });
+});
 
 test('invalid client UUIDs never reach the live input queue', { concurrency: false }, async () => {
   await withFixture(async ({ sessionId, connection, run, enqueueCalls }) => {

@@ -21,7 +21,7 @@ const change = (extra: Partial<ConversationFileChange> = {}): ConversationFileCh
 });
 function renderBar(turns: ConversationChangeTurn[]) {
   return render(<I18nextProvider i18n={i18n}><ConversationChangesBar turns={turns} isProcessing={false}
-    hasEarlierMessages={false} isLoadingEarlierMessages={false} onLoadAllMessages={() => {}} onJumpToChange={() => {}} /></I18nextProvider>);
+    hasEarlierMessages={false} isLoadingEarlierMessages={false} onLoadAllMessages={async () => []} onJumpToChange={() => {}} /></I18nextProvider>);
 }
 
 test('the compact trigger displays colored totals for the latest turn, then follows the selected review scope', () => {
@@ -91,7 +91,7 @@ test('an earlier selected turn that disappears after a rewind falls back to fres
   fireEvent.click(within(screen.getByTestId('conversation-changes-bar')).getByRole('button'));
   fireEvent.change(screen.getByRole('combobox', { name: 'Changes to review' }), { target: { value: 'turn:old-selected' } });
   view.rerender(<I18nextProvider i18n={i18n}><ConversationChangesBar turns={[{ id: 'fresh', label: 'Fresh branch', timestamp: '2026-09-07', changes: [change({ filePath: '/project/fresh.ts' })] }]}
-    isProcessing={false} hasEarlierMessages={false} isLoadingEarlierMessages={false} onLoadAllMessages={() => {}} onJumpToChange={() => {}} /></I18nextProvider>);
+    isProcessing={false} hasEarlierMessages={false} isLoadingEarlierMessages={false} onLoadAllMessages={async () => []} onJumpToChange={() => {}} /></I18nextProvider>);
   assert.equal((screen.getByRole('combobox', { name: 'Changes to review' }) as HTMLSelectElement).value, 'latest');
   assert.ok(within(screen.getByRole('dialog')).getByRole('button', { name: '/project/fresh.ts 1 edit' }));
 });

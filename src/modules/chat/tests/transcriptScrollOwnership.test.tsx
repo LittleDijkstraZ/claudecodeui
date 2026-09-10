@@ -72,14 +72,14 @@ function createContainer(scrollHeight: number, clientHeight: number) {
   };
 }
 
-function createStore(messagesBySession: Map<string, NormalizedMessage[]>) {
+function createStore(messagesBySession: Map<string, NormalizedMessage[]>, hasMore = false) {
   // A hydrated slot, so the session-loading effect takes its early return
   // instead of re-fetching on every render.
   const slotFor = (sessionId: string) => ({
     fetchedAt: 1,
     status: 'idle' as const,
     total: messagesBySession.get(sessionId)?.length ?? 0,
-    hasMore: false,
+    hasMore,
     offset: messagesBySession.get(sessionId)?.length ?? 0,
   });
 
@@ -394,6 +394,45 @@ describe('following growing replies', () => {
     expect(container.element.scrollTop).toBe(5250);
   });
 
+  it.each([0, 120])('keeps following when a shrinking composer enlarges the viewport before %i pixels of new output', async growth => {
+    const { hook, container, observer } = await followingFixture();
+    await act(async () => {
+      container.resize(800);
+      // The browser clamps the old bottom when the composer/attachment tray
+      // closes. A stream update can arrive before that scroll event is handled.
+      container.element.scrollTop = 4500;
+      container.grow(5000 + growth);
+      container.element.dispatchEvent(new Event('scroll'));
+      observer.fire();
+      await vi.advanceTimersByTimeAsync(30);
+    });
+    expect(hook.result.current.isUserScrolledUp).toBe(false);
+    expect(container.element.scrollTop).toBe(4200 + growth);
+    await act(async () => {
+      container.grow(5600);
+      observer.fire();
+      await vi.advanceTimersByTimeAsync(30);
+    });
+    expect(container.element.scrollTop).toBe(4800);
+  });
+
+  it.each([false, true])('a lazy-row anchor correction preserves the reader pause state (%s)', async paused => {
+    const { hook, container, observer } = await followingFixture();
+    await act(async () => {
+      if (paused) container.userScroll(4400);
+      // Replacing estimates above the anchor can shift it up even while a
+      // different row grows enough that total content height increases.
+      container.grow(5600);
+      container.element.scrollTop = 4200;
+      hook.result.current.onTranscriptLayoutScroll();
+      container.element.dispatchEvent(new Event('scroll'));
+      observer.fire();
+      await vi.advanceTimersByTimeAsync(30);
+    });
+    expect(hook.result.current.isUserScrolledUp).toBe(paused);
+    expect(container.element.scrollTop).toBe(paused ? 4200 : 5100);
+  });
+
   it('small upward wheel gestures pause immediately, keep their position through resize, and resume only at the bottom', async () => {
     const { hook, container, observer } = await followingFixture();
     await act(async () => {
@@ -496,4 +535,53 @@ it('an explicit jump replaces an old queued follow timer so one later chunk stil
   await act(async () => { await vi.advanceTimersByTimeAsync(100); });
   expect(container.element.scrollTop).toBe(5100);
   expect(container.writes).toContain(5600);
+});
+
+
+describe('older history scroll restoration', () => {
+  it('anchors an unmounted row and respects scrolling while the page is in flight', async () => {
+    const session = { id: SESSION_A } as ProjectSession;
+    const messages = new Map([[SESSION_A, [buildMessage(1, '2026-09-08T00:00:00Z')]]]);
+    const store = createStore(messages, true);
+    const hook = await renderChatSessionState({ session, store });
+    const container = createContainer(5000, 500);
+    const row = document.createElement('div');
+    row.setAttribute('data-chat-row', '');
+    container.content.appendChild(row);
+    let rowTop = 80;
+    container.element.getBoundingClientRect = () => ({ top: 0, bottom: 500 } as DOMRect);
+    row.getBoundingClientRect = () => ({ top: rowTop - container.element.scrollTop, bottom: rowTop + 200 - container.element.scrollTop } as DOMRect);
+    (hook.result.current.scrollContainerRef as { current: HTMLDivElement | null }).current = container.element;
+    act(() => { hook.result.current.setIsUserScrolledUp(true); });
+    container.element.scrollTop = 80;
+    let finishPage!: (value: Awaited<ReturnType<typeof store.fetchMore>>) => void;
+    store.fetchMore.mockImplementationOnce(() => new Promise(resolve => { finishPage = resolve; }));
+    let loading!: Promise<boolean>;
+    act(() => { loading = hook.result.current.loadOlderMessages(container.element); });
+    act(() => { container.userScroll(20); });
+    await act(async () => {
+      // Only 800px was prepended; another 400px arrived BELOW the reader.
+      rowTop += 800;
+      container.grow(6200);
+      finishPage({ slot: store.getSessionSlot(SESSION_A), prependedCount: 10 });
+      await loading;
+    });
+    expect(container.element.scrollTop).toBe(820);
+    expect(row.getBoundingClientRect().top).toBe(60);
+  });
+
+  it('restores the cached-history window when only visibleMessageCount changes', async () => {
+    const session = { id: SESSION_A } as ProjectSession;
+    const store = createStore(new Map([[SESSION_A, [buildMessage(1, '2026-09-08T00:00:00Z')]]]));
+    const hook = await renderChatSessionState({ session, store });
+    const container = createContainer(5000, 500);
+    (hook.result.current.scrollContainerRef as { current: HTMLDivElement | null }).current = container.element;
+    act(() => { hook.result.current.setIsUserScrolledUp(true); });
+    container.userScroll(40);
+    act(() => {
+      hook.result.current.loadEarlierMessages();
+      container.grow(5800);
+    });
+    expect(container.element.scrollTop).toBe(840);
+  });
 });

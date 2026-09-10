@@ -32,6 +32,8 @@ async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promis
 
   closeConnection();
   process.env.DATABASE_PATH = path.join(tempDirectory, 'auth.db');
+  // Keep regression fixtures independent of any developer database.
+  await writeFile(process.env.DATABASE_PATH, '');
   await initializeDatabase();
 
   try {

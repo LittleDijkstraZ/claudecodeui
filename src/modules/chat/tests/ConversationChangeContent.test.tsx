@@ -93,7 +93,7 @@ test('an empty current turn is not mislabeled with earlier file changes', () => 
         isProcessing
         hasEarlierMessages={false}
         isLoadingEarlierMessages={false}
-        onLoadAllMessages={() => {}}
+        onLoadAllMessages={async () => []}
         onJumpToChange={() => {}}
       />
     </I18nextProvider>,
@@ -110,7 +110,7 @@ test('a new turn without recorded or unloaded edits adds no empty composer bar',
     <I18nextProvider i18n={i18n}>
       <ConversationChangesBar turns={[{ id: 'new', label: 'Current request', timestamp: new Date(), changes: [] }]}
         isProcessing hasEarlierMessages={false} isLoadingEarlierMessages={false}
-        onLoadAllMessages={() => {}} onJumpToChange={() => {}} />
+        onLoadAllMessages={async () => []} onJumpToChange={() => {}} />
     </I18nextProvider>,
   );
   assert.equal(html, '');

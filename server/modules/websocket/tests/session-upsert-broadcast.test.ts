@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import test from 'node:test';
+import test, { mock } from 'node:test';
 
+import { sessionsService } from '@/modules/providers/index.js';
+import type { FetchHistoryResult } from '@/shared/types.js';
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import {
   broadcastSessionUpserted,
@@ -134,5 +136,52 @@ test('a closed socket is skipped', async () => {
 
     assert.equal(open.frames.length, 1);
     assert.deepEqual(closing.frames, []);
+  });
+});
+
+
+test('watcher updates carry stable content versions and real counts; metadata updates do not', async () => {
+  await withIsolatedDatabase(async () => {
+    sessionsDb.createAppSession('app-content', 'claude', '/workspace/demo');
+    sessionsDb.assignProviderSessionId('app-content', 'native-content');
+    let text = 'A new reply';
+    let reads = 0;
+    const history = mock.method(sessionsService, 'fetchHistory', async (): Promise<FetchHistoryResult> => ({
+      messages: [{ id: `display-${++reads}`, sessionId: 'app-content', provider: 'claude', kind: 'text',
+        role: 'assistant', text, timestamp: '2026-09-09T00:00:00Z' }],
+      total: 4, hasMore: true, offset: 0, limit: 1,
+    }));
+    try {
+      const connection = new FakeConnection();
+      connectedClients.add(connection as never);
+      await broadcastSessionUpserted('app-content');
+      assert.equal(connection.frames[0].transcriptVersion, undefined);
+      assert.equal(history.mock.callCount(), 0);
+      await broadcastSessionUpsertedBatch(['native-content']);
+      const first = connection.frames[1];
+      assert.match(String(first.transcriptVersion), /^[a-f0-9]{64}$/);
+      assert.equal((first.session as { messageCount: number }).messageCount, 4);
+      await broadcastSessionUpsertedBatch(['native-content']);
+      assert.equal(connection.frames[2].transcriptVersion, first.transcriptVersion);
+      text = 'Another reply with the same message count';
+      await broadcastSessionUpsertedBatch(['native-content']);
+      assert.notEqual(connection.frames[3].transcriptVersion, first.transcriptVersion);
+      assert.equal(JSON.stringify(connection.frames).includes(text), false);
+    } finally { history.mock.restore(); }
+  });
+});
+
+test('unread detection failure does not prevent other watcher metadata updates', async () => {
+  await withIsolatedDatabase(async () => {
+    sessionsDb.createAppSession('app-missing-history', 'claude', '/workspace/demo');
+    sessionsDb.assignProviderSessionId('app-missing-history', 'native-missing-history');
+    const history = mock.method(sessionsService, 'fetchHistory', async () => { throw new Error('partial transcript'); });
+    try {
+      const connection = new FakeConnection();
+      connectedClients.add(connection as never);
+      await broadcastSessionUpsertedBatch(['native-missing-history']);
+      assert.equal(connection.frames.length, 1);
+      assert.equal(connection.frames[0].transcriptVersion, undefined);
+    } finally { history.mock.restore(); }
   });
 });

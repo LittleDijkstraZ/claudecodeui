@@ -1,7 +1,7 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
-import type { ChatMessage, NormalizedMessage, Project, ProjectSession, SessionRuntimeState, SubagentInfo } from '@/shared/types';
+import type { ChatMessage, ScrollRestoreState, NormalizedMessage, Project, ProjectSession, SessionRuntimeState, SubagentInfo } from '@/shared/types';
 
 //----------------- DEPLOYMENT MODE ------------
 
@@ -270,6 +270,100 @@ export function hasSameUserMessageIdentity(left: NormalizedMessage, right: Norma
   if ([right.responseMessageId, ...(right.responseMessageIds || [])].some(id => Boolean(id) && responseIds.includes(id))) return true;
   const leftIds = [left.clientMessageId, left.transcriptAnchorId, left.id].filter(Boolean);
   return [right.clientMessageId, right.transcriptAnchorId, right.id].some(id => Boolean(id) && leftIds.includes(id));
+}
+
+// ---------------------------
+
+//----------------- SCROLL POSITION RESTORATION ------------
+
+/** Captures stable row wrappers, including placeholders whose message content is unmounted. */
+export function captureScrollRestoreState(container: HTMLElement): ScrollRestoreState {
+  const bounds = container.getBoundingClientRect();
+  const anchor = Array.from(container.querySelectorAll<HTMLElement>('[data-chat-row]'))
+    .find(element => {
+      const row = element.getBoundingClientRect();
+      return row.bottom > bounds.top && row.top < bounds.bottom;
+    }) ?? null;
+  return {
+    height: container.scrollHeight,
+    top: container.scrollTop,
+    anchor,
+    anchorOffset: anchor ? anchor.getBoundingClientRect().top - bounds.top : null,
+  };
+}
+
+/** Corrects only the remaining displacement, so browser scroll anchoring is never applied twice. */
+export function restoreScrollPosition(container: HTMLElement, snapshot: ScrollRestoreState): void {
+  const { anchor, anchorOffset, height, top } = snapshot;
+  if (anchor && container.contains(anchor) && anchorOffset !== null) {
+    const delta = anchor.getBoundingClientRect().top - container.getBoundingClientRect().top - anchorOffset;
+    if (Math.abs(delta) > 0.5) container.scrollTop += delta;
+  } else {
+    container.scrollTop = top + container.scrollHeight - height;
+  }
+}
+
+// ---------------------------
+
+//----------------- CONVERSATION VISIBILITY ------------
+
+// An embedded remote keeps running while its iframe is hidden. Its own
+// visibilityState may still be visible, so every same-origin frame host matters.
+const conversationVisibilityContext = (): { documents: Document[]; containers: Element[] } | null => {
+  const documents: Document[] = [];
+  const containers: Element[] = [];
+  try {
+    // A maximized or narrow panel can cover chat without changing its session.
+    const chat = document.querySelector('[data-testid="workspace-main-chat"]');
+    for (let element: Element | null = chat; element; element = element.parentElement) containers.push(element);
+    let current: Window = window;
+    const seen = new Set<Window>();
+    while (!seen.has(current)) {
+      seen.add(current);
+      documents.push(current.document);
+      const frame = current.frameElement;
+      if (!frame) {
+        // An inaccessible parent cannot establish that the conversation is visible.
+        if (current.parent !== current) return null;
+        break;
+      }
+      for (let element: Element | null = frame; element; element = element.parentElement) containers.push(element);
+      const parent = frame.ownerDocument.defaultView;
+      if (!parent) return null;
+      current = parent;
+    }
+    return { documents, containers };
+  } catch {
+    return null;
+  }
+};
+
+/** Lets workspaces defer hidden history reads and acknowledge messages only in visible conversations. */
+export function isConversationDocumentVisible(): boolean {
+  const context = conversationVisibilityContext();
+  if (!context || context.documents.some(document => document.visibilityState !== 'visible')) return false;
+  return context.containers.every(element => {
+    if (element.hasAttribute('hidden') || element.classList.contains('hidden') || element.getAttribute('aria-hidden') === 'true' || element.hasAttribute('inert')) return false;
+    const style = element.ownerDocument.defaultView?.getComputedStyle(element);
+    return style?.display !== 'none' && style?.visibility !== 'hidden' && style?.visibility !== 'collapse';
+  });
+}
+
+/** Notifies workspace reading state when a retained frame, parent panel, or browser tab changes visibility. */
+export function observeConversationVisibility(onChange: () => void): () => void {
+  const context = conversationVisibilityContext();
+  const documents = context?.documents ?? [document];
+  const observer = new MutationObserver(onChange);
+  for (const container of context?.containers ?? []) observer.observe(container, { attributes: true, attributeFilter: ['hidden', 'class', 'style', 'aria-hidden', 'inert'] });
+  for (const document of documents) document.addEventListener('visibilitychange', onChange);
+  window.addEventListener('focus', onChange);
+  window.addEventListener('pageshow', onChange);
+  return () => {
+    observer.disconnect();
+    for (const document of documents) document.removeEventListener('visibilitychange', onChange);
+    window.removeEventListener('focus', onChange);
+    window.removeEventListener('pageshow', onChange);
+  };
 }
 
 // ---------------------------

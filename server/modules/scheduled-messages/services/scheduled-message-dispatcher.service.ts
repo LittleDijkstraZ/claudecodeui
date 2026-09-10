@@ -13,7 +13,9 @@ import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 const POLL_INTERVAL_MS = 30_000;
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
-let dispatchInFlight = false;
+// A scheduled run serializes only its own session. Long-lived provider queries
+// must never hold a global poll lock or postpone other sessions' due/queued work.
+const scheduledSessionDispatches = new Map<string, Promise<void>>();
 
 type StoredQueuedMessage = {
   content: string;
@@ -76,7 +78,7 @@ async function sendClaimedQueuedMessage(
 
   // The registry check and run reservation are separate operations. If a run
   // wins that tiny race, put the turn back so the next poll tries again.
-  if (!result.started && result.error === 'A run was already in progress for this session.') {
+  if (!result.started && (result.error === 'A run was already in progress for this session.' || result.error === 'A run is already in progress for this session.')) {
     sessionDraftsDb.restoreQueuedMessage(candidate);
     return;
   }
@@ -89,7 +91,7 @@ export async function dispatchQueuedMessages(runtime: ProviderRuntimeGateway): P
   let claimed = 0;
 
   await Promise.all(candidates.map(async (candidate) => {
-    if (chatRunRegistry.isProcessing(candidate.sessionId) || chatRunRegistry.isSessionMutating(candidate.sessionId)) {
+    if (scheduledSessionDispatches.has(candidate.sessionId) || chatRunRegistry.isProcessing(candidate.sessionId) || chatRunRegistry.isSessionMutating(candidate.sessionId)) {
       return;
     }
     if (!sessionDraftsDb.claimQueuedMessage(candidate)) {
@@ -147,17 +149,33 @@ export async function dispatchDueScheduledMessages(
 ): Promise<number> {
   // Claimed before any of them runs, so a long turn cannot let the next poll
   // pick the same message up again.
-  const due = scheduledMessagesDb.claimDue(now, sessionId => !chatRunRegistry.isSessionMutating(sessionId));
+  const due = scheduledMessagesDb.claimDue(now, sessionId => !scheduledSessionDispatches.has(sessionId) && !chatRunRegistry.isSessionMutating(sessionId));
   if (due.length === 0) {
     return 0;
   }
 
-  // Sequentially: a session can only have one run at a time, and two due
-  // messages for the same session must not race each other into it.
+  // Capture every context before dispatch starts. Within a session, claimed
+  // messages stay ordered and cannot jump across a later rewind; independent
+  // sessions can make progress while any other native query remains open.
   const contexts = new Map(due.map(row => [row.id, sessionsDb.getSessionById(row.session_id)?.provider_session_id ?? null]));
+  const bySession = new Map<string, ScheduledMessageRow[]>();
   for (const row of due) {
-    await sendClaimedMessage(row, runtime, contexts.get(row.id) ?? null);
+    const rows = bySession.get(row.session_id) ?? [];
+    rows.push(row);
+    bySession.set(row.session_id, rows);
   }
+  const dispatches = [...bySession].map(([sessionId, rows]) => {
+    // Reserve before the first async operation, including before the queued
+    // dispatcher runs in this same poll. Due messages retain their priority.
+    const dispatch = Promise.resolve().then(async () => {
+      for (const row of rows) await sendClaimedMessage(row, runtime, contexts.get(row.id) ?? null);
+    }).finally(() => {
+      if (scheduledSessionDispatches.get(sessionId) === dispatch) scheduledSessionDispatches.delete(sessionId);
+    });
+    scheduledSessionDispatches.set(sessionId, dispatch);
+    return dispatch;
+  });
+  await Promise.all(dispatches);
 
   return due.length;
 }
@@ -175,20 +193,18 @@ export function initializeScheduledMessageDispatcher(runtime: ProviderRuntimeGat
   }
 
   const poll = () => {
-    // A pass that overruns the interval must not be started again underneath
-    // itself; the claim is transactional but the runs are not.
-    if (dispatchInFlight) {
-      return;
-    }
-    dispatchInFlight = true;
+    // Each dispatcher claims synchronously before yielding. Reservations are
+    // per session, so the timer can keep finding newly queued work even when a
+    // previously launched workflow keeps runtime.run pending indefinitely.
     void dispatchDueScheduledMessages(runtime)
-      .then(() => dispatchQueuedMessages(runtime))
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
-        console.error('[ScheduledMessages] Dispatch pass failed', { error: message });
-      })
-      .finally(() => {
-        dispatchInFlight = false;
+        console.error('[ScheduledMessages] Scheduled dispatch pass failed', { error: message });
+      });
+    void dispatchQueuedMessages(runtime)
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error('[ScheduledMessages] Queued dispatch pass failed', { error: message });
       });
   };
 

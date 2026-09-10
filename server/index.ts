@@ -31,6 +31,7 @@ import {
 import { taskmasterRoutes } from './modules/taskmaster/index.js';
 import { commandsRoutes } from './modules/commands/index.js';
 import { settingsRoutes } from './modules/settings/index.js';
+import { chatBackupRoutes } from './modules/chat-backup/index.js';
 import { createSystemModule } from './modules/system/index.js';
 import { createAgentModule } from './modules/agent/index.js';
 import projectModuleRoutes from './modules/projects/projects.routes.js';
@@ -132,6 +133,8 @@ app.use(cors({ exposedHeaders: ['X-Refreshed-Token', 'X-Auth-Error'] }));
 app.use(express.json({
     limit: '50mb',
     type: (req) => {
+        // Native backup imports have their own authenticated parser below.
+        if (req.url?.startsWith('/api/chat-backups/')) return false;
         // Skip multipart/form-data requests (for file uploads like images)
         const contentType = req.headers['content-type'] || '';
         if (contentType.includes('multipart/form-data')) {
@@ -201,6 +204,8 @@ app.use('/api/browser-use', authenticateToken, browserUseRoutes);
 
 // Unified provider MCP routes (protected)
 app.use('/api/providers', authenticateToken, providerRoutes);
+// Allow envelope overhead around a validated maximum-64-MB bundle.
+app.use('/api/chat-backups', authenticateToken, express.json({ limit: '65mb' }), chatBackupRoutes);
 app.use('/api/scheduled-messages', authenticateToken, scheduledMessagesRoutes);
 app.use('/api/conversation-groups', authenticateToken, createConversationGroupsRouter());
 app.use('/api/claude-sessions', authenticateToken, createClaudeSessionActionsRouter());

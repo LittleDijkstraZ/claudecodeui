@@ -78,6 +78,13 @@ export const DEFAULT_EFFORT_VALUE = 'default';
 
 // ---------------------------
 
+//----------------- CHAT HISTORY ------------
+
+/** Initial history and older-page size shared by every local and remote chat pane. */
+export const SESSION_MESSAGES_PAGE_SIZE = 100;
+
+// ---------------------------
+
 //----------------- FILE UPLOAD LIMITS ------------
 
 /** Largest single file the upload endpoint accepts, in megabytes. Source of truth for the two derived limits below. */

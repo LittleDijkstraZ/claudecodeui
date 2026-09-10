@@ -9,7 +9,7 @@ import type { ServerEvent,
   Project,
   ProjectSession,IsSessionProcessing } from '@/shared/types';
 import { mergeProjectSelectionMetadata } from '@/modules/project-workspace/utils/projectSelectionMetadata';
-import { isConversationDocumentVisible, observeConversationVisibility } from '@/modules/project-workspace/utils/conversationVisibility';
+import { isConversationDocumentVisible, observeConversationVisibility } from '@/shared/utils';
 import { readSelectedProvider } from '@/shared/selectedProvider';
 
 type UseProjectsStateArgs = {
@@ -503,11 +503,20 @@ export function useProjectsState({
     });
   }, [sessionId]);
 
-  const clearSessionAttention = useCallback((targetSessionId?: string | null) => {
+  // Explicit unread marks survive visibility observers until the conversation is reopened.
+  const manuallyUnreadSessionIds = useRef(new Set<string>());
+  const markSessionUnread = useCallback((targetSessionId: string) => {
+    manuallyUnreadSessionIds.current.add(targetSessionId);
+    setAttentionSessionIds(previous => new Set(previous).add(targetSessionId));
+  }, []);
+
+  const clearSessionAttention = useCallback((targetSessionId?: string | null, automatic = false) => {
     if (!targetSessionId) {
       return;
     }
 
+    if (automatic && manuallyUnreadSessionIds.current.has(targetSessionId)) return;
+    manuallyUnreadSessionIds.current.delete(targetSessionId);
     setAttentionSessionIds((previous) => {
       if (!previous.has(targetSessionId)) {
         return previous;
@@ -770,6 +779,17 @@ export function useProjectsState({
         return;
       }
 
+      // Disk-only Shell/CLI executions have no chat-run completion frame.
+      // The watcher supplies a content identity rather than a rename/activity timestamp.
+      if (event.kind === 'session_upserted' && typeof event.sessionId === 'string'
+        && typeof event.transcriptVersion === 'string' && event.transcriptVersion) {
+        const key = `${event.sessionId}:transcript:${event.transcriptVersion}`;
+        if (!seenAttentionEventsRef.current.has(key)) {
+          seenAttentionEventsRef.current.add(key);
+          if (seenAttentionEventsRef.current.size > 1000) seenAttentionEventsRef.current.delete(seenAttentionEventsRef.current.values().next().value!);
+          markSessionAttention(event.sessionId);
+        }
+      }
       const eventSessionId = typeof event.sessionId === 'string' && event.sessionId
         ? event.sessionId
         : null;
@@ -834,7 +854,7 @@ export function useProjectsState({
         // redundant; the history store reconciles them with in-flight text.
         setExternalMessageUpdate((prev) => prev + 1);
       }
-      if (messagesAdvanced) {
+      if (messagesAdvanced && !upsert.transcriptVersion) {
         markSessionAttention(upsert.sessionId);
       }
 
@@ -932,9 +952,12 @@ export function useProjectsState({
 
   useEffect(() => {
     const clearIfVisible = () => {
-      if (activeTab === 'chat' && !showSettings && isConversationDocumentVisible()) clearSessionAttention(selectedSession?.id ?? sessionId ?? null);
+      if (activeTab === 'chat' && !showSettings && isConversationDocumentVisible()) clearSessionAttention(selectedSession?.id ?? sessionId ?? null, true);
     };
-    clearIfVisible();
+    // A navigation or return to the chat counts as opening the conversation again.
+    if (activeTab === 'chat' && !showSettings && isConversationDocumentVisible()) {
+      clearSessionAttention(selectedSession?.id ?? sessionId ?? null);
+    }
     return observeConversationVisibility(clearIfVisible);
   }, [activeTab, clearSessionAttention, selectedSession?.id, sessionId, showSettings]);
 
@@ -1090,6 +1113,8 @@ export function useProjectsState({
 
   const handleSessionSelect = useCallback(
     (session: ProjectSession) => {
+      // Release the manual mark on explicit selection; a hidden pane waits until visible to read it.
+      manuallyUnreadSessionIds.current.delete(session.id);
       if (isConversationDocumentVisible() && isReadingChatRef.current) clearSessionAttention(session.id);
       setSelectedSession(session);
 
@@ -1261,6 +1286,7 @@ export function useProjectsState({
       attentionSessionIds,
       onProjectSelect: handleProjectSelect,
       onSessionSelect: handleSessionSelect,
+      onMarkSessionUnread: markSessionUnread,
       onNewSession: handleNewSession,
       onSessionDelete: handleSessionDelete,
       onLoadMoreSessions: loadMoreProjectSessions,
@@ -1273,6 +1299,7 @@ export function useProjectsState({
     }),
     [
       attentionSessionIds,
+      markSessionUnread,
       handleNewSession,
       handleProjectDelete,
       handleProjectSelect,

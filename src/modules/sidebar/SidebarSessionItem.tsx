@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState } from 'react';
-import { Check, Copy, Edit2, GitBranch, Layers, Loader2, MoreHorizontal, Trash2, X } from 'lucide-react';
+import { Check, Copy, Edit2, GitBranch, Layers, Loader2, Mail, MoreHorizontal, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { SessionAttentionIndicator, SessionRunningIndicator, ActionMenu, Badge, Dialog, DialogContent, DialogTitle, LLMProviderLogo, buttonVariants } from '@/shared/ui';
@@ -17,6 +17,7 @@ type SidebarSessionItemProps = {
   selectedSession: ProjectSession | null;
   isProcessing: boolean;
   needsAttention: boolean;
+  onMarkSessionUnread?: (sessionId: string) => void;
   currentTime: Date;
   /** Resolved for this row, so a keystroke elsewhere does not invalidate it. */
   isEditing: boolean;
@@ -48,6 +49,7 @@ function SidebarSessionItem({
   selectedSession,
   isProcessing,
   needsAttention,
+  onMarkSessionUnread,
   currentTime,
   isEditing,
   renameDraft,
@@ -332,6 +334,14 @@ function SidebarSessionItem({
               </div>
             ) : (
               <div className="space-y-2">
+                {onMarkSessionUnread && <button
+                  type="button"
+                  onClick={() => { setMobileOptionsOpen(false); onMarkSessionUnread(session.id); }}
+                  className="flex min-h-12 w-full items-center gap-3 rounded-xl border border-border bg-muted/35 px-4 py-3 text-left text-foreground transition-colors active:bg-muted"
+                >
+                  <Mail className="h-5 w-5 flex-shrink-0" />
+                  <span className="text-sm font-medium">{t('markAsUnread', 'Mark as unread')}</span>
+                </button>}
                 <button
                   type="button"
                   onClick={() => {
@@ -539,6 +549,7 @@ function SidebarSessionItem({
                   </div>
                 )}
                 items={[
+                  ...(onMarkSessionUnread ? [{ key: 'mark-unread', label: t('markAsUnread', 'Mark as unread'), icon: Mail, onSelect: () => onMarkSessionUnread(session.id) }] : []),
                   {
                     key: 'group',
                     label: moveToGroupLabel,

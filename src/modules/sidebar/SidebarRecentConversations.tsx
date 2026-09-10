@@ -1,4 +1,4 @@
-import { ChevronRight, Layers, MessageSquare, MoreHorizontal } from 'lucide-react';
+import { ChevronRight, Layers, MessageSquare, Mail, MoreHorizontal } from 'lucide-react';
 import type { MouseEvent } from 'react';
 import type { TFunction } from 'i18next';
 
@@ -11,6 +11,7 @@ import { formatCompactAge } from '@/modules/sidebar/utils/sidebarProjectFormatti
 type SidebarRecentConversationsProps = {
   activeSessions: ReadonlySet<string>;
   attentionSessionIds: ReadonlySet<string>;
+  onMarkSessionUnread?: (sessionId: string) => void;
   conversations: RecentConversationListItem[];
   total: number;
   hasMore: boolean;
@@ -47,7 +48,7 @@ function RecentConversationSkeleton() {
 
 /** Rendered by SidebarContent in the recents search mode to list recently active sessions across all projects. */
 export default function SidebarRecentConversations({
-  activeSessions, attentionSessionIds,
+  activeSessions, attentionSessionIds, onMarkSessionUnread,
   conversations,
   total,
   hasMore,
@@ -172,7 +173,7 @@ export default function SidebarRecentConversations({
                 variant="ghost"
                 size="icon"
                 triggerClassName="h-8 w-8 shrink-0 text-muted-foreground"
-                items={[{
+                items={[...(onMarkSessionUnread ? [{ key: 'mark-unread', label: t('markAsUnread', 'Mark as unread'), icon: Mail, onSelect: () => onMarkSessionUnread(conversation.sessionId) }] : []), {
                   key: 'group',
                   label: t('conversationGroups.moveToGroup', { ns: 'common' }),
                   description: groups.find((group) => group.id === memberships[conversation.sessionId])?.name,

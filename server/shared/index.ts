@@ -1,6 +1,8 @@
 // Public shared contracts consumed by Providers, Conversation Groups, and Database.
 export type {
   AnyRecord,
+  AuthenticatedWebSocketRequest,
+  ChatBackupBundle,
   ClaudeSessionRewindMode,
   ClaudeBtwHistoryTurn,
   ConversationGroupPageOptions,
@@ -19,8 +21,12 @@ export type { IProviderModels, IProviderRuntime } from './interfaces.js';
 export {
   appendFilesInputTag,
   buildClaudeUserContent,
+  getGlobalImageAssetsDir,
+  isImageAttachmentDescriptor,
   normalizeImageDescriptors,
+  normalizeAttachmentDescriptors,
 } from './image-attachments.js';
+export type { ChatAttachmentDescriptor } from './image-attachments.js';
 export { resolveClaudeCodeExecutablePath } from './claude-cli-path.js';
 export {
   buildDefaultProviderCurrentActiveModel,
@@ -40,3 +46,5 @@ export { parseIncomingJsonObject } from './utils.js';
 export { addClaudeUsageModels } from './utils.js';
 
 export { resolveClaudePermissionSelection } from './utils.js';
+
+export type { HubChatBackupSummary, HubChatBackupStatus } from './types.js';

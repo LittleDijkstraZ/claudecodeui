@@ -95,3 +95,39 @@ test('a per-turn error marks attention without making a live Workflow idle', asy
   act(() => alpha.emit('error', 4, false));
   expect(result.current.states.alpha.running).toEqual([]);
 });
+
+
+test('manual unread survives automatic reading and refresh without sending notifications', async () => {
+  const notify = vi.fn();
+  const { result } = renderHook(() => useHubConnections(remotes, notify));
+  await act(async () => {});
+  act(() => result.current.markUnread('alpha', 'same-session'));
+  act(() => result.current.markRead('alpha', 'same-session', true));
+  await act(async () => { await result.current.refresh('alpha'); });
+  expect(result.current.states.alpha.attention).toEqual(['same-session']);
+  expect(result.current.states.beta.attention).toEqual([]);
+  expect(notify).not.toHaveBeenCalled();
+  act(() => result.current.markRead('alpha', 'same-session'));
+  expect(result.current.states.alpha.attention).toEqual([]);
+});
+
+
+test('transcript updates from an external CLI restore unread, while metadata and replays do not', async () => {
+  const { result } = renderHook(() => useHubConnections(remotes, vi.fn()));
+  await act(async () => {});
+  const alpha = FakeSocket.instances.find(socket => socket.url.endsWith('/alpha'))!;
+  const update = (version?: string) => act(() => alpha.onmessage?.({ data: JSON.stringify({
+    kind: 'session_upserted', sessionId: 'same-session', transcriptVersion: version,
+    session: { id: 'same-session', messageCount: 0, summary: 'Renamed' }
+  }) }));
+  update();
+  expect(result.current.states.alpha.attention).toEqual([]);
+  update('reply-1');
+  expect(result.current.states.alpha.attention).toEqual(['same-session']);
+  expect(result.current.states.beta.attention).toEqual([]);
+  act(() => result.current.markRead('alpha', 'same-session'));
+  update('reply-1'); update();
+  expect(result.current.states.alpha.attention).toEqual([]);
+  update('reply-2');
+  expect(result.current.states.alpha.attention).toEqual(['same-session']);
+});

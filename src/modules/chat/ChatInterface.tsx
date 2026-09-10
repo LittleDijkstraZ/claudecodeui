@@ -35,7 +35,7 @@ import { TerminalConflictNotice } from '@/modules/chat/composer/TerminalConflict
 import ChatComposer from '@/modules/chat/composer/ChatComposer';
 import CommandResultModal from '@/modules/chat/modals/CommandResultModal';
 import { ClaudeSessionActionsProvider } from '@/modules/chat/session-actions/ClaudeSessionActionsProvider';
-import { SESSION_MESSAGES_PAGE_SIZE } from '@/modules/chat/utils/sessionMessagePagination';
+import { SESSION_MESSAGES_PAGE_SIZE } from '@/shared/constants';
 import ModelIdentitySummary from '@/modules/chat/composer/ModelIdentitySummary';
 import ConversationChangesBar from '@/modules/chat/changes/ConversationChangesBar';
 import { deriveConversationChanges } from '@/modules/chat/utils/conversationChanges';
@@ -168,6 +168,7 @@ function ChatInterface({
     scrollContainerRef,
     scrollToBottom,
     scrollToBottomAndReset,
+    onTranscriptLayoutScroll,
     handleScroll,
     requestLatestMessages,
   } = useChatSessionState({
@@ -254,7 +255,7 @@ function ChatInterface({
     if (!container) return;
     setAgentHistoryError(null);
     const sessionId = viewedSessionId;
-    void loadOlderMessages(container).catch(error => {
+    void loadOlderMessages(container, { purpose: 'agents' }).catch(error => {
       // Ignore a late failure after the selected conversation changes.
       if (agentHistorySession.current !== sessionId) return;
       setAgentHistoryError(error instanceof Error ? error.message : String(error));
@@ -565,6 +566,7 @@ function ChatInterface({
         <ChatMessagesPane
           revealTarget={activeReveal}
           scrollContainerRef={scrollContainerRef}
+          onLayoutScroll={onTranscriptLayoutScroll}
           // Not redundant with the `scroll` listener. A first page is 20 rows,
           // tool results fold into their calls, and the "load earlier" link is
           // hidden while more pages exist — so a short transcript is often not
@@ -641,7 +643,7 @@ function ChatInterface({
             isProcessing={isProcessing}
             hasEarlierMessages={hasMoreMessages}
             isLoadingEarlierMessages={isLoadingAllMessages}
-            onLoadAllMessages={() => { void loadAllMessages(); }}
+            onLoadAllMessages={async () => deriveConversationChanges(await loadFullTranscript())}
             onJumpToChange={jumpToChange}
           />
           {changeJumpError !== null && changeJumpError === viewedSessionId && (

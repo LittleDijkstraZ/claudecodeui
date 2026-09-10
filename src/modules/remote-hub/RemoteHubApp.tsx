@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Bell, GitFork, GripVertical, Pencil, ChevronDown, ChevronRight, ExternalLink, Folder, Layers, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pin, Plus, RefreshCw, Server, Settings, Trash2, X } from 'lucide-react';
+import { Bell, HardDriveDownload, Mail, GitFork, GripVertical, Pencil, ChevronDown, ChevronRight, ExternalLink, Folder, Layers, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pin, Plus, RefreshCw, Server, Settings, Trash2, X } from 'lucide-react';
 
 import { HubDialog } from '@/modules/remote-hub/modals/HubDialog';
 import { HubConversationDialog } from '@/modules/remote-hub/modals/HubConversationDialog';
@@ -10,6 +10,7 @@ import { changeHubGroups, loadHubGroups, hubApi } from '@/shared/api';
 import type { HubRemote, HubConversation, HubGroup, HubGroupState, HubDialogState, HubConversationAction } from '@/shared/types';
 import { ThemeProvider } from '@/shared/context/ThemeContext';
 import { SessionAttentionIndicator, SessionRunningIndicator, ActionMenu, Button, Input } from '@/shared/ui';
+import { LocalChatBackupsDialog, useLocalChatBackupSync } from '@/modules/chat-backup';
 import { useConversationGroupDrag } from '@/modules/sidebar';
 import { memberKey, moveHubGroup, moveHubMember, normalizeConversation } from '@/modules/remote-hub/utils/hubClient';
 import { useHubConnections } from '@/modules/remote-hub/hooks/useHubConnections';
@@ -21,6 +22,9 @@ const emptyGroups: HubGroupState = {
 function Hub() {
   // Registered SSH tunnel destinations populate the machine picker.
   const [remotes, setRemotes] = useState<HubRemote[]>([]);
+  const backupSync = useLocalChatBackupSync(remotes);
+  // The local backup dialog is independent of the settings inside each remote pane.
+  const [showChatBackups, setShowChatBackups] = useState(false);
   // The latest revision of local cross-machine groups is shared across windows.
   const [groups, setGroups] = useState<HubGroupState>(emptyGroups);
   // A visible failure is retained until the user retries or dismisses it.
@@ -80,7 +84,8 @@ function Hub() {
     states,
     refresh,
     setStates,
-    markRead
+    markRead,
+    markUnread
   } = useHubConnections(remotes, onNotification);
   // Retains loaded project pages across sidebar view changes.
   const [projectRows, setProjectRows] = useState<Record<string, HubConversation[]>>({});
@@ -92,7 +97,7 @@ function Hub() {
     if (sidebar.narrow && (sidebarOpen || fallbackToolsRemote === selection.remoteId)) return;
     const visible = chatVisibility[selection.remoteId];
     if (visible && (visible.sessionId !== selection.sessionId || !visible.visible)) return;
-    if (states[selection.remoteId]?.attention.includes(selection.sessionId)) markRead(selection.remoteId, selection.sessionId);
+    if (states[selection.remoteId]?.attention.includes(selection.sessionId)) markRead(selection.remoteId, selection.sessionId, true);
   }, [selection, selections, chatVisibility, pageVisible, states, markRead, sidebar.narrow, sidebarOpen, fallbackToolsRemote]);
   const allConversations = useMemo(() => Object.values(states).flatMap(s => s.conversations), [states]);
   const byKey = useMemo(() => new Map(allConversations.map(c => [memberKey(c), c])), [allConversations]);
@@ -164,6 +169,7 @@ function Hub() {
     return next;
   });
   const openMember = (member: HubConversation) => {
+    markRead(member.remoteId, member.sessionId);
     setSelection(resolvedMember(member));
     setLoginRemote(null);
     navigatePane(member.remoteId, member.sessionId);
@@ -335,6 +341,9 @@ function Hub() {
         <span className="min-w-0 flex-1 truncate">{member.title}</span><SessionRunningIndicator isProcessing={running} /><span className={`max-w-16 truncate text-[10px] ${status === 'online' ? 'text-muted-foreground' : 'text-amber-600'}`}>{remotes.find(r => r.id === member.remoteId)?.name}</span>
       </a>
       <ActionMenu label="会话菜单" ariaLabel={`${member.title} 的菜单`} icon={MoreHorizontal} iconOnly portal variant="ghost" triggerClassName="h-8 w-8 shrink-0 p-0" disabled={saving} items={[{
+        key: 'mark-unread', label: '标为未读', icon: Mail,
+        onSelect: () => markUnread(member.remoteId, member.sessionId)
+      }, {
         key: 'fork', label: 'Fork 对话', icon: GitFork, disabled: running || status !== 'online',
         description: running ? '本轮结束后可从完整对话创建分支' : undefined,
         onSelect: () => setConversationAction({ kind: 'fork', member, groupId: group?.id })
@@ -385,7 +394,7 @@ function Hub() {
   return <div ref={sidebar.containerRef} className="fixed inset-0 flex bg-background text-foreground">
     {sidebarOpen && sidebar.narrow && <button type="button" aria-label="关闭侧栏遮罩" className="absolute inset-0 z-20 bg-background/50 backdrop-blur-[2px]" onClick={() => setSidebarOpen(false)} />}
     {sidebarOpen && <aside style={{ width: sidebar.width }} className={`${sidebar.narrow ? 'absolute inset-y-0 left-0' : 'relative shrink-0'} z-30 flex min-w-0 flex-col border-r border-border bg-[#f5f5f5] dark:bg-card`} data-testid="hub-sidebar">
-      <div className="flex h-[52px] items-center gap-2 px-4"><Layers className="h-5 w-5 text-primary" /><strong className="flex-1">CloudCLI</strong><Button variant="ghost" size="icon" aria-label="通知" onClick={() => {
+      <div className="flex h-[52px] items-center gap-2 px-4"><Layers className="h-5 w-5 text-primary" /><strong className="flex-1">CloudCLI</strong><Button variant="ghost" size="icon" aria-label="本地聊天备份" title="本地聊天备份" onClick={() => setShowChatBackups(true)}><HardDriveDownload className="h-4 w-4" /></Button><Button variant="ghost" size="icon" aria-label="通知" onClick={() => {
           setShowNotifications(!showNotifications);
           setNotifications(items => items.map(n => ({
             ...n,
@@ -537,6 +546,11 @@ function Hub() {
           })}>新建对话</Button></div></div>}
     </main>
     {sidebar.resizing && <div className="fixed inset-0 z-40 cursor-col-resize" aria-hidden />}
+    {showChatBackups && <LocalChatBackupsDialog remotes={remotes} backupSync={backupSync} onClose={() => setShowChatBackups(false)} onRestored={(remoteId, result) => {
+      setShowChatBackups(false);
+      openMember({ remoteId, sessionId: result.sessionId, provider: result.provider, title: result.sessionName, projectId: '', projectPath: result.projectPath });
+      void refresh(remoteId);
+    }} />}
     {showNotifications && <div className="absolute right-3 top-14 z-40 w-80 max-w-[95vw] rounded-lg border border-border bg-popover p-3 shadow-xl"><div className="mb-2 flex items-center justify-between text-sm font-medium">通知<button aria-label="关闭通知" onClick={() => setShowNotifications(false)}><X className="h-4 w-4" /></button></div>{notifications.length ? notifications.map(n => <button key={n.id} className="block w-full rounded p-2 text-left text-xs hover:bg-accent" onClick={() => {
         const member = byKey.get(`${n.remoteId}:${n.sessionId}`);
         if (member) openMember(member);

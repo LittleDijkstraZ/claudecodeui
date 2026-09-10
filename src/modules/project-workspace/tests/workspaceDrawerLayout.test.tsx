@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 import WorkspaceMain from '@/modules/project-workspace/WorkspaceMain';
@@ -6,8 +6,9 @@ import { WorkspacePanelsProvider, useWorkspacePanelActions } from '@/modules/wor
 import type { Project } from '@/shared/types';
 import { useModalPresence } from '@/shared/hooks/useModalVisibility';
 
+const { chatRender } = vi.hoisted(() => ({ chatRender: vi.fn() }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key }) }));
-vi.mock('@/modules/chat', () => ({ ChatInterface: ({ isActive }: { isActive: boolean }) => <textarea aria-label="chat draft" data-active={String(isActive)} />, AgentsPanel: () => <p>Agent detail</p> }));
+vi.mock('@/modules/chat', () => ({ ChatInterface: ({ isActive }: { isActive: boolean }) => { chatRender(isActive); return <textarea aria-label="chat draft" data-active={String(isActive)} />; }, AgentsPanel: () => <p>Agent detail</p> }));
 vi.mock('@/modules/git-panel', () => ({ GitPanel: () => null }));
 vi.mock('@/modules/plugins', () => ({ usePlugins: () => ({ plugins: [] }), PluginIcon: () => null, PluginTabContent: () => null }));
 vi.mock('@/modules/browser-use', () => ({ useBrowserUseEnabled: () => true, BrowserUsePanel: () => null }));
@@ -28,7 +29,7 @@ const workspace = (selectedProject: Project | null = project) => <WorkspacePanel
   onShowSettings={settings} externalMessageUpdate={0} newSessionTrigger={0} onProjectSelect={vi.fn()} onProjectsRefresh={vi.fn()}
 /></WorkspacePanelsProvider>;
 beforeEach(() => {
-  settings.mockClear(); localStorage.clear(); window.__CLOUDCLI_EMBEDDED__ = false; window.__REMOTE_NAME__ = 'Alpha';
+  settings.mockClear(); chatRender.mockClear(); localStorage.clear(); window.__CLOUDCLI_EMBEDDED__ = false; window.__REMOTE_NAME__ = 'Alpha';
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
 });
 afterEach(() => { delete window.__CLOUDCLI_EMBEDDED__; delete window.__REMOTE_NAME__; });
@@ -169,4 +170,52 @@ test('a modal temporarily suspends reading state while preserving drawer and con
   expect(chat.getAttribute('data-active')).toBe('true');
   expect((chat as HTMLTextAreaElement).value).toBe('unsent before review');
   expect(screen.getByRole('button', { name: 'Open workspace panel' })).toBeTruthy();
+});
+
+test('a retained remote starts inactive while hidden and pauses again without losing its mounted draft', async () => {
+  const host = document.createElement('div');
+  const frame = document.createElement('iframe');
+  host.append(frame); document.body.append(host); frame.hidden = true;
+  vi.spyOn(window, 'frameElement', 'get').mockReturnValue(frame);
+  const view = render(workspace());
+  try {
+    const chat = screen.getByLabelText('chat draft');
+    expect(chat.getAttribute('data-active')).toBe('false');
+    // Initial hidden mount must never briefly grant an automatic history request.
+    expect(chatRender.mock.calls.every(([active]) => active === false)).toBe(true);
+    await act(async () => { frame.hidden = false; });
+    expect(chat.getAttribute('data-active')).toBe('true');
+    fireEvent.change(chat, { target: { value: 'keep this remote draft' } });
+    await act(async () => { host.className = 'hidden'; });
+    expect(chat.getAttribute('data-active')).toBe('false');
+    await act(async () => { host.className = ''; });
+    expect(chat.getAttribute('data-active')).toBe('true');
+    expect(screen.getByLabelText('chat draft')).toBe(chat);
+    expect((chat as HTMLTextAreaElement).value).toBe('keep this remote draft');
+  } finally {
+    view.unmount(); host.remove();
+  }
+});
+
+test('background browser visibility pauses automatic chat reads until the document becomes visible', () => {
+  let visibility: DocumentVisibilityState = 'visible';
+  vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility);
+  render(workspace());
+  const chat = screen.getByLabelText('chat draft');
+  expect(chat.getAttribute('data-active')).toBe('true');
+  act(() => { visibility = 'hidden'; document.dispatchEvent(new Event('visibilitychange')); });
+  expect(chat.getAttribute('data-active')).toBe('false');
+  act(() => { visibility = 'visible'; document.dispatchEvent(new Event('visibilitychange')); });
+  expect(chat.getAttribute('data-active')).toBe('true');
+});
+
+test('a maximized workspace panel pauses chat reads and split view resumes the same conversation', async () => {
+  render(workspace());
+  const chat = screen.getByLabelText('chat draft');
+  fireEvent.click(screen.getByRole('button', { name: 'Open workspace panel' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Maximize panel' }));
+  await waitFor(() => expect(chat.getAttribute('data-active')).toBe('false'));
+  fireEvent.click(screen.getByRole('button', { name: 'Restore split view' }));
+  await waitFor(() => expect(chat.getAttribute('data-active')).toBe('true'));
+  expect(screen.getByLabelText('chat draft')).toBe(chat);
 });

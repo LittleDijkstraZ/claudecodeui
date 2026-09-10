@@ -23,6 +23,9 @@ async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promis
 
   closeConnection();
   process.env.DATABASE_PATH = databasePath;
+  // An existing empty database prevents legacy developer data from migrating
+  // into this otherwise synthetic fixture.
+  await writeFile(databasePath, '');
   await initializeDatabase();
 
   try {

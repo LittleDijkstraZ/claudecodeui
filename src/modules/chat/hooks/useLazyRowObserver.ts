@@ -1,5 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import type { RefObject } from 'react';
+import { flushSync } from 'react-dom';
+
+import { captureScrollRestoreState, restoreScrollPosition } from '@/shared/utils';
 
 /** How far beyond the viewport a transcript row keeps (or gains) its mounted content. */
 const LAZY_ROW_VIEWPORT_MARGIN_PX = 1200;
@@ -20,9 +23,14 @@ export type LazyRowObserver = {
  */
 export function useLazyRowObserver(
   scrollContainerRef: RefObject<HTMLDivElement>,
+  onLayoutScroll?: () => void,
 ): LazyRowObserver | null {
   const observerRef = useRef<IntersectionObserver | null>(null);
   const callbacksRef = useRef(new Map<Element, (isNearViewport: boolean) => void>());
+  // The single observer keeps its identity while reporting geometry to the
+  // latest owner callback; changing a callback must not remount all lazy rows.
+  const onLayoutScrollRef = useRef(onLayoutScroll);
+  useLayoutEffect(() => { onLayoutScrollRef.current = onLayoutScroll; }, [onLayoutScroll]);
   const isSupported = typeof IntersectionObserver !== 'undefined';
 
   useEffect(() => () => {
@@ -33,18 +41,30 @@ export function useLazyRowObserver(
   const observe = useCallback<LazyRowObserver['observe']>((element, onNearViewportChange) => {
     if (!observerRef.current) {
       observerRef.current = new IntersectionObserver((observerEntries) => {
-        for (const entry of observerEntries) {
-          // A zero-sized rect means the row is inside a display:none subtree
-          // (the Chat tab is hidden), not that the user scrolled away — keep
-          // the row's state, and its recorded height, intact.
-          if (
-            !entry.isIntersecting
-            && entry.boundingClientRect.width === 0
-            && entry.boundingClientRect.height === 0
-          ) {
-            continue;
+        const container = scrollContainerRef.current;
+        const snapshot = container ? captureScrollRestoreState(container) : null;
+        // Estimates above the reader can expand by thousands of pixels. Commit
+        // the whole observer batch and restore its stable wrapper before paint.
+        flushSync(() => {
+          for (const entry of observerEntries) {
+            // A zero-sized rect means the row is inside a display:none subtree
+            // (the Chat tab is hidden), not that the user scrolled away — keep
+            // the row's state, and its recorded height, intact.
+            if (
+              !entry.isIntersecting
+              && entry.boundingClientRect.width === 0
+              && entry.boundingClientRect.height === 0
+            ) {
+              continue;
+            }
+            callbacksRef.current.get(entry.target)?.(entry.isIntersecting);
           }
-          callbacksRef.current.get(entry.target)?.(entry.isIntersecting);
+        });
+        if (container && snapshot?.anchor) {
+          restoreScrollPosition(container, snapshot);
+          // Report the completed layout correction before its scroll event,
+          // so the owner does not mistake an upward correction for user input.
+          onLayoutScrollRef.current?.();
         }
       }, {
         root: scrollContainerRef.current,

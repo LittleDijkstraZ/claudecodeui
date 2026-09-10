@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { claudeSessionActionsDb, closeConnection, initializeDatabase, scheduledMessagesDb, sessionDraftsDb, sessionsDb, userDb } from '@/modules/database/index.js';
-import { dispatchDueScheduledMessages, dispatchQueuedMessages } from '@/modules/scheduled-messages/services/scheduled-message-dispatcher.service.js';
+import { closeScheduledMessageDispatcher, dispatchDueScheduledMessages, dispatchQueuedMessages, initializeScheduledMessageDispatcher } from '@/modules/scheduled-messages/services/scheduled-message-dispatcher.service.js';
 import { scheduledMessagesService } from '@/modules/scheduled-messages/services/scheduled-messages.service.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
 
@@ -26,6 +26,7 @@ async function withIsolatedDatabase(runTest: (userId: number) => void | Promise<
     sessionsDb.createAppSession(SESSION_ID, 'claude', tempDirectory, 'Scheduled session');
     await runTest(Number(user.id));
   } finally {
+    closeScheduledMessageDispatcher();
     chatRunRegistry.clearAll();
     closeConnection();
     if (previousDatabasePath === undefined) {
@@ -125,11 +126,9 @@ test('a queued message stays pending while its session is busy', async () => {
 
 test('a scheduled candidate claimed before rewind cannot later start in the replacement context', async () => {
   await withIsolatedDatabase(async userId => {
-    const second = 'second-scheduled';
-    sessionsDb.createAppSession(second, 'claude', '/fixture/second', 'Second');
-    sessionsDb.assignProviderSessionId(second, 'second-original-native');
+    sessionsDb.assignProviderSessionId(SESSION_ID, 'scheduled-original-native');
     scheduledMessagesDb.create({ userId, sessionId: SESSION_ID, content: 'First scheduled run', options: {}, scheduledFor: new Date(0) });
-    const pending = scheduledMessagesDb.create({ userId, sessionId: second, content: 'Old-context scheduled question', options: {}, scheduledFor: new Date(1) });
+    const pending = scheduledMessagesDb.create({ userId, sessionId: SESSION_ID, content: 'Old-context scheduled question', options: {}, scheduledFor: new Date(1) });
     let started!: () => void, finish!: () => void;
     const startedGate = new Promise<void>(resolve => { started = resolve; });
     const finishGate = new Promise<void>(resolve => { finish = resolve; });
@@ -139,13 +138,89 @@ test('a scheduled candidate claimed before rewind cannot later start in the repl
     }, abort: async (_provider: string, session: string) => { aborts.push(session); return true; } } as never;
     const dispatch = dispatchDueScheduledMessages(runtime);
     await startedGate;
-    const backup = claudeSessionActionsDb.replaceContext(second, 'second-original-native', 'second-restored-native', '/fixture/second-restored.jsonl', 'target');
+    const backup = claudeSessionActionsDb.replaceContext(SESSION_ID, 'scheduled-original-native', 'scheduled-restored-native', '/fixture/scheduled-restored.jsonl', 'target');
     finish(); await dispatch;
     assert.deepEqual(commands, ['First scheduled run']);
     assert.deepEqual(aborts, []);
     const retained = scheduledMessagesDb.listForSession(userId, backup).find(row => row.id === pending.id);
     assert.equal(retained?.status, 'failed');
     assert.match(retained?.failure_reason ?? '', /context changed/i);
+  });
+});
+
+for (const firstKind of ['queued', 'scheduled'] as const) {
+  test(`a long-lived ${firstKind} run cannot block another idle session's later queued or scheduled messages`, async t => {
+    await withIsolatedDatabase(async userId => {
+      const idleSession = 'independent-idle-session';
+      const scheduledSession = 'independent-scheduled-session';
+      sessionsDb.createAppSession(idleSession, 'claude', '/fixture/idle', 'Idle');
+      sessionsDb.createAppSession(scheduledSession, 'claude', '/fixture/scheduled', 'Scheduled');
+      sessionsDb.assignProviderSessionId(SESSION_ID, 'workflow-native');
+      sessionsDb.assignProviderSessionId(idleSession, 'idle-native');
+      const firstContent = 'Long-lived workflow A';
+      if (firstKind === 'queued') {
+        sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage: { content: firstContent, providerSessionId: 'workflow-native' } });
+      } else {
+        scheduledMessagesDb.create({ userId, sessionId: SESSION_ID, content: firstContent, options: {}, scheduledFor: new Date(0) });
+      }
+      let poll!: () => void;
+      t.mock.method(globalThis, 'setInterval', (callback: () => void) => { poll = callback; return { unref() {} } as unknown as ReturnType<typeof setInterval>; });
+      t.mock.method(globalThis, 'clearInterval', () => {});
+      let finishWorkflow!: () => void;
+      const workflow = new Promise<void>(resolve => { finishWorkflow = resolve; });
+      const commands: string[] = [], aborts: string[] = [];
+      const runtime = {
+        hasRuntime: () => true,
+        run: async (_provider: string, command: string) => { commands.push(command); if (command === firstContent) await workflow; },
+        abort: async (_provider: string, sessionId: string) => { aborts.push(sessionId); return false; },
+      } as never;
+      try {
+        initializeScheduledMessageDispatcher(runtime);
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.deepEqual(commands, [firstContent]);
+        sessionDraftsDb.saveDraft(userId, idleSession, { text: '', queuedMessage: { content: 'Later queued turn B', providerSessionId: 'idle-native' } });
+        scheduledMessagesDb.create({ userId, sessionId: scheduledSession, content: 'Later scheduled turn C', options: {}, scheduledFor: new Date(0) });
+        poll();
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.equal(chatRunRegistry.isProcessing(SESSION_ID), true, 'Workflow A is still pending while the other sessions start.');
+        assert.equal(commands.filter(command => command === 'Later queued turn B').length, 1);
+        assert.equal(commands.filter(command => command === 'Later scheduled turn C').length, 1);
+        assert.deepEqual(aborts, [], 'No independent run is interrupted.');
+        poll();
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.equal(commands.length, 3, 'Repeated polls cannot replay claimed work.');
+        assert.equal(sessionDraftsDb.getDrafts(userId).some(draft => draft.scope === idleSession), false);
+      } finally {
+        closeScheduledMessageDispatcher();
+        finishWorkflow();
+        await new Promise<void>(resolve => setImmediate(resolve));
+      }
+    });
+  });
+}
+
+test('scheduled turns remain ordered per session while other sessions run independently', async () => {
+  await withIsolatedDatabase(async userId => {
+    const independent = 'parallel-scheduled';
+    sessionsDb.createAppSession(independent, 'claude', '/fixture/parallel', 'Independent');
+    for (const [sessionId, content, time] of [[SESSION_ID, 'first A', 0], [SESSION_ID, 'second A', 1], [independent, 'first B', 2]] as const) {
+      scheduledMessagesDb.create({ userId, sessionId, content, options: {}, scheduledFor: new Date(time) });
+    }
+    let finishFirst!: () => void;
+    const gate = new Promise<void>(resolve => { finishFirst = resolve; });
+    const commands: string[] = [];
+    const runtime = { hasRuntime: () => true, run: async (_provider: string, command: string) => { commands.push(command); if (command === 'first A') await gate; }, abort: async () => true } as never;
+    const pass = dispatchDueScheduledMessages(runtime);
+    try {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      assert.deepEqual(commands, ['first A', 'first B']);
+      scheduledMessagesDb.create({ userId, sessionId: SESSION_ID, content: 'third A', options: {}, scheduledFor: new Date(3) });
+      assert.equal(await dispatchDueScheduledMessages(runtime), 0, 'Later same-session schedules stay pending until its worker is free.');
+      assert.equal(scheduledMessagesDb.listForSession(userId, SESSION_ID).find(row => row.content === 'third A')?.status, 'pending');
+    } finally { finishFirst(); await pass; }
+    assert.deepEqual(commands, ['first A', 'first B', 'second A']);
+    assert.equal(await dispatchDueScheduledMessages(runtime), 1);
+    assert.deepEqual(commands, ['first A', 'first B', 'second A', 'third A']);
   });
 });
 

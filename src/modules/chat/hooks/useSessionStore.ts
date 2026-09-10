@@ -11,6 +11,7 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 
 import { acceptClaudeUsageSnapshot, isClaudeUsageSnapshot } from '@/modules/chat/utils/claudeUsageSnapshot';
 import { api } from '@/shared/api';
+import { SESSION_MESSAGES_PAGE_SIZE } from '@/shared/constants';
 import { hasSameUserMessageIdentity } from '@/shared/utils';
 import type { AssistantStreamIdentity, ChatMessageDelivery, LLMProvider, NormalizedMessage } from '@/shared/types';
 import { createPendingUserMessages } from '@/modules/chat/utils/pendingUserMessages';
@@ -21,7 +22,6 @@ import {
   mergeOlderServerPage,
   planLatestPageBridge,
   resolveLatestPagePagination,
-  SESSION_MESSAGES_PAGE_SIZE,
 } from '@/modules/chat/utils/sessionMessagePagination';
 import type { SessionMessagesRequestOptions } from '@/modules/chat/utils/sessionMessagePagination';
 
@@ -901,6 +901,7 @@ export function useSessionStore(userId?: string | number | null) {
         isUnlocatedLocalCopy: normalizedMessage.delivery ? previous.isUnlocatedLocalCopy : undefined,
         delivery: normalizedMessage.delivery ? (keepDelivery ? previous.delivery : normalizedMessage.delivery) : undefined,
         deliveryError: normalizedMessage.delivery ? (keepDelivery ? previous.deliveryError : normalizedMessage.deliveryError) : undefined,
+        definitelyNotSubmitted: normalizedMessage.delivery ? (keepDelivery ? previous.definitelyNotSubmitted : normalizedMessage.definitelyNotSubmitted) : undefined,
       };
     } else {
       if (normalizedMessage.provider === 'claude' && normalizedMessage.id.startsWith('text_')) {
@@ -934,14 +935,15 @@ export function useSessionStore(userId?: string | number | null) {
   }, [getSlot, notify, pendingUsers]);
 
   /** Applies only server-confirmed delivery and never lets an older replay undo consumption. */
-  const updateMessageDelivery = useCallback((sessionId: string, clientMessageId: string, delivery: ChatMessageDelivery, error?: string) => {
+  const updateMessageDelivery = useCallback((sessionId: string, clientMessageId: string, delivery: ChatMessageDelivery, error?: string, definitelyNotSubmitted?: boolean) => {
     const slot = getSlot(sessionId);
     let changed = false;
     slot.realtimeMessages = slot.realtimeMessages.map(message => {
       if (message.clientMessageId !== clientMessageId || message.delivery === 'delivered') return message;
       if (message.delivery === 'failed' && delivery === 'queued') return message;
       changed = true;
-      const updated = { ...message, delivery, deliveryError: error };
+      const updated = { ...message, delivery, deliveryError: error,
+        definitelyNotSubmitted: delivery === 'delivered' ? undefined : definitelyNotSubmitted ?? message.definitelyNotSubmitted };
       pendingUsers.remember(sessionId, updated);
       return updated;
     });

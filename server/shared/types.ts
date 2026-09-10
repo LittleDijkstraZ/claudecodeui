@@ -91,6 +91,28 @@ export type AuthenticatedWebSocketRequest = IncomingMessage & {
  */
 export type LLMProvider = 'claude' | 'codex' | 'cursor' | 'opencode';
 
+//----------------- PORTABLE CHAT BACKUP ------------
+/** Versioned native conversation backup exchanged by Chat Backup and the local
+ * Remote Hub store. Content is opaque provider JSONL, never executable settings.
+ * File paths are portable relative names: main.jsonl or session-owned sidecars.
+ * A source native id is required; restoring always allocates a fresh identity. */
+export type ChatBackupBundle = {
+  format: 'cloudcli-chat-backup';
+  version: 1;
+  createdAt: string;
+  session: {
+    id: string;
+    provider: 'claude' | 'codex';
+    title: string;
+    projectPath: string;
+    providerSessionId: string;
+    model: string | null;
+    effort: string | null;
+  };
+  files: Array<{ path: string; content: string }>;
+};
+// ---------------------------
+
 /**
  * One selectable model row in a provider model catalog.
  */
@@ -285,6 +307,9 @@ export type SessionUpsertedProject = {
  */
 export type SessionUpsertedEvent = {
   kind: 'session_upserted';
+  /** Content identity from a disk-watcher history observation; absent on metadata-only updates.
+   * Clients deduplicate it per session to acknowledge external CLI replies without replaying unread marks. */
+  transcriptVersion?: string;
   sessionId: string;
   providerSessionId: string | null;
   provider: LLMProvider;
@@ -1494,5 +1519,33 @@ export type ClaudePermissionSelection = {
   mode: 'default' | 'acceptEdits' | 'auto' | 'bypassPermissions' | 'plan' | 'dontAsk';
   allowedTools: string[];
   disallowedTools: string[];
+};
+// ---------------------------
+
+//----------------- LOCAL HUB CHAT BACKUPS ------------
+/** Local Hub archive metadata shared by its disk store and HTTP routes. The id is a
+ * generated source identity, never a filesystem path. Removed remotes remain readable;
+ * imported archives use remoteId "imported". Native chat content is kept in the bundle. */
+export type HubChatBackupSummary = {
+  id: string;
+  remoteId: string;
+  remoteName: string;
+  sessionId: string;
+  title: string;
+  provider: 'claude' | 'codex';
+  projectPath: string;
+  savedAt: string;
+  sourceUpdatedAt: string | null;
+  bytes: number;
+};
+
+/** Opt-in backup status returned by the local Hub. Reading it creates no backup files.
+ * Warnings identify preserved but unreadable local metadata so other valid archives
+ * remain available. Disabling automatic sync never removes existing archives. */
+export type HubChatBackupStatus = {
+  enabled: boolean;
+  directory: string;
+  backups: HubChatBackupSummary[];
+  warnings?: string[];
 };
 // ---------------------------

@@ -1,0 +1,54 @@
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import { mkdtemp, rm } from 'node:fs/promises';
+import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
+import { test } from 'node:test';
+
+import express from 'express';
+
+import { createHubChatBackupStore } from '../chat-backup-store.service.js';
+import { createHubChatBackupRouter } from '../chat-backup.routes.js';
+
+test('backup HTTP endpoints enforce opt-in, same-origin JSON, source scoping and portable import/export', async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'cloudcli-backup-routes-'));
+  const app = express(); const server = http.createServer(app);
+  t.after(async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(directory, { recursive: true, force: true }); });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  app.use('/hub-api/chat-backups', createHubChatBackupRouter(createHubChatBackupStore(directory, ['one']), origin));
+  const request = (suffix = '', options: RequestInit = {}) => fetch(`${origin}/hub-api/chat-backups${suffix}`, { ...options, signal: AbortSignal.timeout(8000) });
+  const json = async (response: Response) => await response.json() as { enabled: boolean; backups: unknown[]; backup: { id: string; remoteId: string } };
+  const mutate = (method: string, suffix: string, body: unknown, headers: Record<string, string> = {}) => request(suffix, { method, headers: { Origin: origin, 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
+  const bundle = { format: 'cloudcli-chat-backup', version: 1, createdAt: '2026-09-09T12:00:00Z', session: { id: 'session', provider: 'claude', providerSessionId: 'native', title: 'Saved chat', projectPath: '/project', model: null, effort: null }, files: [{ path: 'main.jsonl', content: '{}\n' }] };
+  const input = { remoteId: 'one', remoteName: 'One', sourceUpdatedAt: null, bundle };
+
+  const initial = await request();
+  assert.equal(initial.headers.get('cache-control'), 'no-store');
+  assert.equal((await json(initial)).enabled, false);
+  assert.equal((await mutate('PUT', '', input)).status, 409);
+  assert.equal((await mutate('PUT', '/settings', { enabled: 'yes' })).status, 400);
+  assert.equal((await request('/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: '{"enabled":true}' })).status, 403);
+  assert.equal((await mutate('PUT', '/settings', { enabled: true }, { Origin: 'https://outside.invalid' })).status, 403);
+  assert.equal((await mutate('PUT', '/settings', { enabled: true }, { 'Content-Type': 'text/plain' })).status, 403);
+  assert.equal((await mutate('PUT', '/settings', { enabled: true })).status, 200);
+  assert.equal((await mutate('PUT', '', { ...input, remoteId: 'unknown' })).status, 400);
+  assert.equal((await mutate('PUT', '', { bundle })).status, 400);
+  const savedResponse = await mutate('PUT', '', input);
+  assert.equal(savedResponse.status, 200);
+  const saved = (await json(savedResponse)).backup;
+  assert.deepEqual(await (await request(`/${saved.id}`)).json(), bundle);
+  await mutate('PUT', '/settings', { enabled: false });
+  assert.equal((await mutate('PUT', '', input)).status, 409);
+  assert.equal((await mutate('POST', '/import', { bundle, remoteName: false })).status, 400);
+  const importedResponse = await mutate('POST', '/import', { bundle, remoteName: 'Old computer' });
+  assert.equal(importedResponse.status, 200);
+  const imported = (await json(importedResponse)).backup;
+  assert.equal(imported.remoteId, 'imported');
+  assert.equal((await json(await request())).backups.length, 2);
+  assert.equal((await mutate('DELETE', `/${saved.id}`, {})).status, 200);
+  assert.equal((await request(`/${saved.id}`)).status, 404);
+  assert.equal((await request('/invalid-id')).status, 400);
+  assert.deepEqual(await (await request(`/${imported.id}`)).json(), bundle);
+});

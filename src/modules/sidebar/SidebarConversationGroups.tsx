@@ -15,6 +15,7 @@ type GroupAction = { kind: 'create' } | { kind: 'rename' | 'delete'; id: string;
 type SidebarConversationGroupsProps = {
   activeSessions: ReadonlySet<string>;
   attentionSessionIds: ReadonlySet<string>;
+  onMarkSessionUnread?: (sessionId: string) => void;
   selectedGroupId: string | null;
   onSelectGroup: (groupId: string | null) => void;
   query: string;
@@ -101,11 +102,11 @@ function GroupActionDialog({
   );
 }
 
-type GroupBodyProps = Pick<SidebarConversationGroupsProps, 'query' | 'selectedSessionId' | 'currentTime' | 'onConversationSelect' | 't' | 'activeSessions' | 'attentionSessionIds'> & { groupId: string };
+type GroupBodyProps = Pick<SidebarConversationGroupsProps, 'query' | 'selectedSessionId' | 'currentTime' | 'onConversationSelect' | 't' | 'activeSessions' | 'attentionSessionIds' | 'onMarkSessionUnread'> & { groupId: string };
 type FailedGroupAction = { retry: () => Promise<void>; messageKey: 'groups.moveFailed' | 'groups.removeFailed' };
 
 /** Mounted only for an expanded group, so collapsed groups perform no page requests. */
-function ExpandedGroupConversations({ activeSessions, attentionSessionIds, groupId, query, selectedSessionId, currentTime, onConversationSelect, t }: GroupBodyProps) {
+function ExpandedGroupConversations({ activeSessions, attentionSessionIds, onMarkSessionUnread, groupId, query, selectedSessionId, currentTime, onConversationSelect, t }: GroupBodyProps) {
   const { revision, assignSession, moveSession, openAssignment } = useConversationGroups();
   const page = useGroupConversations(groupId, query, revision);
   // Lock drag and row actions while the current membership mutation is pending.
@@ -154,6 +155,7 @@ function ExpandedGroupConversations({ activeSessions, attentionSessionIds, group
                 conversation={conversation}
                 isProcessing={activeSessions.has(conversation.sessionId)}
                 needsAttention={attentionSessionIds.has(conversation.sessionId)}
+                onMarkSessionUnread={onMarkSessionUnread}
                 groupId={groupId}
                 selected={selectedSessionId === conversation.sessionId}
                 currentTime={currentTime}
@@ -266,7 +268,7 @@ function ConversationGroupSection({ group, expanded, onToggle, onExpand, onActio
 
 /** Used by the sidebar module to browse, pin and reorder cross-project conversation groups. */
 export default function SidebarConversationGroups({
-  activeSessions, attentionSessionIds, selectedGroupId, onSelectGroup, query, selectedSessionId, currentTime, onConversationSelect, t,
+  activeSessions, attentionSessionIds, onMarkSessionUnread, selectedGroupId, onSelectGroup, query, selectedSessionId, currentTime, onConversationSelect, t,
 }: SidebarConversationGroupsProps) {
   const { groups, isLoading, error, refresh } = useConversationGroups();
   // Keep group management dialogs independent of expanding or refreshing rows.
@@ -332,6 +334,7 @@ export default function SidebarConversationGroups({
             group={group}
             activeSessions={activeSessions}
             attentionSessionIds={attentionSessionIds}
+            onMarkSessionUnread={onMarkSessionUnread}
             expanded={expanded}
             onToggle={() => {
               if (isSearching) {

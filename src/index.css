@@ -590,18 +590,9 @@
 
   .chat-message {
     contain: layout style paint;
-    content-visibility: auto;
-    contain-intrinsic-size: auto 180px;
-  }
-
-  .chat-message.assistant {
-    contain-intrinsic-size: auto 240px;
-  }
-
-  .chat-message.user,
-  .chat-message.tool,
-  .chat-message.error {
-    contain-intrinsic-size: auto 96px;
+    /* LazyMessageRow already virtualizes content. A second estimated-height
+       layer would invalidate its measurements as offscreen content is skipped. */
+    content-visibility: visible;
   }
 
   /* Mobile touch optimization and safe areas */

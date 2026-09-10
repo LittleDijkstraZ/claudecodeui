@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronRight, FileCode2, History, Loader2, MessageSquare, X } from 'lucide-react';
@@ -14,7 +14,7 @@ type ConversationChangesBarProps = {
   isProcessing: boolean;
   hasEarlierMessages: boolean;
   isLoadingEarlierMessages: boolean;
-  onLoadAllMessages: () => void;
+  onLoadAllMessages: () => Promise<ConversationChangeTurn[]>;
   onJumpToChange: (change: ConversationFileChange) => void;
 };
 
@@ -143,25 +143,36 @@ export default function ConversationChangesBar({
   const [selectedScope, setScope] = useState('latest');
   // Limit initial file card rendering for conversations with many edits.
   const [visibleFiles, setVisibleFiles] = useState(40);
+  // A covering dialog pauses the background chat subscription, so retain its explicit history result here.
+  const [loadedTurns, setLoadedTurns] = useState<ConversationChangeTurn[] | null>(null);
+  // Give the dialog immediate feedback independently of the background transcript's render window.
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  // Keep a failed history request visible so the same action can be retried.
+  const [historyLoadFailed, setHistoryLoadFailed] = useState(false);
   const id = useId();
   const pendingJumpRef = useRef<number | null>(null);
+  const historyRequestRef = useRef<symbol | null>(null);
+  const onJumpRef = useRef(onJumpToChange);
+  useLayoutEffect(() => { onJumpRef.current = onJumpToChange; }, [onJumpToChange]);
   const createDiff = useMemo(() => createCachedDiffCalculator(), []);
   const countStats = useMemo(() => createConversationChangeStats(createDiff), [createDiff]);
-  const latestTurn = turns[turns.length - 1];
-  const latestChangedTurn = [...turns].reverse().find((turn) => turn.changes.length > 0);
+  const reviewTurns = loadedTurns ?? turns;
+  const loadingHistory = isLoadingHistory || isLoadingEarlierMessages;
+  const latestTurn = reviewTurns[reviewTurns.length - 1];
+  const latestChangedTurn = [...reviewTurns].reverse().find((turn) => turn.changes.length > 0);
   // Rewind or authoritative identity reconciliation can replace turn IDs.
   // A vanished selection must not leave a false empty Review over fresh history.
-  const scope = selectedScope === 'latest' || selectedScope === 'all' || turns.some(turn => `turn:${turn.id}` === selectedScope)
+  const scope = selectedScope === 'latest' || selectedScope === 'all' || reviewTurns.some(turn => `turn:${turn.id}` === selectedScope)
     ? selectedScope : 'latest';
   const latestFileCount = new Set(latestTurn?.changes.map((change) => change.filePath) ?? []).size;
-  const allEditCount = turns.reduce((count, turn) => count + turn.changes.length, 0);
+  const allEditCount = reviewTurns.reduce((count, turn) => count + turn.changes.length, 0);
 
   const files = useMemo(() => {
     const selectedTurns = scope === 'all'
-      ? turns
+      ? reviewTurns
       : scope === 'latest'
         ? latestTurn ? [latestTurn] : []
-        : turns.filter((turn) => `turn:${turn.id}` === scope);
+        : reviewTurns.filter((turn) => `turn:${turn.id}` === scope);
     const byFile = new Map<string, FileChanges>();
     for (const turn of selectedTurns) {
       for (const change of turn.changes) {
@@ -171,11 +182,11 @@ export default function ConversationChangesBar({
       }
     }
     return [...byFile.values()];
-  }, [latestTurn, scope, turns]);
+  }, [latestTurn, scope, reviewTurns]);
   const selectedEditCount = files.reduce((count, file) => count + file.records.length, 0);
   const totals = useMemo(() => countStats(files.flatMap(file => file.records.map(record => record.change))), [countStats, files]);
   const scopeLabel = scope === 'latest' ? t(isProcessing ? 'changes.currentTurn' : 'changes.latestTurn')
-    : scope === 'all' ? t('changes.allLoaded') : turns.find(turn => `turn:${turn.id}` === scope)?.label ?? t('changes.scope');
+    : scope === 'all' ? t('changes.allLoaded') : reviewTurns.find(turn => `turn:${turn.id}` === scope)?.label ?? t('changes.scope');
   const statsDescription = `${scopeLabel} · ${totals.known > 0 ? t('changes.lineTotals', { added: totals.added, removed: totals.removed }) : t('changes.lineTotalsUnavailable')}${totals.unknown > 0 ? ` ${t('changes.lineTotalsIncomplete')}` : ''}`;
   const lineTotals = selectedEditCount > 0 ? (
     <span className="inline-flex shrink-0 items-center gap-1 font-mono text-[11px] font-medium tabular-nums" title={statsDescription} aria-label={statsDescription} data-testid="conversation-change-totals">
@@ -186,23 +197,57 @@ export default function ConversationChangesBar({
   ) : null;
 
   useEffect(() => () => {
+    historyRequestRef.current = null;
     if (pendingJumpRef.current !== null) cancelAnimationFrame(pendingJumpRef.current);
   }, []);
+
+  const changeOpen = (open: boolean) => {
+    setIsOpen(open);
+    if (!open) {
+      // A closed or replaced review must not consume a late result on its next opening.
+      historyRequestRef.current = null;
+      setIsLoadingHistory(false);
+      setHistoryLoadFailed(false);
+      setLoadedTurns(null);
+    }
+  };
+
+  const loadHistory = async () => {
+    if (historyRequestRef.current || loadingHistory) return;
+    const request = Symbol('changes-history');
+    historyRequestRef.current = request;
+    setIsLoadingHistory(true);
+    setHistoryLoadFailed(false);
+    try {
+      const fullTurns = await onLoadAllMessages();
+      if (historyRequestRef.current !== request) return;
+      setLoadedTurns(fullTurns);
+      setScope('all');
+      setVisibleFiles(40);
+    } catch {
+      if (historyRequestRef.current === request) setHistoryLoadFailed(true);
+    } finally {
+      if (historyRequestRef.current === request) {
+        historyRequestRef.current = null;
+        setIsLoadingHistory(false);
+      }
+    }
+  };
 
   const jump = (change: ConversationFileChange) => {
     // Close the portal and let its focus restoration finish before the parent
     // expands the original tool card and scrolls to it in the conversation.
-    flushSync(() => setIsOpen(false));
+    flushSync(() => changeOpen(false));
     pendingJumpRef.current = requestAnimationFrame(() => {
       pendingJumpRef.current = null;
-      onJumpToChange(change);
+      onJumpRef.current(change);
     });
   };
 
-  if (allEditCount === 0 && !hasEarlierMessages) return null;
+  if (!isOpen && allEditCount === 0 && !hasEarlierMessages) return null;
 
   return (
-    <Dialog open={isOpen} onOpenChange={setIsOpen}>
+    <Dialog open={isOpen} onOpenChange={changeOpen}>
       <div className="mx-auto mb-1 flex w-[calc(100%_-_1rem)] max-w-[54.25rem] justify-end sm:w-[calc(100%_-_2rem)]" data-testid="conversation-changes-bar">
         <DialogTrigger asChild>
           <Button type="button" variant="ghost" size="sm" className="h-6 max-w-full gap-1.5 px-2 text-[11px] text-muted-foreground" title={t('changes.review')}>
@@ -218,7 +263,7 @@ export default function ConversationChangesBar({
         <div className="shrink-0 space-y-3 border-b border-border px-4 py-4 sm:px-5">
           <div className="flex items-center justify-between gap-3">
             <DialogTitle id={`${id}-title`} className="not-sr-only text-base font-semibold">{t('changes.title')}</DialogTitle>
-            <Button type="button" variant="ghost" size="sm" className="h-8 w-8 shrink-0 p-0" aria-label={t('changes.close')} onClick={() => setIsOpen(false)}><X className="h-4 w-4" /></Button>
+            <Button type="button" variant="ghost" size="sm" className="h-8 w-8 shrink-0 p-0" aria-label={t('changes.close')} onClick={() => changeOpen(false)}><X className="h-4 w-4" /></Button>
           </div>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="min-w-0 flex-1 sm:max-w-md">
@@ -231,7 +276,7 @@ export default function ConversationChangesBar({
               >
                 <option value="latest">{t(isProcessing ? 'changes.currentTurn' : 'changes.latestTurn')}</option>
                 <option value="all">{t('changes.allLoaded')}</option>
-                {turns.slice(0, -1).reverse().map((turn) => (
+                {reviewTurns.slice(0, -1).reverse().map((turn) => (
                   <option key={turn.id} value={`turn:${turn.id}`}>
                     {turn.label.slice(0, 100)}{turn.timestamp ? ` · ${formattedTime(turn.timestamp, i18n.resolvedLanguage ?? 'en')}` : ''}
                   </option>
@@ -260,15 +305,16 @@ export default function ConversationChangesBar({
         </div>
 
         <div className="shrink-0 space-y-2 border-t border-border bg-muted/15 px-4 py-3 sm:px-5">
-          {(hasEarlierMessages || isLoadingEarlierMessages) && (
+          {((hasEarlierMessages && loadedTurns === null) || loadingHistory || historyLoadFailed) && (
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-xs text-muted-foreground">{t('changes.partialHistory')}</p>
-              <Button type="button" variant="outline" size="sm" className="h-8 text-xs" disabled={isLoadingEarlierMessages} onClick={onLoadAllMessages}>
-                {isLoadingEarlierMessages ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <History className="h-3.5 w-3.5" />}
-                {t(isLoadingEarlierMessages ? 'changes.loadingHistory' : 'changes.loadHistory')}
+              <Button type="button" variant="outline" size="sm" className="h-8 text-xs" disabled={loadingHistory} onClick={() => { void loadHistory(); }}>
+                {loadingHistory ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <History className="h-3.5 w-3.5" />}
+                {t(loadingHistory ? 'changes.loadingHistory' : 'changes.loadHistory')}
               </Button>
             </div>
           )}
+          {historyLoadFailed && <p role="alert" className="text-xs text-destructive">{t('changes.loadHistoryFailed')}</p>}
           <p id={`${id}-description`} className="text-[11px] leading-relaxed text-muted-foreground">{t('changes.recordedOnly')}</p>
         </div>
       </DialogContent>

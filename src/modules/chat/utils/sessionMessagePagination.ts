@@ -1,6 +1,5 @@
 import type { NormalizedMessage } from '@/shared/types';
-
-export const SESSION_MESSAGES_PAGE_SIZE = 20;
+import { SESSION_MESSAGES_PAGE_SIZE } from '@/shared/constants';
 
 export type SessionMessagesRequestOptions = {
   limit?: number | null;

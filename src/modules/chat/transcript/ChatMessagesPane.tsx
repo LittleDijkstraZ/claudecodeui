@@ -1,9 +1,9 @@
-import type { MessageRevealTarget } from '@/shared/types';
 import { useTranslation } from 'react-i18next';
 import { memo, useCallback, useMemo } from 'react';
 import type { Dispatch, RefObject, SetStateAction } from 'react';
 
 import type { ChatMessage,
+  MessageRevealTarget,
   Project,
   ProjectSession,
   LLMProvider,
@@ -29,6 +29,8 @@ const INITIAL_MOUNTED_TAIL_ROWS = 30;
 type ChatMessagesPaneProps = {
   revealTarget?: MessageRevealTarget;
   scrollContainerRef: RefObject<HTMLDivElement>;
+  /** Reconciles scroll geometry after lazy rows restore their anchor, preserving the user's follow/pause choice. */
+  onLayoutScroll?: () => void;
   onWheel: () => void;
   onTouchMove: () => void;
   isLoadingSessionMessages: boolean;
@@ -90,6 +92,7 @@ type ChatMessagesPaneProps = {
 function ChatMessagesPane({
   revealTarget,
   scrollContainerRef,
+  onLayoutScroll,
   onWheel,
   onTouchMove,
   isLoadingSessionMessages,
@@ -136,7 +139,7 @@ function ChatMessagesPane({
   selectedProject,
 }: ChatMessagesPaneProps) {
   const { t } = useTranslation('chat');
-  const lazyRows = useLazyRowObserver(scrollContainerRef);
+  const lazyRows = useLazyRowObserver(scrollContainerRef, onLayoutScroll);
   const retainedLocalMessages = useMemo(
     () => chatMessages.filter(message => message.isUnlocatedLocalCopy),
     [chatMessages],

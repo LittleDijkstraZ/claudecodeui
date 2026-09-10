@@ -1,6 +1,8 @@
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
+import { sessionsService } from '@/modules/providers/index.js';
 import { generateDisplayName } from '@/modules/projects/index.js';
 import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
 import type { SessionUpsertedEvent } from '@/shared/types.js';
@@ -20,6 +22,7 @@ import type { SessionUpsertedEvent } from '@/shared/types.js';
  */
 async function buildSessionUpsertedEvent(
   sessionIdOrProviderSessionId: string,
+  includeTranscript = false,
 ): Promise<SessionUpsertedEvent | null> {
   // Resolving by provider id first covers the watcher, which only ever sees
   // the id written in the transcript. For a row where the two ids are equal
@@ -37,7 +40,29 @@ async function buildSessionUpsertedEvent(
     ? project.custom_project_name
     : await generateDisplayName(path.basename(projectPath ?? '') || (projectPath ?? ''), projectPath);
 
+  // Only disk-watcher updates inspect history. Renaming/allocating a session
+  // remains metadata-only and cannot announce an old transcript as unread.
+  let transcriptVersion: string | undefined;
+  let messageCount = 0;
+  if (includeTranscript && row.provider_session_id) {
+    try {
+      const history = await sessionsService.fetchHistory(row.session_id, { limit: 1, offset: 0 });
+      messageCount = history.total;
+      const last = history.messages.at(-1);
+      if (last) {
+        // Display IDs and enrichment can vary between reads; hash message content
+        // and count so repeat filesystem events have the same unread identity.
+        transcriptVersion = createHash('sha256').update(JSON.stringify([
+          history.total, last.kind, last.role, last.content, last.text,
+        ])).digest('hex');
+      }
+    } catch {
+      // A partially written or unavailable transcript still gets its metadata update.
+    }
+  }
+
   return {
+    ...(transcriptVersion ? { transcriptVersion } : {}),
     kind: 'session_upserted',
     sessionId: row.session_id,
     providerSessionId: row.provider_session_id ?? null,
@@ -47,7 +72,7 @@ async function buildSessionUpsertedEvent(
     session: {
       id: row.session_id,
       summary: row.custom_name || '',
-      messageCount: 0,
+      messageCount,
       lastActivity: row.updated_at ?? row.created_at ?? new Date().toISOString(),
     },
     project: project
@@ -95,7 +120,7 @@ export async function broadcastSessionUpsertedBatch(
 ): Promise<void> {
   const payloads: string[] = [];
   for (const sessionId of sessionIds) {
-    const event = await buildSessionUpsertedEvent(sessionId);
+    const event = await buildSessionUpsertedEvent(sessionId, true);
     if (event) {
       payloads.push(JSON.stringify(event));
     }
@@ -103,6 +128,3 @@ export async function broadcastSessionUpsertedBatch(
 
   sendToConnectedClients(payloads);
 }
-
-/** @internal Exported for the broadcast tests, which assert the payload shape directly. */
-export { buildSessionUpsertedEvent };

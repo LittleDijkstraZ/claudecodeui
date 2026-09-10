@@ -1,4 +1,5 @@
 {
+  "markAsUnread": "Mark as unread",
   "projects": {
     "title": "Projects",
     "newProject": "New Project",

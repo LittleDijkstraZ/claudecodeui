@@ -322,6 +322,8 @@ export type ChatMessage = {
   executionId?: string;
   providerSessionId?: string;
   delivery?: ChatMessageDelivery;
+  /** The remote explicitly refused this UUID before input admission; this retained copy can be sent deliberately without guessing delivery. */
+  definitelyNotSubmitted?: boolean;
   /** Browser-retained input whose position has not been matched to loaded native history; display separately. */
   isUnlocatedLocalCopy?: boolean;
   deliveryError?: string;
@@ -470,6 +472,8 @@ export type NormalizedMessage = {
   executionId?: string;
   providerSessionId?: string;
   delivery?: ChatMessageDelivery;
+  /** True only for a remote-confirmed rejection before input admission, never inferred from disconnects or timeouts. */
+  definitelyNotSubmitted?: boolean;
   /** Browser-retained input whose position has not been matched to loaded native history; display separately. */
   isUnlocatedLocalCopy?: boolean;
   deliveryError?: string;
@@ -650,6 +654,8 @@ export type CommandModalPayload = {
 
 /** A composer message queued while its session is still busy, holding the text, the in-memory and already-uploaded attachments and the send options snapshotted at queue time so it can be auto-sent unchanged once the session goes idle. */
 export type QueuedDraft = {
+  /** Native Claude context captured before queue persistence; prevents a later rewind from sending this input into another branch. */
+  providerSessionId?: string;
   /** Retained with the old context after rewind; explicit review is required before another send. */
   rewindPaused?: boolean;
   content: string;
@@ -1346,6 +1352,8 @@ export type SidebarProjectListProps = {
   loadingMoreProjects: Set<string>;
   activeSessions: ReadonlySet<string>;
   attentionSessionIds: ReadonlySet<string>;
+  /** Restores the unread indicator from a sidebar conversation menu. */
+  onMarkSessionUnread?: (sessionId: string) => void;
   forceExpanded?: boolean;
   isProjectStarred: (projectName: string) => boolean;
   onRenameDraftChange: (draft: string) => void;
@@ -1807,6 +1815,56 @@ export type HubRemoteState = {
   attention: string[];
 };
 
+//----------------- LOCAL CHAT BACKUPS ------------
+
+/** Portable native conversation archive; imported paths are relative archive entries, never destination paths. */
+export type ChatBackupBundle = {
+  format: 'cloudcli-chat-backup';
+  version: 1;
+  createdAt: string;
+  session: {
+    id: string;
+    provider: 'claude' | 'codex';
+    title: string;
+    projectPath: string;
+    providerSessionId: string;
+    model: string | null;
+    effort: string | null;
+  };
+  files: Array<{ path: string; content: string }>;
+};
+
+/** Local archive inventory entry used by the Hub sync worker and backup dialog without loading chat contents. */
+export type LocalChatBackupSummary = {
+  id: string;
+  remoteId: string;
+  remoteName: string;
+  sessionId: string;
+  title: string;
+  provider: 'claude' | 'codex';
+  projectPath: string;
+  savedAt: string;
+  sourceUpdatedAt: string | null;
+  bytes: number;
+};
+
+/** This Hub computer's opt-in switch and disk inventory; remote user settings never enable it. */
+export type LocalChatBackupStatus = {
+  enabled: boolean;
+  directory: string;
+  backups: LocalChatBackupSummary[];
+  warnings?: string[];
+};
+
+/** Independent destination session created when restoring a native chat archive. */
+export type RestoredChatBackup = {
+  sessionId: string;
+  provider: 'claude' | 'codex';
+  projectPath: string;
+  sessionName: string;
+};
+
+// ---------------------------
 //----------------- CLAUDE SESSION ACTIONS ------------
 
 /** The context and/or checkpoint scope requested by the user. */
@@ -1999,3 +2057,15 @@ export type ClaudeSessionIdentity = {
   cloudcliName: string | null; automaticTitle: string | null; renamedTitle: string | null;
   titleCoverage: 'complete' | 'recent' | 'unavailable';
 };
+
+//----------------- SCROLL POSITION RESTORATION ------------
+
+/** Keeps a visible transcript row at its viewport offset across history and lazy-row commits. */
+export type ScrollRestoreState = {
+  height: number;
+  top: number;
+  anchor: HTMLElement | null;
+  anchorOffset: number | null;
+};
+
+// ---------------------------

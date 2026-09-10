@@ -123,3 +123,53 @@ test('a selected session updated from Shell refreshes history while a Chat query
   emit(upsert('two', { messageCount: 0 }));
   expect(hook.result.current.externalMessageUpdate).toBe(before + 1);
 });
+
+
+test('marking the open conversation unread survives visibility checks and updates until reopened', async () => {
+  const hook = await setup();
+  act(() => hook.result.current.sidebarSharedProps.onMarkSessionUnread('one'));
+  expect(unread(hook, 'one')).toBe(true);
+  act(() => window.dispatchEvent(new Event('focus')));
+  emit(upsert('one', { summary: 'Renamed', messageCount: 3 }));
+  expect(unread(hook, 'one')).toBe(true);
+  act(() => hook.result.current.handleSessionSelect({ id: 'one' }));
+  expect(unread(hook, 'one')).toBe(false);
+});
+
+test('marking another conversation unread leaves selection intact and clears when opened', async () => {
+  const hook = await setup();
+  act(() => hook.result.current.sidebarSharedProps.onMarkSessionUnread('two'));
+  expect(hook.result.current.selectedSession?.id).toBe('one');
+  expect(unread(hook, 'two')).toBe(true);
+  act(() => hook.result.current.handleSessionSelect({ id: 'two' }));
+  expect(unread(hook, 'two')).toBe(false);
+});
+
+
+test('reopening a manually unread conversation in a hidden pane reads it once the pane is revealed', async () => {
+  const host = document.createElement('div');
+  const frame = document.createElement('iframe');
+  host.append(frame); document.body.append(host); host.hidden = true;
+  vi.spyOn(window, 'frameElement', 'get').mockReturnValue(frame);
+  const hook = await setup();
+  act(() => hook.result.current.sidebarSharedProps.onMarkSessionUnread('one'));
+  act(() => hook.result.current.handleSessionSelect({ id: 'one' }));
+  expect(unread(hook, 'one')).toBe(true);
+  await act(async () => { host.hidden = false; });
+  await waitFor(() => expect(unread(hook, 'one')).toBe(false));
+  hook.unmount(); host.remove();
+});
+
+
+test('real watcher transcript versions mark even an unloaded conversation unread and deduplicate after reading', async () => {
+  const hook = await setup();
+  const update = { ...upsert('three', { messageCount: 0 }), transcriptVersion: 'reply-1' };
+  emit(update);
+  expect(unread(hook, 'three')).toBe(true);
+  act(() => hook.result.current.handleSessionSelect({ id: 'three' }));
+  emit(update);
+  expect(unread(hook, 'three')).toBe(false);
+  act(() => hook.result.current.handleSessionSelect({ id: 'one' }));
+  emit({ ...update, transcriptVersion: 'reply-2' });
+  expect(unread(hook, 'three')).toBe(true);
+});

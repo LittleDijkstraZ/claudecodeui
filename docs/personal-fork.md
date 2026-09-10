@@ -284,9 +284,10 @@ serves the built frontend and forwards HTTP/WebSocket traffic only to configured
 loopback SSH tunnel ports. Use the dedicated hub entry below, rather than the
 ordinary application server entry on the Mac. The hub imports no provider
 runtime, invokes no local Claude, and performs no project operations locally.
-Each conversation stays on its owning remote; project files, native transcripts,
-Claude credentials, model configuration, and execution remain there. No CloudCLI
-Cloud account or third-party relay is involved.
+Conversations execute on their owning remote; project files, credentials and model
+configuration remain there. Native transcripts can be copied locally through the
+optional backup feature described below. No CloudCLI Cloud account or third-party
+relay is involved.
 
 Keep the existing SSH forwards running. For example, if each remote CloudCLI
 server listens on its own `127.0.0.1:3001`, the Mac can forward them separately:
@@ -339,6 +340,30 @@ the hub is open, tagged with the owning machine. The list is an in-memory recent
 notification view, not a durable inbox or an OS notification service. Projects,
 recent conversations, and running-state metadata also refresh periodically and
 when the window regains focus.
+
+### Local conversation backups
+
+Open **本地聊天备份** in the Hub header to enable automatic local sync. It is
+**off by default**. While a Hub page is open, enabled sync checks connected machines
+every minute and saves changed, non-archived Claude and Codex conversations under
+`stateDirectory/chat-backups/`. Each source conversation keeps its latest copy;
+machine IDs isolate identically named sessions. Failed or incomplete reads retain
+the previous backup and retry on a later pass. Closing the page stops synchronization;
+turning the switch off preserves saved copies.
+
+Use **导出** to carry a backup file to a different Hub computer, then **导入备份**.
+Import also works while automatic sync is off. **恢复到机器** selects a connected
+machine and an existing project folder, then creates an independent conversation
+with fresh IDs and native context for continuing the chat. Existing conversations
+are preserved. Both Hub and remote server must include the backup feature.
+
+Backups contain conversation history and supported native text sidecars, with a
+64 MB limit per conversation. They do not contain workspace files, external
+attachments, account credentials, installed tools, live processes or undo snapshots.
+Prepare the destination project and provider separately; historical references to
+absolute source paths retain those original paths. Cursor and OpenCode backups are
+not supported in this version. The dialog shows the exact local backup directory
+and any conversations that could not be saved.
 
 ## Mermaid inspection
 
@@ -596,6 +621,19 @@ time cannot silently reuse stale history.
 
 User sends carry a stable client UUID. Native replay receipts and verified transcript ancestry associate the UI copy with its recorded message; identical text is never a deduplication key. Admission means queued, while a correlated native receipt means delivered. Process exit, failed preparation, and reconnect without a live execution settle unconfirmed sends as unconfirmed, with an explicit manual retry. No automatic retry starts another query or stops background work. The outbox retains attachments and original branch identity; removing a browser copy does not delete native history.
 
+If Claude reports that its active input stream is closed, **Queue** saves a
+deferred message bound to that native conversation and dispatches it once the
+session is idle. A second draft stays in the composer instead of replacing or
+overtaking the waiting message. The dispatcher polls independently across
+sessions, so a long-running queued or scheduled workflow cannot block another
+session's later work. Scheduled messages within one session remain ordered.
+
+A fresh input UUID explicitly refused before admission displays **Not submitted**
+with **Send saved message**. Disconnects and ambiguous failures remain **Delivery
+unconfirmed** and never trigger automatic resubmission. Editing a restored queued
+message whose attachments no longer have browser File objects pauses and retains
+that uploaded copy, with a prompt to select files again for the edited draft.
+
 Claude history keeps the native transcript's append order after branch filtering.
 A queued prompt's creation time can precede the answer it follows, so timestamps
 remain display metadata rather than a reason to reorder history or reject an
@@ -623,7 +661,25 @@ While the viewport is at the bottom, it follows streaming text within an existin
 message and delayed Markdown layout changes. Scrolling up pauses that follow;
 returning to the bottom or using the down-arrow button resumes it. Loading older
 history, jumping to a search result or edit, and switching away retain their own
-scroll position instead of being pulled to the latest output.
+scroll position instead of being pulled to the latest output. Collapsing the
+composer or its attachments can enlarge the chat viewport and clamp its scroll
+position upward; that layout adjustment preserves automatic following. Lazy-row
+anchor corrections likewise preserve the reader's existing follow/pause choice.
+
+Chat panes initially load the latest 100 history rows and fetch older history in
+pages of 100. Returning to a conversation retains its wider cached history;
+stale data refreshes through a bounded tail merge. Metadata-only rerenders do
+not replay an already-consumed history update, and hidden remote frames defer
+automatic reads until visible. A cached earlier page is revealed before another
+page is requested. Codex reads child-task transcripts only for the requested
+page; a full-history request still includes all child transcripts.
+
+Review's **Load full conversation history** action works while its dialog
+covers Chat. It shows progress, updates the review with earlier recorded edits,
+and offers a retry after failure. Loading a complete transcript updates the
+history cache without forcing every message into the rendered conversation.
+Failed full-history reads cannot silently return the previously loaded tail as
+a complete export.
 
 Rewind previews its target and effects on background work, queued drafts, and scheduled messages. The original native branch remains available. The commit transaction isolates old queued/scheduled work on that branch, and late saves or already-claimed dispatchers cannot silently feed it into the new branch. Active execution conflicts are reported rather than stopped automatically. File recovery still covers only recorded native checkpoints, not arbitrary shell, database, or external side effects.
 

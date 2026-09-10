@@ -1,5 +1,5 @@
 import type { ButtonHTMLAttributes, HTMLAttributes, MouseEvent } from 'react';
-import { Archive, ArrowDown, ArrowUp, FolderInput, FolderMinus, MoreHorizontal } from 'lucide-react';
+import { Archive, ArrowDown, ArrowUp, FolderInput, FolderMinus, Mail, MoreHorizontal } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { SessionAttentionIndicator, SessionRunningIndicator, ActionMenu, LLMProviderLogo } from '@/shared/ui';
@@ -13,6 +13,7 @@ type SidebarGroupConversationRowProps = {
   selected: boolean;
   isProcessing?: boolean;
   needsAttention?: boolean;
+  onMarkSessionUnread?: (sessionId: string) => void;
   currentTime: Date;
   disabled: boolean;
   isDragging: boolean;
@@ -31,7 +32,7 @@ type SidebarGroupConversationRowProps = {
 
 /** Used by sidebar conversation groups for compact rows whose menus manage membership and order. */
 export default function SidebarGroupConversationRow({
-  conversation, groupId, selected, isProcessing = false, needsAttention = false, currentTime, disabled, isDragging, dropPosition,
+  conversation, groupId, selected, isProcessing = false, needsAttention = false, onMarkSessionUnread, currentTime, disabled, isDragging, dropPosition,
   dragRowProps, dragHandleProps, canMoveUp, canMoveDown,
   onSelect, onOpenAssignment, onRemove, onMoveUp, onMoveDown, t,
 }: SidebarGroupConversationRowProps) {
@@ -94,6 +95,7 @@ export default function SidebarGroupConversationRow({
         disabled={disabled}
         triggerClassName="h-7 w-7 shrink-0 p-0 text-muted-foreground"
         items={[
+          ...(onMarkSessionUnread ? [{ key: 'mark-unread', label: t('markAsUnread', 'Mark as unread'), icon: Mail, onSelect: () => onMarkSessionUnread(conversation.sessionId) }] : []),
           { key: 'move-group', label: t('groups.moveConversation'), icon: FolderInput, onSelect: onOpenAssignment },
           { key: 'remove-group', label: t('groups.removeConversation'), icon: FolderMinus, onSelect: onRemove },
           { key: 'move-up', label: t('groups.moveUp'), icon: ArrowUp, showDividerBefore: true, disabled: !canMoveUp, onSelect: onMoveUp },

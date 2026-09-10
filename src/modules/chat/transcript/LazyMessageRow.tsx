@@ -17,8 +17,8 @@ import type { LazyRowObserver } from '@/modules/chat/hooks/useLazyRowObserver';
  *
  * The placeholder reuses the row's last measured height, so scrolling back
  * through previously seen content changes no scroll geometry at all; rows
- * never yet measured use an estimate and rely on browser scroll anchoring
- * while they settle.
+ * never yet measured use an estimate; the shared observer preserves the
+ * visible wrapper while those estimates are replaced with measured content.
  */
 
 /** Placeholder height for rows that have never been measured. */
@@ -39,6 +39,7 @@ type LazyMessageRowProps = {
   forceMount?: boolean;
 };
 
+/** Used by chat's transcript pane to bound mounted message content while retaining scroll anchors. */
 export default function LazyMessageRow({
   lazyRows,
   timestamp,
@@ -46,7 +47,9 @@ export default function LazyMessageRow({
   children,
   forceMount = false,
 }: LazyMessageRowProps) {
+  // Only rows near the viewport need their expensive content mounted.
   const [isNearViewport, setIsNearViewport] = useState(initiallyNearViewport);
+  // Reuse the last rendered height when replacing content with a placeholder.
   const [measuredHeight, setMeasuredHeight] = useState<number | null>(null);
   const elementRef = useRef<HTMLDivElement | null>(null);
 
@@ -73,6 +76,7 @@ export default function LazyMessageRow({
   return (
     <div
       ref={elementRef}
+      data-chat-row=""
       data-message-timestamp={timestamp || undefined}
       style={isMounted ? undefined : { height: measuredHeight ?? ESTIMATED_ROW_HEIGHT_PX }}
     >
