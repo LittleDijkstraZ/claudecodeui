@@ -10,6 +10,7 @@ import { AppError, normalizeProjectPath, validateWorkspacePath } from '@/shared/
 import type { ChatBackupBundle } from '@/shared/index.js';
 
 import { restoreNativeChatBackup } from './chat-backup-native.service.js';
+import { createChatBackupInventoryService } from './chat-backup-inventory.service.js';
 import { validateBackupFilePath, validateChatBackupBundle } from './chat-backup-validation.js';
 
 type BackupDependencies = {
@@ -45,6 +46,7 @@ export function createChatBackupService(overrides: Partial<BackupDependencies> =
   const dependencies = { ...defaults, ...overrides };
   let restoring = Promise.resolve();
   return {
+    inventory: createChatBackupInventoryService(dependencies.providerHome),
     async exportSession(sessionId: string): Promise<ChatBackupBundle> {
       const source = dependencies.sessions.getSessionById(sessionId);
       if (!source) backupError('Session was not found.', 'SESSION_NOT_FOUND', 404);

@@ -9,7 +9,7 @@ import {
 import { IS_PLATFORM } from '@/shared/utils';
 import { readVoiceConfig, voiceConfigHeaders } from '@/shared/voiceConfig';
 import type { McpAuthAttempt, ProviderMcpServer } from '@/shared/types';
-import type { ChatBackupBundle, LocalChatBackupStatus, LocalChatBackupSummary, RestoredChatBackup } from '@/shared/types';
+import type { ChatBackupBundle, ChatBackupGroupSnapshot, ChatBackupInventoryPage, ChatBackupObservation, ChatBackupScope, LocalChatBackupExport, LocalChatBackupStatus, LocalChatBackupSummary, RestoredChatBackup } from '@/shared/types';
 
 // Headers are a plain record rather than the full `HeadersInit` union so the
 // defaults below can be merged with a caller's headers by spreading.
@@ -790,6 +790,7 @@ export const hubApi = {
   deleteSession: (remoteId: string, sessionId: string, permanent: boolean) => remoteRequest(remoteId, `/api/providers/sessions/${encodeURIComponent(sessionId)}?force=${permanent}`, { method: 'DELETE' }),
   renameSession: (remoteId: string, sessionId: string, summary: string) => remoteRequest(remoteId, `/api/providers/sessions/${encodeURIComponent(sessionId)}`, { method: 'PUT', body: JSON.stringify({ summary }) }),
   exportChatBackup: (remoteId: string, sessionId: string, signal?: AbortSignal): Promise<ChatBackupBundle> => remoteRequest(remoteId, `/api/chat-backups/sessions/${encodeURIComponent(sessionId)}`, { signal: signal ?? AbortSignal.timeout(120_000) }),
+  chatBackupInventory: (remoteId: string, payload: { sessionIds?: string[]; cursor?: string; limit?: number }, signal?: AbortSignal): Promise<ChatBackupInventoryPage> => remoteRequest(remoteId, '/api/chat-backups/inventory', { method: 'POST', body: JSON.stringify(payload), signal: signal ?? AbortSignal.timeout(120_000) }),
   restoreChatBackup: (remoteId: string, payload: { bundle: ChatBackupBundle; projectPath: string }): Promise<RestoredChatBackup> => remoteRequest(remoteId, '/api/chat-backups/restore', { method: 'POST', body: JSON.stringify(payload), signal: AbortSignal.timeout(120_000) }),
   socketUrl: (remoteId: string, token: string) => `${window.location.origin.replace(/^http/, 'ws')}/remote/${encodeURIComponent(remoteId)}/ws?token=${encodeURIComponent(token)}`,
 };
@@ -808,13 +809,25 @@ async function localChatBackupRequest<T>(path = '', options: RequestInit = {}): 
 /** Reads only the local inventory and opt-in setting, never remote conversation contents. */
 export const getLocalChatBackups = (): Promise<LocalChatBackupStatus> => localChatBackupRequest();
 /** Persists opt-in on this Hub computer, independently of settings on remote machines. */
-export const setLocalChatBackupEnabled = (enabled: boolean): Promise<LocalChatBackupStatus> => localChatBackupRequest('/settings', { method: 'PUT', body: JSON.stringify({ enabled }) });
+export const setLocalChatBackupEnabled = (enabled: boolean): Promise<LocalChatBackupStatus> => setLocalChatBackupSettings({ enabled });
+/** Saves scope and opt-in without starting a remote model or deleting earlier archives. */
+export const setLocalChatBackupSettings = (settings: { enabled?: boolean; scope?: ChatBackupScope; settingsRevision?: number }): Promise<LocalChatBackupStatus> => localChatBackupRequest('/settings', { method: 'PUT', body: JSON.stringify(settings) });
 /** Saves a fetched native archive only while local automatic backup is enabled. */
-export const saveLocalChatBackup = (payload: { remoteId: string; remoteName: string; sourceUpdatedAt: string | null; bundle: ChatBackupBundle }, signal?: AbortSignal): Promise<{ backup: LocalChatBackupSummary }> => localChatBackupRequest('', { method: 'PUT', body: JSON.stringify(payload), signal });
+export const saveLocalChatBackup = (payload: { remoteId: string; remoteName: string; sourceUpdatedAt: string | null; contentVersion: string | null; settingsRevision: number; bundle: ChatBackupBundle }, signal?: AbortSignal): Promise<{ backup: LocalChatBackupSummary }> => localChatBackupRequest('', { method: 'PUT', body: JSON.stringify(payload), signal });
+/** Records current group structure and sparse remote observations independently of native content copies. */
+export const saveLocalChatBackupObservations = (payload: { settingsRevision: number; observations: ChatBackupObservation[] }, signal?: AbortSignal): Promise<LocalChatBackupStatus> => localChatBackupRequest('/observations', { method: 'PUT', body: JSON.stringify(payload), signal });
 /** Explicit file import works independently of the automatic backup switch. */
-export const importLocalChatBackup = (bundle: unknown): Promise<{ backup: LocalChatBackupSummary }> => localChatBackupRequest('/import', { method: 'POST', body: JSON.stringify({ bundle }) });
+export const importLocalChatBackup = (bundle: unknown): Promise<{ backup?: LocalChatBackupSummary; snapshot?: ChatBackupGroupSnapshot }> => localChatBackupRequest('/import', { method: 'POST', body: JSON.stringify({ bundle }) });
 /** Loads one archive for export or explicit restoration into another environment. */
 export const readLocalChatBackup = (id: string): Promise<ChatBackupBundle> => localChatBackupRequest(`/${encodeURIComponent(id)}`);
+/** Downloads native chat contents together with the source grouping record for portable recovery. */
+export const exportLocalChatBackup = (id: string): Promise<LocalChatBackupExport> => localChatBackupRequest(`/${encodeURIComponent(id)}/export`);
+/** Exports organization separately so even empty groups can move to another Hub computer. */
+export const exportLocalChatBackupSnapshot = (sourceId: string): Promise<ChatBackupGroupSnapshot> => localChatBackupRequest(`/snapshots/${encodeURIComponent(sourceId)}`);
+/** Recreates recorded group structure using previously restored conversation mappings. */
+export const restoreLocalChatBackupGroups = (sourceId: string): Promise<HubGroupState> => localChatBackupRequest(`/snapshots/${encodeURIComponent(sourceId)}/restore`, { method: 'POST', body: '{}' });
+/** Attaches an already restored native conversation to its recorded group; retrying never resends chat input. */
+export const recordLocalChatBackupRestore = (payload: { backupId: string; remoteId: string; result: RestoredChatBackup }): Promise<HubGroupState> => localChatBackupRequest('/restored', { method: 'POST', body: JSON.stringify(payload) });
 /** Deletes only the local copy; remote conversations are unaffected. */
 export const deleteLocalChatBackup = async (id: string): Promise<void> => { await localChatBackupRequest(`/${encodeURIComponent(id)}`, { method: 'DELETE' }); };
 

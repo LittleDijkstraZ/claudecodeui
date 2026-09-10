@@ -16,7 +16,7 @@ type HubState = { revision: number; groups: Array<{ id: string; name: string; is
 const object = (value: unknown): Record<string, unknown> | null => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 
 /** The loopback hub route uses this local metadata store; it never touches project files. */
-export function createHubGroupStore(directory: string, remoteIds: string[]) {
+export function createHubGroupStore(directory: string, remoteIds: string[], onChanged?: () => void) {
   const idsAllowed = new Set(remoteIds);
   const statePath = join(directory, 'groups.json');
   const normalize = (value: unknown): HubState | null => {
@@ -66,6 +66,8 @@ export function createHubGroupStore(directory: string, remoteIds: string[]) {
       const temporary = `${statePath}.${randomUUID()}.tmp`;
       try {
         writeFileSync(temporary, JSON.stringify(next), { mode: 0o600 }); renameSync(temporary, statePath); state = next;
+        // A backup observer cannot turn an already committed group edit into a failed edit.
+        try { onChanged?.(); } catch { /* The observer reports its own recoverable backup warning. */ }
         return { status: 200, body: state };
       } catch {
         try { unlinkSync(temporary); } catch { /* The atomic write may not have created its temporary file. */ }

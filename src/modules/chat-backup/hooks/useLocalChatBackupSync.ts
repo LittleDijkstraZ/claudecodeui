@@ -1,136 +1,191 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { getLocalChatBackups, hubApi, remoteToken, saveLocalChatBackup, setLocalChatBackupEnabled } from '@/shared/api';
-import type { HubRemote, LocalChatBackupStatus } from '@/shared/types';
+import { getLocalChatBackups, hubApi, remoteToken, saveLocalChatBackup, saveLocalChatBackupObservations, setLocalChatBackupSettings } from '@/shared/api';
+import type { ChatBackupScope, ChatBackupSessionSnapshot, HubGroupState, HubRemote, HubRemoteState, LocalChatBackupStatus } from '@/shared/types';
 
-/** Used by the remote Hub and backup dialog to copy native chats to this computer only after opt-in. */
-export function useLocalChatBackupSync(remotes: HubRemote[]) {
-  // The local disk inventory drives the dialog and incremental source watermarks.
+/** Used by the remote Hub and backup dialog to track selected chats and their organization only after opt-in. */
+export function useLocalChatBackupSync(remotes: HubRemote[], groups: HubGroupState, states: Record<string, HubRemoteState>) {
+  // The local inventory retains native content watermarks separately from observed metadata.
   const [status, setStatus] = useState<LocalChatBackupStatus | null>(null);
   // Retain actionable fetch/save failures without affecting remote chat connections.
   const [error, setError] = useState<string | null>(null);
-  // Keep manual and periodic synchronization from running concurrently.
+  // Keep manual, change-driven and periodic synchronization from overlapping.
   const [syncing, setSyncing] = useState(false);
-  // Show progress while paginating and copying a potentially large initial inventory.
+  // Show progress while checking and copying a potentially large initial inventory.
   const [progress, setProgress] = useState<{ completed: number; total: number } | null>(null);
+  const inputs = useRef({ remotes, groups, states });
   const statusRef = useRef<LocalChatBackupStatus | null>(null);
   const activeSync = useRef<AbortController | null>(null);
   const busy = useRef(false);
-  const settingsRevision = useRef(0);
-  // A toggle or remote-list change arriving during a request must trigger another pass immediately.
+  const settingsRequest = useRef(0);
   const rerunRequested = useRef(false);
   const mounted = useRef(false);
   const latestSync = useRef<() => Promise<void>>(async () => {});
+  useEffect(() => { inputs.current = { remotes, groups, states }; }, [remotes, groups, states]);
 
   const applyStatus = useCallback((next: LocalChatBackupStatus) => {
+    if (!mounted.current) return;
+    const previous = statusRef.current;
     statusRef.current = next;
     setStatus(next);
-    if (!next.enabled) activeSync.current?.abort();
+    if (!next.enabled || (previous && previous.settingsRevision !== next.settingsRevision)) {
+      activeSync.current?.abort();
+      if (next.enabled && activeSync.current) rerunRequested.current = true;
+    }
   }, []);
 
   const refresh = useCallback(async () => {
-    const revision = settingsRevision.current;
+    const request = settingsRequest.current;
     const next = await getLocalChatBackups();
-    // A status request started before a toggle cannot undo that explicit choice.
-    if (revision === settingsRevision.current) {
+    // A read begun before an explicit settings change cannot undo that choice.
+    if (request === settingsRequest.current && mounted.current) {
       applyStatus(next);
       setError(null);
     }
   }, [applyStatus]);
 
   const syncNow = useCallback(async (): Promise<void> => {
+    if (!mounted.current) return;
     if (busy.current) { rerunRequested.current = true; return; }
     busy.current = true;
     const controller = new AbortController();
     activeSync.current = controller;
     try {
       await refresh();
-      if (!statusRef.current?.enabled || controller.signal.aborted) return;
+      const setting = statusRef.current;
+      if (!setting?.enabled || controller.signal.aborted) return;
+      const source = inputs.current;
+      const revision = setting.settingsRevision;
+      const valid = () => !controller.signal.aborted && mounted.current && statusRef.current?.enabled === true && statusRef.current.settingsRevision === revision;
+      const signal = () => AbortSignal.any([controller.signal, AbortSignal.timeout(120_000)]);
       setSyncing(true);
+      setProgress({ completed: 0, total: 0 });
       setError(null);
-      const saved = new Map(statusRef.current.backups.map(backup => [`${backup.remoteId}:${backup.sessionId}`, backup]));
+      const saved = new Map(setting.backups.map(backup => [`${backup.remoteId}:${backup.sessionId}`, backup]));
       const failures: string[] = [];
       let completed = 0;
       let total = 0;
-      const signal = () => AbortSignal.any([controller.signal, AbortSignal.timeout(120_000)]);
-      for (const remote of remotes) {
-        if (controller.signal.aborted) break;
-        if (!remoteToken(remote.id)) {
-          failures.push(`${remote.name}：登录后才能备份`);
-          continue;
-        }
-        let offset = 0;
+      // This also captures empty groups and changed membership. Missing/offline
+      // observations are merged on disk, never interpreted as a deleted chat.
+      const observe = async (remote: HubRemote | null, rows: ChatBackupSessionSnapshot[]) => {
+        if (!valid()) return;
+        const next = await saveLocalChatBackupObservations({
+          settingsRevision: revision,
+          observations: remote ? rows.map(row => ({
+            ...row, remoteId: remote.id, remoteName: remote.name, observedAt: new Date().toISOString(),
+            attention: source.states[remote.id]?.status === 'online' ? source.states[remote.id].attention.includes(row.sessionId) : null,
+          })) : [],
+        }, signal());
+        if (valid()) applyStatus(next);
+      };
+      await observe(null, []);
+      for (const remote of source.remotes) {
+        if (!valid()) break;
+        const inScope = (sessionId: string) => setting.scope === 'all' || inputs.current.groups.groups.some(group => group.members.some(member => member.remoteId === remote.id && member.sessionId === sessionId));
+        const memberIds = [...new Set(source.groups.groups.flatMap(group => group.members.filter(member => member.remoteId === remote.id).map(member => member.sessionId)))];
+        if (setting.scope === 'grouped' && memberIds.length === 0) continue;
+        if (!remoteToken(remote.id)) { failures.push(`${remote.name}：登录后才能备份`); continue; }
         const seen = new Set<string>();
+        const cursors = new Set<string>();
+        let cursor: string | undefined;
+        let offset = 0;
         try {
-          while (!controller.signal.aborted) {
-            const page = await hubApi.recent(remote.id, offset, { signal: signal() });
-            if (!Array.isArray(page.conversations)) throw new Error('会话列表无效');
-            const rows = page.conversations as Array<{ sessionId: string; provider: string; lastActivity?: string | null }>;
-            if (rows.length === 0) break;
-            // Stop a broken pagination endpoint from repeating the same page forever.
-            if (rows.every(row => seen.has(row.sessionId))) throw new Error('会话分页重复，请重试');
-            const supported = rows.filter(row => !seen.has(row.sessionId) && (row.provider === 'claude' || row.provider === 'codex'));
-            rows.forEach(row => seen.add(row.sessionId));
-            total += supported.length;
+          do {
+            if (!valid()) break;
+            const request = setting.scope === 'grouped' ? { sessionIds: memberIds.slice(offset, offset + 500) } : { cursor, limit: 100 };
+            const page = await hubApi.chatBackupInventory(remote.id, request, signal());
+            if (!valid()) break;
+            if (!Array.isArray(page.sessions)) throw new Error('会话清单无效');
+            const rows = page.sessions.filter(row => !seen.has(row.sessionId));
+            page.sessions.forEach(row => seen.add(row.sessionId));
+            if (page.sessions.length > 0 && rows.length === 0) throw new Error('会话分页重复，请重试');
+            if (page.missingSessionIds.length) failures.push(`${remote.name}：${page.missingSessionIds.length} 个分组成员暂不可读取，已有记录已保留`);
+            total += rows.length;
             setProgress({ completed, total });
-            for (const row of supported) {
-              if (controller.signal.aborted) break;
+            await observe(remote, rows);
+            for (const row of rows) {
+              if (!valid()) break;
               const previous = saved.get(`${remote.id}:${row.sessionId}`);
-              const sourceUpdatedAt = row.lastActivity ?? null;
               try {
-                // Unknown timestamps are rechecked; a transient failure never advances this watermark.
-                if (!previous || !sourceUpdatedAt || previous.sourceUpdatedAt !== sourceUpdatedAt) {
+                // Empty drafts and unsupported providers still have useful group,
+                // title and state metadata, but no native transcript to export.
+                if (inScope(row.sessionId) && row.history === 'native' && (row.provider === 'claude' || row.provider === 'codex')
+                  && (!previous || !row.contentVersion || previous.contentVersion !== row.contentVersion)) {
                   const bundle = await hubApi.exportChatBackup(remote.id, row.sessionId, signal());
-                  if (controller.signal.aborted || !statusRef.current?.enabled) break;
-                  const result = await saveLocalChatBackup({ remoteId: remote.id, remoteName: remote.name, sourceUpdatedAt, bundle }, signal());
-                  saved.set(`${remote.id}:${row.sessionId}`, result.backup);
+                  if (!valid()) break;
+                  // Membership can change while another transcript is being read.
+                  if (inScope(row.sessionId)) {
+                    const result = await saveLocalChatBackup({ remoteId: remote.id, remoteName: remote.name,
+                      sourceUpdatedAt: row.updatedAt, contentVersion: row.contentVersion, settingsRevision: revision, bundle }, signal());
+                    saved.set(`${remote.id}:${row.sessionId}`, result.backup);
+                  }
                 }
               } catch (cause) {
-                if (controller.signal.aborted) break;
-                failures.push(`${remote.name} · ${row.sessionId}：${cause instanceof Error ? cause.message : '备份失败'}`);
+                if (!valid()) break;
+                failures.push(`${remote.name} · ${row.title}：${cause instanceof Error ? cause.message : '备份失败'}`);
               }
               completed += 1;
               setProgress({ completed, total });
             }
-            offset += rows.length;
-            if (page.hasMore === false || (typeof page.total === 'number' && offset >= page.total) || rows.length < 100) break;
-          }
+            if (setting.scope === 'grouped') {
+              offset += 500;
+              if (offset >= memberIds.length) break;
+            } else {
+              if (!page.nextCursor) break;
+              if (cursors.has(page.nextCursor)) throw new Error('会话分页重复，请重试');
+              cursors.add(page.nextCursor);
+              cursor = page.nextCursor;
+            }
+          } while (valid());
         } catch (cause) {
-          if (!controller.signal.aborted) failures.push(`${remote.name}：${cause instanceof Error ? cause.message : '连接失败'}`);
+          if (valid()) failures.push(`${remote.name}：${cause instanceof Error ? cause.message : '连接失败'}`);
         }
       }
-      if (!controller.signal.aborted) {
+      if (valid()) {
         await refresh();
-        setError(failures.length ? failures.slice(0, 5).join('\n') + (failures.length > 5 ? `\n另有 ${failures.length - 5} 个会话未完成，下次同步会重试。` : '') : null);
+        if (valid()) setError(failures.length ? failures.slice(0, 5).join('\n') + (failures.length > 5 ? `\n另有 ${failures.length - 5} 项未完成，下次同步会重试。` : '') : null);
       }
     } catch (cause) {
-      if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : '无法读取本地备份设置');
+      if (!controller.signal.aborted && mounted.current) setError(cause instanceof Error ? cause.message : '无法读取本地备份设置');
     } finally {
       if (activeSync.current === controller) activeSync.current = null;
       busy.current = false;
-      setSyncing(false);
+      if (mounted.current) setSyncing(false);
       if (mounted.current && rerunRequested.current) {
         rerunRequested.current = false;
         void latestSync.current();
       }
     }
-  }, [refresh, remotes]);
+  }, [applyStatus, refresh]);
 
-  const setEnabled = useCallback(async (enabled: boolean) => {
-    settingsRevision.current += 1;
-    if (!enabled) activeSync.current?.abort();
-    const next = await setLocalChatBackupEnabled(enabled);
-    applyStatus(next);
-    setError(null);
-    if (enabled) void syncNow();
-  }, [applyStatus, syncNow]);
+  const updateSettings = useCallback(async (patch: { enabled?: boolean; scope?: ChatBackupScope }) => {
+    const revision = statusRef.current?.settingsRevision;
+    if (revision === undefined) throw new Error('请先读取本地备份设置');
+    const request = ++settingsRequest.current;
+    activeSync.current?.abort();
+    try {
+      const next = await setLocalChatBackupSettings({ ...patch, settingsRevision: revision });
+      if (request !== settingsRequest.current || !mounted.current) return;
+      applyStatus(next);
+      setError(null);
+      if (next.enabled) void syncNow();
+    } catch (cause) {
+      // Another window may have disabled sync. Read its current setting, never
+      // replay a stale enable/scope patch after a rejected compare-and-swap.
+      if (request === settingsRequest.current && mounted.current) {
+        try { await refresh(); } catch { /* Preserve the original setting error. */ }
+      }
+      throw cause;
+    }
+  }, [applyStatus, refresh, syncNow]);
+  const setEnabled = useCallback((enabled: boolean) => updateSettings({ enabled }), [updateSettings]);
+  const setScope = useCallback((scope: ChatBackupScope) => updateSettings({ scope }), [updateSettings]);
 
   useEffect(() => {
     mounted.current = true;
     latestSync.current = syncNow;
-    // eslint-disable-next-line react/set-state-in-effect -- Synchronizes the external Hub disk store; state updates follow awaited requests.
+    // eslint-disable-next-line react/set-state-in-effect -- The persisted opt-in is read before any remote content request.
     void syncNow();
-    // Periodic inventory scans also discover chats that have never been opened in this Hub.
     const timer = window.setInterval(() => { void syncNow(); }, 60_000);
     return () => {
       window.clearInterval(timer);
@@ -140,5 +195,19 @@ export function useLocalChatBackupSync(remotes: HubRemote[]) {
     };
   }, [syncNow]);
 
-  return { status, error, syncing, progress, refresh, setEnabled, syncNow };
+  // Hub polling replaces state objects every ten seconds. Compare meaningful
+  // metadata so identical polls do not trigger another full inventory scan.
+  const dirtySignature = JSON.stringify([remotes.map(remote => [remote.id, remote.name]), groups.revision, groups.groups,
+    remotes.map(remote => {
+      const state = states[remote.id];
+      return state ? [remote.id, state.status, [...state.running].sort(), [...state.attention].sort(),
+        state.conversations.map(row => [row.sessionId, row.title, row.projectPath, row.provider, row.lastActivity, row.isArchived]).sort((a, b) => String(a[0]).localeCompare(String(b[0])))] : [remote.id];
+    })]);
+  useEffect(() => {
+    if (!statusRef.current?.enabled) return;
+    const timer = window.setTimeout(() => { void syncNow(); }, 750);
+    return () => window.clearTimeout(timer);
+  }, [dirtySignature, syncNow]);
+
+  return { status, error, syncing, progress, refresh, setEnabled, setScope, syncNow };
 }

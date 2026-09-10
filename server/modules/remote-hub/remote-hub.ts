@@ -9,6 +9,7 @@ import { createHubGroupStore } from './remote-hub-state.js';
 import { createOAuthCallbackRelay } from './oauth-callback-relay.js';
 import { createHubChatBackupStore } from './chat-backup-store.service.js';
 import { createHubChatBackupRouter } from './chat-backup.routes.js';
+import { createHubChatBackupRestoreService } from './chat-backup-restore.service.js';
 
 /** Standalone local router consumed by the hub entry and fixture tests. It never imports provider runtimes or project filesystem services. */
 export function createRemoteHub(options: {
@@ -24,8 +25,9 @@ export function createRemoteHub(options: {
     return { ...remote, name: remote.name.trim() };
   });
   if (new Set(remotes.map(remote => remote.id)).size !== remotes.length || remotes.length === 0) throw new Error('Unique remote connections required');
-  const groups = createHubGroupStore(options.stateDirectory, remotes.map(remote => remote.id));
-  const chatBackups = createHubChatBackupStore(options.stateDirectory, remotes.map(remote => remote.id));
+  const groups = createHubGroupStore(options.stateDirectory, remotes.map(remote => remote.id), () => chatBackups.captureGroups());
+  const chatBackups = createHubChatBackupStore(options.stateDirectory, remotes.map(remote => remote.id), groups);
+  const backupRestores = createHubChatBackupRestoreService(options.stateDirectory, remotes.map(remote => remote.id), chatBackups, groups);
   const oauthCallbacks = createOAuthCallbackRelay(remotes);
   const app = express();
   app.disable('x-powered-by');
@@ -42,7 +44,7 @@ export function createRemoteHub(options: {
     next();
   });
   app.get('/hub-api/config', (_req, res) => res.json({ remotes }));
-  app.use('/hub-api/chat-backups', createHubChatBackupRouter(chatBackups, origin));
+  app.use('/hub-api/chat-backups', createHubChatBackupRouter(chatBackups, origin, backupRestores));
   app.post('/hub-api/oauth-callback', express.json({ limit: '2kb' }), async (req, res) => {
     if (req.headers.origin !== origin || !req.is('application/json')) { res.sendStatus(403); return; }
     try { res.json(await oauthCallbacks.register(String(req.body?.remoteId ?? ''), String(req.body?.attemptId ?? ''), String(req.headers.authorization ?? ''))); }

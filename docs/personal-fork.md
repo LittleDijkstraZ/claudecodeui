@@ -338,7 +338,8 @@ project folder, and remembers the last selection. A disconnected machine is
 marked offline while the other connections continue independently.
 
 Cross-machine groups are hub metadata in `stateDirectory/groups.json`, including
-member IDs, titles, and folder labels. Back up that file to retain grouping.
+member IDs, titles, and folder labels. The opt-in chat backup also captures this
+organization separately from native chat contents, including empty groups.
 Each remote user's existing groups are imported once; subsequent hub organization
 is independent of the remote-only SQLite groups. Saves use revision checks and
 atomic replacement; other open hub windows refresh shared group changes. A
@@ -356,25 +357,60 @@ when the window regains focus.
 ### Local conversation backups
 
 Open **本地聊天备份** in the Hub header to enable automatic local sync. It is
-**off by default**. While a Hub page is open, enabled sync checks connected machines
-every minute and saves changed, non-archived Claude and Codex conversations under
-`stateDirectory/chat-backups/`. Each source conversation keeps its latest copy;
+**off by default**. Choose **仅分组内对话** or **全部对话** before enabling it.
+New installations select grouped scope; older settings without a scope keep their
+previous all-conversations behavior. Grouped scope follows the complete local
+Hub groups, including older or archived members absent from the recent sidebar.
+All scope uses a stable remote inventory that includes archived conversations
+and archived projects. While a Hub page is open, meaningful group and session
+changes trigger a debounced check, with a full check every minute. Changed native
+Claude and Codex conversations are saved under `stateDirectory/chat-backups/`.
+Each source conversation keeps its latest copy;
 machine IDs isolate identically named sessions. Failed or incomplete reads retain
 the previous backup and retry on a later pass. Closing the page stops synchronization;
 turning the switch off preserves saved copies.
 
-Use **导出** to carry a backup file to a different Hub computer, then **导入备份**.
+Group creation, names, pinning, group/member order and membership changes are
+captured independently of content writes. Empty groups and conversations without
+native messages are retained in the organization record. Remote metadata records
+title, model, effort, archive state, observed running/idle state and the Hub's
+attention flag. These observations describe the source at backup time; restoring
+them never starts a process or pretends the destination is running. Offline or
+missing source conversations do not erase previous observations or chat files.
+Switching scope cancels in-flight work and server-side settings revisions and
+current membership prevent an older pass from writing outside the new scope.
+
+Native content versions use the main transcript and supported sidecar file
+metadata, including native identity, rather than database activity time alone.
+Metadata-only changes can therefore update the backup record without repeatedly
+copying the full conversation.
+
+Use **导出** to carry a backup file with its companion group record to a different
+Hub computer, then **导入备份**. Group records can also be exported independently,
+so empty groups can be recovered even without a saved chat. Legacy v1 native-only
+JSON backups remain importable.
 Import also works while automatic sync is off. **恢复到机器** selects a connected
 machine and an existing project folder, then creates an independent conversation
 with fresh IDs and native context for continuing the chat. Existing conversations
 are preserved. Both Hub and remote server must include the backup feature.
 
+Restoring group information recreates recorded groups and uses previously saved
+source-to-destination conversation mappings; original source IDs are never used
+as destination session IDs. Restoring a chat attaches its new identity to the
+recorded group. Groups with equal names remain distinct, repeated group restores
+reuse the same group identities, and recorded member order is preserved even when
+individual conversations are restored in a different order. If native restoration
+succeeds but group publication fails, retrying that step only retries the group
+mapping. Existing destination groups and unrelated members are retained.
+
 Backups contain conversation history and supported native text sidecars, with a
-64 MB limit per conversation. They do not contain workspace files, external
+64 MB limit per native conversation. Group records are limited to 8 MB and portable
+single-chat envelopes to 80 MB. They do not contain workspace files, external
 attachments, account credentials, installed tools, live processes or undo snapshots.
 Prepare the destination project and provider separately; historical references to
 absolute source paths retain those original paths. Cursor and OpenCode backups are
-not supported in this version. The dialog shows the exact local backup directory
+not supported in this version, though their group membership and observed metadata
+can be recorded. The dialog shows the exact local backup directory
 and any conversations that could not be saved.
 
 ## Mermaid inspection

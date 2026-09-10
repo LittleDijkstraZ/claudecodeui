@@ -111,6 +111,67 @@ export type ChatBackupBundle = {
   };
   files: Array<{ path: string; content: string }>;
 };
+
+
+/** Chooses whether automatic content sync follows Hub group membership or every conversation. */
+export type ChatBackupScope = 'grouped' | 'all';
+
+/** Read-only remote inventory metadata. Runtime status is an observation, never a request to restart work. */
+export type ChatBackupSessionSnapshot = {
+  sessionId: string;
+  provider: LLMProvider;
+  title: string;
+  projectId: string | null;
+  projectPath: string | null;
+  model: string | null;
+  effort: string | null;
+  isArchived: boolean;
+  updatedAt: string | null;
+  history: 'native' | 'empty' | 'unsupported' | 'unavailable';
+  contentVersion: string | null;
+  runtimeStatus: 'running' | 'idle';
+};
+
+/** A stable inventory page, or one complete explicit-ID batch; absent IDs are reported separately. */
+export type ChatBackupInventoryPage = {
+  sessions: ChatBackupSessionSnapshot[];
+  nextCursor: string | null;
+  missingSessionIds: string[];
+};
+
+/** A Hub-scoped observation retained independently of transcript writes, including empty conversations. */
+export type ChatBackupObservation = ChatBackupSessionSnapshot & {
+  remoteId: string;
+  remoteName: string;
+  observedAt: string;
+  attention: boolean | null;
+};
+
+/** Portable Hub organization record. Array order is significant; source identities are never destination IDs. */
+export type ChatBackupGroupSnapshot = {
+  format: 'cloudcli-chat-groups';
+  version: 1;
+  sourceId: string;
+  capturedAt: string;
+  revision: number;
+  groups: Array<{
+    id: string;
+    name: string;
+    isPinned: boolean;
+    members: Array<{ remoteId: string; sessionId: string }>;
+  }>;
+  observations: ChatBackupObservation[];
+};
+
+/** A portable single-chat export with the companion group record needed to restore its original placement. */
+export type LocalChatBackupExport = {
+  format: 'cloudcli-local-chat-backup';
+  version: 1;
+  sourceRemoteId: string;
+  bundle: ChatBackupBundle;
+  groups: ChatBackupGroupSnapshot | null;
+};
+
 // ---------------------------
 
 /**
@@ -1538,6 +1599,8 @@ export type HubChatBackupSummary = {
   savedAt: string;
   sourceUpdatedAt: string | null;
   bytes: number;
+  /** Native content watermark; absence in older archives requires a fresh content read. */
+  contentVersion?: string | null;
 };
 
 /** Opt-in backup status returned by the local Hub. Reading it creates no backup files.
@@ -1545,8 +1608,22 @@ export type HubChatBackupSummary = {
  * remain available. Disabling automatic sync never removes existing archives. */
 export type HubChatBackupStatus = {
   enabled: boolean;
+  scope: ChatBackupScope;
+  settingsRevision: number;
+  sourceId: string | null;
+  snapshots: ChatBackupGroupSnapshot[];
   directory: string;
   backups: HubChatBackupSummary[];
   warnings?: string[];
+};
+// ---------------------------
+
+//----------------- RESTORED CHAT BACKUP ------------
+/** Independent destination conversation returned by native restore and recorded by the local Hub. */
+export type RestoredChatBackup = {
+  sessionId: string;
+  provider: 'claude' | 'codex';
+  projectPath: string;
+  sessionName: string;
 };
 // ---------------------------

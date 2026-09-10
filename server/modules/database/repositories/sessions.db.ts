@@ -525,6 +525,35 @@ export const sessionsDb = {
     return normalizeSessionRows(rows);
   },
 
+  /** Chat Backup inventories durable metadata without the sidebar's archive
+   * filters. Explicit IDs return one complete batch; otherwise the immutable
+   * session ID is a keyset cursor, so activity and renames cannot reorder pages. */
+  getBackupSessionsPage(options: { sessionIds?: readonly string[]; cursor?: string; limit?: number }): {
+    sessions: Array<SessionRow & { project_id: string | null }>;
+    nextCursor: string | null;
+    missingSessionIds: string[];
+  } {
+    const db = getConnection();
+    const columns = SESSION_ROW_COLUMNS.split(', ').map(column => `s.${column}`).join(', ');
+    const select = `SELECT ${columns}, p.project_id FROM sessions s LEFT JOIN projects p ON p.project_path = s.project_path`;
+    if (options.sessionIds !== undefined) {
+      if (options.sessionIds.length > 500 || options.cursor !== undefined || options.limit !== undefined) throw new RangeError('Invalid backup session selection');
+      const ids = [...new Set(options.sessionIds)];
+      if (!ids.length) return { sessions: [], nextCursor: null, missingSessionIds: [] };
+      const rows = db.prepare(`${select} WHERE s.session_id IN (${ids.map(() => '?').join(',')}) ORDER BY s.session_id`)
+        .all(...ids) as Array<SessionRow & { project_id: string | null }>;
+      const found = new Set(rows.map(row => row.session_id));
+      return { sessions: rows.map(row => normalizeSessionRow(row)), nextCursor: null, missingSessionIds: ids.filter(id => !found.has(id)) };
+    }
+    const limit = options.limit ?? 100;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new RangeError('Invalid backup page limit');
+    const rows = db.prepare(`${select} WHERE s.session_id > ? ORDER BY s.session_id LIMIT ?`)
+      .all(options.cursor ?? '', limit + 1) as Array<SessionRow & { project_id: string | null }>;
+    const hasMore = rows.length > limit;
+    const sessions = rows.slice(0, limit).map(row => normalizeSessionRow(row));
+    return { sessions, nextCursor: hasMore ? sessions.at(-1)!.session_id : null, missingSessionIds: [] };
+  },
+
   /**
    * Returns one globally ordered page of visible conversations.
    *

@@ -22,7 +22,6 @@ const emptyGroups: HubGroupState = {
 function Hub() {
   // Registered SSH tunnel destinations populate the machine picker.
   const [remotes, setRemotes] = useState<HubRemote[]>([]);
-  const backupSync = useLocalChatBackupSync(remotes);
   // The local backup dialog is independent of the settings inside each remote pane.
   const [showChatBackups, setShowChatBackups] = useState(false);
   // The latest revision of local cross-machine groups is shared across windows.
@@ -87,6 +86,7 @@ function Hub() {
     markRead,
     markUnread
   } = useHubConnections(remotes, onNotification);
+  const backupSync = useLocalChatBackupSync(remotes, groups, states);
   // Retains loaded project pages across sidebar view changes.
   const [projectRows, setProjectRows] = useState<Record<string, HubConversation[]>>({});
   // Displays pending page loads independently for each remote project.
@@ -546,10 +546,14 @@ function Hub() {
           })}>新建对话</Button></div></div>}
     </main>
     {sidebar.resizing && <div className="fixed inset-0 z-40 cursor-col-resize" aria-hidden />}
-    {showChatBackups && <LocalChatBackupsDialog remotes={remotes} backupSync={backupSync} onClose={() => setShowChatBackups(false)} onRestored={(remoteId, result) => {
+    {showChatBackups && <LocalChatBackupsDialog remotes={remotes} backupSync={backupSync} onClose={() => setShowChatBackups(false)} onGroupsRestored={next => {
+      setGroups(current => next.revision >= current.revision ? next : current);
+      groupChannel.current?.postMessage('changed');
+    }} onRestored={(remoteId, result) => {
       setShowChatBackups(false);
       openMember({ remoteId, sessionId: result.sessionId, provider: result.provider, title: result.sessionName, projectId: '', projectPath: result.projectPath });
       void refresh(remoteId);
+      void loadHubGroups().then(next => setGroups(current => next.revision >= current.revision ? next : current)).catch(cause => setError(cause instanceof Error ? cause.message : '无法读取恢复后的分组'));
     }} />}
     {showNotifications && <div className="absolute right-3 top-14 z-40 w-80 max-w-[95vw] rounded-lg border border-border bg-popover p-3 shadow-xl"><div className="mb-2 flex items-center justify-between text-sm font-medium">通知<button aria-label="关闭通知" onClick={() => setShowNotifications(false)}><X className="h-4 w-4" /></button></div>{notifications.length ? notifications.map(n => <button key={n.id} className="block w-full rounded p-2 text-left text-xs hover:bg-accent" onClick={() => {
         const member = byKey.get(`${n.remoteId}:${n.sessionId}`);

@@ -3,6 +3,7 @@
 Authenticated remote-server endpoints:
 
 - `GET /api/chat-backups/sessions/:sessionId` returns `{ success: true, data: ChatBackupBundle }`.
+- `POST /api/chat-backups/inventory` returns `{ success: true, data: { sessions, nextCursor, missingSessionIds } }`. Send `{ sessionIds: [...] }` for one complete batch of up to 500 IDs (an empty batch stays empty), or `{ cursor?, limit? }` for pages ordered by stable session ID (default 100, maximum 500). These modes cannot be combined. Archived sessions and projects are included.
 - `POST /api/chat-backups/restore` takes `{ bundle, projectPath }` and returns `{ success: true, data: { sessionId, provider, projectPath, sessionName } }`.
 
 Version 1 supports Claude and Codex native saved conversations. It keeps the title,
@@ -23,6 +24,17 @@ OpenCode's database-backed histories are not currently portable through these AP
 The standalone Remote Hub does not load this module. Its separately disabled-by-
 default local backup store holds bundles delivered over the existing authenticated
 remote connection. Disabling local sync does not remove already saved backups.
+
+Inventory reads current title, model, effort, archive state and observed runtime
+status on every request. It hashes only metadata of the main transcript and the
+same supported sidecars as export; it never reads chat contents or calls a model.
+The version includes native identity and inode/size/modification/change timestamps,
+so changes need not update the database activity timestamp. Missing or unsafe
+storage is reported as unavailable for that session; empty app sessions and
+unsupported providers are reported separately. Native means files are available,
+not that their contents have passed export validation. A native identity change
+during inspection defers that session's version until the next inventory poll.
+Runtime status is an observation and does not request running work on restoration.
 
 Bundles are bounded to 64 MB including JSON encoding and 512 safe relative files.
 Export rejects changed, corrupt, missing and unsupported native history. Restore
