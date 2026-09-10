@@ -24,6 +24,7 @@ export type ProviderModelOption = {
   /** Maximum input tokens reported by the remote Models API, when available. */
   maxInputTokens?: number;
 
+  /** Missing means unreported capabilities; an empty values list explicitly disallows effort overrides. */
   effort?: {
     default?: string;
     values: {

@@ -140,6 +140,8 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
       message = { ...message,
         delivery: keepDelivery ? prior.delivery : message.delivery,
         error: keepDelivery ? prior.error : message.error,
+        definitelyNotSubmitted: prior.delivery === 'delivered' || message.delivery === 'delivered'
+          ? undefined : keepDelivery ? prior.definitelyNotSubmitted : message.definitelyNotSubmitted,
         transcriptAnchorId: message.transcriptAnchorId || prior.transcriptAnchorId,
         responseMessageId: message.responseMessageId || prior.responseMessageId,
         executionId: message.executionId || prior.executionId,

@@ -13,9 +13,8 @@ import { DEFAULT_EFFORT_VALUE } from '@/shared/constants';
 import { readSelectedProvider, writeSelectedProvider } from '@/shared/selectedProvider';
 
 const FALLBACK_PROVIDER_EFFORT_VALUES: Partial<Record<LLMProvider, readonly string[]>> = {
-  // Superset used only before the model catalog loads; `ultracode` belongs to the
-  // xhigh-capable models alone, but listing it here keeps a stored ultracode
-  // selection from being reset during catalog hydration.
+  // Describes provider-level effort support before capabilities load. Claude's
+  // selectable efforts still require an exact model entry from this remote.
   claude: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
   // Superset used only before the model catalog loads. Per-model metadata
   // narrows this once available; including the GPT-5.6 tiers here prevents a
@@ -325,6 +324,11 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     if (option) {
       return option.effort?.values ?? [];
     }
+
+    // An unknown pinned ID or an unavailable catalog is not evidence that the
+    // remote accepts any particular Claude effort. Preserve saved choices
+    // separately, but never offer this provider-level superset as model support.
+    if (targetProvider === 'claude') return [];
 
     return toProviderEffortOptions(FALLBACK_PROVIDER_EFFORT_VALUES[targetProvider] ?? []);
   }, [getModelOption, getSupportsEffortForProvider]);

@@ -67,12 +67,15 @@ export function createClaudeModelCatalog(dependencies: {
             const id = string(model.id);
             if (!id || /\s/.test(id)) continue;
             const effort = record(record(model.capabilities).effort);
-            const levels = ['low', 'medium', 'high', 'xhigh', 'max'].filter((level) => record(effort[level]).supported === true);
-            rows.push({
-              value: id, label: id, description: string(model.display_name), selectionKind: 'version', catalogSource: 'remote-api', contextMode: 'default',
+            const knownLevels = ['low', 'medium', 'high', 'xhigh', 'max'];
+            const levels = knownLevels.filter((level) => record(effort[level]).supported === true);
+            const hasEffortReport = knownLevels.some((level) => typeof record(effort[level]).supported === 'boolean');
+            const option: ProviderModelOption = {
+              value: id, label: modelBase(id), description: string(model.display_name), selectionKind: 'version', catalogSource: 'remote-api', contextMode: id.endsWith('[1m]') ? '1m' : 'default',
               ...(typeof model.max_input_tokens === 'number' && model.max_input_tokens > 0 ? { maxInputTokens: model.max_input_tokens } : {}),
-              ...(levels.length ? { effort: { values: [...levels.map((value) => ({ value })), ...(levels.includes('xhigh') ? [{ value: 'ultracode', description: 'xhigh reasoning with automatic workflows; uses more API tokens.' }] : [])] } } : {}),
-            });
+              ...(effort.supported === false ? { effort: { values: [] } } : hasEffortReport ? { effort: { values: [...levels.map((value) => ({ value })), ...(levels.includes('xhigh') ? [{ value: 'ultracode', description: 'xhigh reasoning with automatic workflows; uses more API tokens.' }] : [])] } } : {}),
+            };
+            rows.push(option);
           }
           const after = string(payload.last_id);
           if (!payload.has_more || !after || after === url.searchParams.get('after_id')) break;
@@ -93,22 +96,35 @@ export function createClaudeModelCatalog(dependencies: {
     const settingsEnv = record(settings.env);
     const effectiveEnv = { ...settingsEnv, ...env };
     const rows = new Map<string, ProviderModelOption>();
+    const reportedEffortIds = new Set<string>();
     const add = (option: ProviderModelOption) => rows.set(option.value, option);
     for (const original of predefined.OPTIONS) {
       const base = modelBase(original.value);
       const override = string(effectiveEnv[`ANTHROPIC_DEFAULT_${base.toUpperCase()}_MODEL`]);
       add({ ...original, label: base === 'default' ? 'Follow remote configuration' : base === 'opusplan' ? 'Opus Plan' : base[0].toUpperCase() + base.slice(1), selectionKind: 'alias', catalogSource: 'built-in', contextMode: original.value.endsWith('[1m]') ? '1m' : 'default', ...(override ? { resolvedModel: override } : {}) });
     }
-    for (const option of await apiRows(settingsEnv)) add(option);
+    for (const option of await apiRows(settingsEnv)) {
+      add(option);
+      if (option.effort) reportedEffortIds.add(option.value);
+    }
     for (const item of sdkModels) {
       const existing = rows.get(item.value);
       const base = modelBase(item.value);
       const levels = item.supportedEffortLevels ?? [];
-      const effort = item.supportsEffort === false ? undefined : levels.length ? { values: [...levels.map((value) => ({ value: value as string })), ...(levels.includes('xhigh') ? [{ value: 'ultracode', description: 'xhigh reasoning with automatic workflows; uses more API tokens.' }] : [])] } : existing?.effort;
+      const contextMode = item.value.endsWith('[1m]') ? '1m' : 'default';
+      const explicitId = item.resolvedModel && !aliases.has(modelBase(item.resolvedModel))
+        ? item.resolvedModel + (contextMode === '1m' && !item.resolvedModel.endsWith('[1m]') ? '[1m]' : '') : undefined;
+      // Alias resolution without SDK capability fields must not overwrite an
+      // exact API refusal with the alias's broader built-in defaults.
+      const exactEffort = explicitId ? rows.get(explicitId)?.effort : undefined;
+      const effort = item.supportsEffort === false ? { values: [] } : Array.isArray(item.supportedEffortLevels) ? { values: [...levels.map((value) => ({ value: value as string })), ...(levels.includes('xhigh') ? [{ value: 'ultracode', description: 'xhigh reasoning with automatic workflows; uses more API tokens.' }] : [])] } : exactEffort ?? existing?.effort;
       const option: ProviderModelOption = { ...existing, value: item.value, label: aliases.has(base) ? existing?.label ?? base : base, description: item.description, selectionKind: aliases.has(base) ? 'alias' : 'version', catalogSource: 'remote-sdk', contextMode: item.value.endsWith('[1m]') ? '1m' : 'default', resolvedModel: item.resolvedModel, effort };
       add(option);
-      if (item.resolvedModel && !aliases.has(modelBase(item.resolvedModel))) {
-        const explicitId = item.resolvedModel + (option.contextMode === '1m' && !item.resolvedModel.endsWith('[1m]') ? '[1m]' : '');
+      if (item.supportsEffort === false || Array.isArray(item.supportedEffortLevels)) {
+        reportedEffortIds.add(item.value);
+        if (explicitId) reportedEffortIds.add(explicitId);
+      }
+      if (explicitId) {
         add({ ...rows.get(explicitId), ...option, value: explicitId, label: modelBase(explicitId), selectionKind: 'version' });
       }
     }
@@ -116,6 +132,30 @@ export function createClaudeModelCatalog(dependencies: {
     for (const value of configured) {
       const id = string(value);
       if (id && !aliases.has(modelBase(id)) && !rows.has(id)) add({ value: id, label: modelBase(id), selectionKind: 'version', catalogSource: 'remote-config', contextMode: id.endsWith('[1m]') ? '1m' : 'default' });
+    }
+    // Resolve capacity variants after merging SDK capabilities so an explicit
+    // base refusal cannot leave an earlier API-derived variant enabled. A
+    // variant's own explicit capability report remains the more specific one.
+    for (const option of [...rows.values()]) {
+      const base = rows.get(modelBase(option.value));
+      if (option.contextMode === '1m' && !reportedEffortIds.has(option.value) && base?.effort) {
+        add({ ...option, effort: base.effort });
+      }
+      // The Models API supplies capacity on an exact native Claude base ID;
+      // its [1m] selector is available even before the first SDK query. Never
+      // synthesize a variant for an unknown model or custom deployment ID.
+      if (/^claude-[a-zA-Z0-9_.-]+$/.test(option.value) && (option.maxInputTokens ?? 0) >= 1_000_000 && !rows.has(`${option.value}[1m]`)) {
+        add({ ...option, value: `${option.value}[1m]`, contextMode: '1m' });
+      }
+    }
+    // Resolve aliases after canonical variants so a description-only SDK row
+    // cannot keep built-in Opus efforts when its reported exact target denies
+    // them. Explicit alias capability reports still take precedence.
+    for (const option of [...rows.values()]) {
+      if (option.selectionKind !== 'alias' || !option.resolvedModel || reportedEffortIds.has(option.value)) continue;
+      const base = modelBase(option.resolvedModel);
+      const target = rows.get(base + (option.contextMode === '1m' ? '[1m]' : '')) ?? rows.get(base);
+      if (target?.effort) add({ ...option, effort: target.effort });
     }
     // Do not promise models that the machine's explicit Claude settings exclude.
     const allowlist = Array.isArray(settings.availableModels) ? settings.availableModels.filter((item): item is string => typeof item === 'string') : null;

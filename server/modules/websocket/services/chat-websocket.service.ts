@@ -7,19 +7,22 @@ import { providerModelsService, sessionsService } from '@/modules/providers/inde
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
 import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
 import {
+  AppError,
+  ProviderRunPreparationError,
+  createNormalizedMessage,
   getGlobalImageAssetsDir,
   isImageAttachmentDescriptor,
   normalizeAttachmentDescriptors,
-  type ChatAttachmentDescriptor,
+  parseIncomingJsonObject,
 } from '@/shared/index.js';
 import type {
   AnyRecord,
   AuthenticatedWebSocketRequest,
+  ChatAttachmentDescriptor,
   LLMProvider,
   ProviderPermissionDecision,
   ProviderRuntimeWriter,
 } from '@/shared/index.js';
-import { parseIncomingJsonObject, createNormalizedMessage } from '@/shared/index.js';
 
 /**
  * Trust boundary for client-supplied image attachments: chat.send options come
@@ -343,6 +346,7 @@ async function dispatchRun(
   }));
 
   let failure: string | null = null;
+  let runtimeInvoked = false;
   try {
     // Group-created drafts have no initial message at allocation time. Name only
     // accepted sends so a rejected competing send cannot rename the conversation.
@@ -362,16 +366,20 @@ async function dispatchRun(
     // be taken back. Inside the try so a rewind that throws still releases the
     // run instead of leaving the session processing forever.
     await beforeRun?.(run);
+    runtimeInvoked = true;
     await dependencies.runtime.run(provider, command, runtimeOptions, run.writer);
   } catch (error) {
     failure = error instanceof Error ? error.message : String(error);
+    const definitelyNotSubmitted = !runtimeInvoked || error instanceof ProviderRunPreparationError;
+    const code = error instanceof AppError ? error.code : undefined;
     console.error(`[Chat] Provider runtime "${provider}" failed`, { sessionId, error: failure });
     if (provider === 'claude' && clientMessageId && run.messageReceipts.get(clientMessageId)?.delivery !== 'delivered') run.writer.send(createNormalizedMessage({
       kind: 'status', text: 'message_delivery', sessionId, provider, clientMessageId,
       delivery: 'failed', deliveryMode, content: command, images: runtimeOptions.images, files: runtimeOptions.files,
-      timestamp: new Date().toISOString(), error: failure,
+      timestamp: new Date().toISOString(), error: failure, code,
+      ...(definitelyNotSubmitted ? { definitelyNotSubmitted: true } : {}),
     }));
-    run.writer.send(createNormalizedMessage({ kind: 'error', content: failure, sessionId, provider }));
+    run.writer.send(createNormalizedMessage({ kind: 'error', content: failure, sessionId, provider, code }));
   } finally {
     // Safety net: a runtime that crashed (or resolved) without emitting its
     // terminal `complete` would otherwise leave the session stuck in

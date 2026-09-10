@@ -16,7 +16,14 @@ export function resolveClaudeExecutionSettings(
     throw new AppError('Invalid Claude model or reasoning effort.', { code: 'INVALID_EXECUTION_SETTINGS', statusCode: 400 });
   }
   const option = catalog?.OPTIONS.find((entry) => entry.value === model);
-  if (catalog && savedEffort !== 'default' && !option?.effort?.values.some((entry) => entry.value === savedEffort)) {
+  const baseOption = model.endsWith('[1m]') ? catalog?.OPTIONS.find(entry => entry.value === model.slice(0, -4)) : undefined;
+  const reportedEffort = option?.effort ?? baseOption?.effort;
+  // SDK metadata is learned from existing queries and is absent after a restart.
+  // A missing exact ID (including a previously selected [1m] variant) or missing
+  // capabilities is unknown, not a remote denial. Preserve explicit selections
+  // for native Claude validation; only an actual effort list can reject them.
+  // An empty list represents a remote's explicit "no effort support" report.
+  if (savedEffort !== 'default' && reportedEffort && !reportedEffort.values.some((entry) => entry.value === savedEffort)) {
     throw new AppError(`This remote has not reported support for ${savedEffort} on ${model}. Choose a supported effort or Remote default.`, { code: 'UNSUPPORTED_EXECUTION_SETTINGS', statusCode: 409 });
   }
   return {

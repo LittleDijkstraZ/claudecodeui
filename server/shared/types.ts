@@ -134,6 +134,7 @@ export type ProviderModelOption = {
   contextMode?: 'default' | '1m';
   /** Maximum input tokens reported by the remote Models API, when available. */
   maxInputTokens?: number;
+  /** Missing means unreported capabilities; an empty values list explicitly disallows effort overrides. */
   effort?: {
     default?: string;
     values: {

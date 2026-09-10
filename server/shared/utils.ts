@@ -113,6 +113,22 @@ export class AppError extends Error {
   }
 }
 
+/**
+ * Providers marks failures before invoking a concrete runtime; WebSocket uses
+ * this evidence to retain an admitted prompt as definitely unsent. Never wrap
+ * an error after calling a runtime: it may have submitted input before failing.
+ * Preserve the original controlled error metadata and cause for diagnostics.
+ */
+export class ProviderRunPreparationError extends AppError {
+  constructor(error: unknown) {
+    super(error instanceof Error ? error.message : String(error), error instanceof AppError
+      ? { code: error.code, statusCode: error.statusCode, details: error.details }
+      : { code: 'RUN_PREPARATION_FAILED' });
+    this.name = 'ProviderRunPreparationError';
+    this.cause = error;
+  }
+}
+
 // ---------------------------
 //----------------- WORKSPACE PATH VALIDATION UTILITIES ------------
 /**

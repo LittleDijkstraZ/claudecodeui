@@ -21,7 +21,7 @@ type ComposerModelMenuProps = {
   effort: string;
   /** Read-only evidence and execution details for the selected remote session. */
   details?: ReactNode;
-  /** Effort values the active provider/model actually accepts; empty hides the section. */
+  /** Reported effort choices; an unconfirmed saved choice can still be cleared to Remote default. */
   effortOptions: EffortOption[];
   onSelectEffort: (effort: string) => void;
   model: string;
@@ -63,11 +63,12 @@ function ComposerModelMenu({
     }
   }, [isOpen]);
 
-  const defaultEffortLabel = t('composer.effortDefault', { defaultValue: 'Default' });
+  const defaultEffortLabel = t('composer.effortDefault', { defaultValue: 'Remote default' });
   const resolvedEffortOptions = useMemo<EffortOption[]>(
-    () => (effortOptions.length > 0 ? [{ value: DEFAULT_EFFORT_VALUE }, ...effortOptions] : []),
-    [effortOptions],
+    () => (effortOptions.length > 0 || effort !== DEFAULT_EFFORT_VALUE ? [{ value: DEFAULT_EFFORT_VALUE }, ...effortOptions] : []),
+    [effort, effortOptions],
   );
+  const effortUnconfirmed = !modelsLoading && effort !== DEFAULT_EFFORT_VALUE && !effortOptions.some(option => option.value === effort);
   const effortLabel = effort === DEFAULT_EFFORT_VALUE
     ? defaultEffortLabel
     : effort === 'ultracode' ? 'Ultracode' : effort;
@@ -126,6 +127,12 @@ function ComposerModelMenu({
               <ComposerMenuHeading>
                 {t('modelIdentity.reasoning', { defaultValue: 'Reasoning effort' })}
               </ComposerMenuHeading>
+              {effortUnconfirmed && <p role="status" className="px-2.5 py-1.5 text-xs text-amber-700 dark:text-amber-300">
+                {t('composer.effortUnconfirmed', {
+                  defaultValue: '{{effort}} is saved. This remote has not confirmed support for this model and will check your choice when you send.',
+                  effort: effortLabel,
+                })}
+              </p>}
               {resolvedEffortOptions.map((option) => (
                 <ComposerMenuItem
                   key={option.value}

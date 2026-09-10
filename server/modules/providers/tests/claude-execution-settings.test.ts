@@ -19,7 +19,7 @@ import type { AnyRecord, ProviderModelsDefinition, ProviderRuntimeContext } from
 const catalog: ProviderModelsDefinition = { DEFAULT: 'default', OPTIONS: [
   { value: 'default', label: 'Default', effort: { values: [{ value: 'high' }] } },
   { value: 'fixture-exact', label: 'Fixture', effort: { values: ['high', 'xhigh', 'ultracode'].map((value) => ({ value })) } },
-  { value: 'limited', label: 'Limited' },
+  { value: 'limited', label: 'Limited', effort: { values: [] } },
 ] };
 
 test('one canonical selection separates Ultracode from effort and refuses unsupported requests', () => {
@@ -30,6 +30,23 @@ test('one canonical selection separates Ultracode from effort and refuses unsupp
   assert.throws(() => resolveClaudeExecutionSettings({ model: 'limited', effort: 'high' }, catalog), /not reported support/);
   assert.throws(() => resolveClaudeExecutionSettings({ model: 'fixture-exact; touch /tmp/no', effort: 'default' }, catalog), /Invalid/);
   assert.throws(() => resolveClaudeExecutionSettings({ effort: 'invented' }, catalog), /Invalid/);
+});
+
+test('missing cold-start metadata preserves a saved exact 1M selection for native validation', () => {
+  const selection = { model: 'claude-fixture-exact[1m]', effort: 'ultracode' };
+  for (const options of [[], [{ value: selection.model, label: 'Configured model', catalogSource: 'remote-config' as const }]]) {
+    const resolved = resolveClaudeExecutionSettings(selection, { DEFAULT: 'default', OPTIONS: options });
+    assert.equal(resolved.model, selection.model);
+    assert.equal(resolved.effort, 'xhigh');
+    assert.equal(resolved.ultracode, true);
+    assert.deepEqual(claudeSettingsFlags(resolved), { effort: 'xhigh', settings: { ultracode: true, enableWorkflows: true } });
+  }
+  assert.throws(() => resolveClaudeExecutionSettings(selection, {
+    DEFAULT: 'default', OPTIONS: [{ value: selection.model, label: 'Reported model', effort: { values: [{ value: 'high' }] } }],
+  }), /not reported support/);
+  assert.throws(() => resolveClaudeExecutionSettings(selection, {
+    DEFAULT: 'default', OPTIONS: [{ value: 'claude-fixture-exact', label: 'Reported base', effort: { values: [] } }],
+  }), /not reported support/);
 });
 
 test('explicit permission rules remain narrow; once-only approval never becomes bypass or a directory grant', () => {

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { AppError, createNormalizedMessage } from '@/shared/index.js';
+import { AppError, createNormalizedMessage, ProviderRunPreparationError } from '@/shared/index.js';
 import { claudeSessionConfiguration } from '@/modules/providers/services/claude-session-configuration.service.js';
 import { claudeExecutionRecords } from '@/modules/providers/services/claude-execution-records.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
@@ -73,23 +73,30 @@ export function createProviderRuntimeService(
     options: AnyRecord,
     writer: ProviderRuntimeWriter,
   ): Promise<unknown> => {
-    const provider = dependencies.resolveProvider(providerName);
-    if (providerName === 'claude' && options.sessionId) {
-      const terminal = claudeExecutionRecords.activeOwner(options.sessionId, 'shell');
-      if (terminal) {
-        const message = 'This conversation is already open in a Claude terminal. Your Chat message was not submitted. Open the existing terminal to continue there, or finish it before retrying here.';
-        writer.send(createNormalizedMessage({ kind: 'status', text: 'execution_conflict', provider: 'claude', sessionId: options.sessionId,
-          code: 'CLAUDE_TERMINAL_ACTIVE', clientMessageId: options.clientMessageId, ...terminal }));
-        throw new AppError(message, { code: 'CLAUDE_TERMINAL_ACTIVE', statusCode: 409, details: terminal });
+    let provider: IProvider;
+    try {
+      provider = dependencies.resolveProvider(providerName);
+      if (providerName === 'claude' && options.sessionId) {
+        const terminal = claudeExecutionRecords.activeOwner(options.sessionId, 'shell');
+        if (terminal) {
+          const message = 'This conversation is already open in a Claude terminal. Your Chat message was not submitted. Open the existing terminal to continue there, or finish it before retrying here.';
+          writer.send(createNormalizedMessage({ kind: 'status', text: 'execution_conflict', provider: 'claude', sessionId: options.sessionId,
+            code: 'CLAUDE_TERMINAL_ACTIVE', clientMessageId: options.clientMessageId, ...terminal }));
+          throw new AppError(message, { code: 'CLAUDE_TERMINAL_ACTIVE', statusCode: 409, details: terminal });
+        }
+        const prepared = await claudeSessionConfiguration.prepare(options.sessionId);
+        options = { ...options, model: prepared.settings.model,
+          effort: prepared.settings.ultracode ? 'ultracode' : prepared.settings.effort,
+          executionId: randomUUID(),
+          executionSettings: prepared.settings,
+          expectedProviderSessionId: prepared.row.provider_session_id,
+          cwd: prepared.row.project_path, projectPath: prepared.row.project_path };
       }
-      const prepared = await claudeSessionConfiguration.prepare(options.sessionId);
-      options = { ...options, model: prepared.settings.model,
-        effort: prepared.settings.ultracode ? 'ultracode' : prepared.settings.effort,
-        executionId: randomUUID(),
-        executionSettings: prepared.settings,
-        expectedProviderSessionId: prepared.row.provider_session_id,
-        cwd: prepared.row.project_path, projectPath: prepared.row.project_path };
+    } catch (error) {
+      throw new ProviderRunPreparationError(error);
     }
+    // Keep the provider invocation outside the preparation boundary. Its
+    // rejection alone cannot establish whether the prompt reached the model.
     return provider.runtime.run(command, options, writer, createRuntimeContext(provider));
   };
 

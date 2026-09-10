@@ -507,6 +507,35 @@ test('definite pre-admission rejection survives reload and only native delivery 
   expect(readQueuedMessage('session-a')).toBeNull();
 });
 
+test.each(['live', 'reconnect'] as const)('a %s preparation-failure receipt remains definitely unsent through reload until actual delivery', source => {
+  const view = handlers();
+  const failed = { ...receipt('failed'), definitelyNotSubmitted: true,
+    code: 'UNSUPPORTED_EXECUTION_SETTINGS', error: 'Synthetic execution settings rejected before model launch',
+    files: [{ path: '/uploads/retained.txt' }] };
+  if (source === 'live') {
+    view.emit(receipt('queued'));
+    view.emit(failed);
+  } else {
+    view.emit({ kind: 'chat_subscribed', sessionId: 'session-a', isProcessing: false, messageReceipts: [failed] });
+  }
+  expect(view.result.current.store.getMessages('session-a').find(message => message.clientMessageId)).toMatchObject({
+    delivery: 'failed', definitelyNotSubmitted: true, deliveryError: failed.error, files: failed.files,
+  });
+  view.emit(receipt('queued'));
+  view.emit({ kind: 'complete', sessionId: 'session-a' });
+  view.unmount();
+  const restored = handlers();
+  expect(restored.result.current.store.getMessages('session-a').find(message => message.clientMessageId)).toMatchObject({
+    delivery: 'failed', definitelyNotSubmitted: true, deliveryError: failed.error,
+  });
+  expect(readQueuedMessage('session-a')).toBeNull();
+  restored.emit(receipt('delivered'));
+  restored.emit(failed);
+  const delivered = restored.result.current.store.getMessages('session-a').find(message => message.clientMessageId);
+  expect(delivered?.delivery).toBe('delivered');
+  expect(delivered?.definitelyNotSubmitted).toBeUndefined();
+});
+
 test('a stale retry callback cannot submit another conversation’s retained copy', async () => {
   const view = composer(BACKGROUND);
   await act(async () => { await view.result.current.retryUnconfirmedMessage({ type: 'user', sessionId: 'session-b', content: 'Other session', timestamp: 1, delivery: 'failed', clientMessageId: '22222222-2222-4222-8222-222222222222' }); });

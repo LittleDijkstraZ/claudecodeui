@@ -176,8 +176,12 @@ machine's installed Claude or sending a model question.
 Keep three separate choices: model version/alias, context capacity, and
 reasoning effort. A `[1m]` suffix is a context-capacity variant, not a model
 version. Preserve the exact wire ID when sending a selected version and offer
-only capacity variants supplied by that remote's catalog. Never infer a new
-variant simply by appending `[1m]` to an arbitrary model ID. Ultracode remains
+only capacity variants supported by that remote's metadata. An exact native
+Claude ID with at least 1,000,000 input tokens reported by the remote Models API
+also supplies its `[1m]` selector, including the same reported effort levels.
+This keeps confirmed 1M selections available immediately after a server restart,
+before any SDK query has populated its in-memory catalog. Never append `[1m]`
+to an unknown model or custom deployment ID. Ultracode remains
 the separate settings behavior described above.
 
 The default option follows the owning remote's Claude configuration by omitting
@@ -212,7 +216,15 @@ actual process, and the next-launch choice. SDK settings observations and Shell
 hooks record only approved configuration fields and identity, not tool contents
 or prompts. A requested `xhigh` effort alone does not prove Ultracode enabled.
 Unavailable observations stay unconfirmed; older execution history is not
-invented. Unsupported combinations return an explicit error. Catalog discovery
+invented. Explicitly unsupported combinations return an error before submission.
+Missing catalog metadata is distinct from an explicit refusal: a saved exact
+model/effort choice survives a restart and is passed intact to native Claude for
+validation. The menu does not invent reasoning options for an unknown Claude
+model; it shows the saved choice as unconfirmed and keeps Remote default available.
+An explicit empty effort list means no overrides are supported. Preparation
+failures are labeled Not submitted in both live and reconnected message receipts;
+errors after runtime dispatch remain unconfirmed unless native delivery is known.
+Neither path automatically resends the message. Catalog discovery
 never starts a new model question to check whether an option works.
 
 The Shell launch validates the owning project, native session, and configuration

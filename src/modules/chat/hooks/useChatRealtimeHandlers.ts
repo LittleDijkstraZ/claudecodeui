@@ -155,9 +155,11 @@ export function useChatRealtimeHandlers({
           delivery,
           isUnlocatedLocalCopy: true,
           deliveryError: typeof msg.error === 'string' ? msg.error : undefined,
+          definitelyNotSubmitted: delivery === 'failed' && msg.definitelyNotSubmitted === true ? true : undefined,
         });
       }
-      sessionStore.updateMessageDelivery(sid, msg.clientMessageId, delivery, typeof msg.error === 'string' ? msg.error : undefined);
+      sessionStore.updateMessageDelivery(sid, msg.clientMessageId, delivery, typeof msg.error === 'string' ? msg.error : undefined,
+        delivery === 'failed' && msg.definitelyNotSubmitted === true ? true : undefined);
     };
     const mutationListener = (event: Event) => {
       const detail = (event as CustomEvent<ClaudeSessionMutationEvent>).detail;

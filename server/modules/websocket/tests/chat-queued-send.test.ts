@@ -9,6 +9,7 @@ import type { WebSocket } from 'ws';
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import { sessionsService } from '@/modules/providers/index.js';
 import type { AnyRecord, AuthenticatedWebSocketRequest, LLMProvider } from '@/shared/index.js';
+import { AppError, ProviderRunPreparationError } from '@/shared/index.js';
 
 import { chatRunRegistry } from '../services/chat-run-registry.service.js';
 import { handleChatConnection } from '../services/chat-websocket.service.js';
@@ -316,7 +317,7 @@ for (const changedAttachment of ['image', 'file', 'omitted'] as const) {
   });
 }
 
-test('a launch preparation failure returns a failed receipt for the admitted prompt before completion', { concurrency: false }, async () => {
+test('an unclassified runtime failure returns an uncertain failed receipt for the admitted prompt before completion', { concurrency: false }, async () => {
   await withFixture(async ({ sessionId, connection, run }) => {
     run.writer.sendComplete({ exitCode: 0 });
     await connection.receive({ type: 'chat.send', sessionId, clientMessageId: CLIENT_ID, content: 'Keep this user prompt' });
@@ -324,9 +325,79 @@ test('a launch preparation failure returns a failed receipt for the admitted pro
     assert.deepEqual(receipts.map(frame => frame.delivery), ['queued', 'failed']);
     assert.ok(receipts.every(frame => frame.content === 'Keep this user prompt'));
     assert.match(String(receipts[1].error), /Fixture launch preparation failed/);
+    assert.equal(receipts[1].definitelyNotSubmitted, undefined);
     assert.ok(Number(receipts[1].seq) < Number(connection.frames.find(frame => frame.kind === 'complete')?.seq));
     assert.equal(chatRunRegistry.isProcessing(sessionId), false);
   }, { run: async () => { throw new Error('Fixture launch preparation failed'); } });
+});
+
+test('a settings rejection before native dispatch produces a definitely unsent receipt, preserved across reconnect and UUID retry', { concurrency: false }, async () => {
+  let runtimeCalls = 0;
+  await withFixture(async ({ sessionId, connection, run }) => {
+    run.writer.sendComplete({ exitCode: 0 });
+    const send = { type: 'chat.send', sessionId, clientMessageId: CLIENT_ID, content: 'Preserve this rejected prompt' };
+    await connection.receive(send);
+    const receipts = connection.frames.filter(frame => frame.text === 'message_delivery' && frame.clientMessageId === CLIENT_ID);
+    assert.deepEqual(receipts.map(frame => frame.delivery), ['queued', 'failed']);
+    assert.equal(receipts[1].definitelyNotSubmitted, true);
+    assert.equal(receipts[1].code, 'UNSUPPORTED_EXECUTION_SETTINGS');
+    assert.equal(receipts[1].content, send.content);
+    assert.equal(chatRunRegistry.isProcessing(sessionId), false);
+
+    connection.frames = [];
+    await connection.receive({ type: 'chat.subscribe', sessions: [{ sessionId }] });
+    const finalReceipt = connection.frames.find(frame => frame.kind === 'chat_subscribed')?.messageReceipts[0];
+    assert.equal(finalReceipt?.delivery, 'failed');
+    assert.equal(finalReceipt?.definitelyNotSubmitted, true);
+    connection.frames = [];
+    await connection.receive(send);
+    assert.equal(runtimeCalls, 1, 'a UUID retry replays its original result without resubmitting');
+    assert.equal(connection.frames[0]?.definitelyNotSubmitted, true);
+  }, { run: async () => {
+    runtimeCalls++;
+    throw new ProviderRunPreparationError(new AppError('Synthetic settings rejection', { code: 'UNSUPPORTED_EXECUTION_SETTINGS', statusCode: 409 }));
+  } });
+});
+
+test('gateway preparation failures are definitely unsent without invoking a provider runtime', { concurrency: false }, async context => {
+  context.mock.method(sessionsService, 'initializeAppSessionName', () => { throw new Error('Synthetic metadata preparation failed'); });
+  let runtimeCalls = 0;
+  await withFixture(async ({ sessionId, connection, run }) => {
+    run.writer.sendComplete({ exitCode: 0 });
+    await connection.receive({ type: 'chat.send', sessionId, clientMessageId: CLIENT_ID, content: 'Retain synthetic input' });
+    const failed = connection.frames.find(frame => frame.text === 'message_delivery' && frame.delivery === 'failed');
+    assert.equal(failed?.definitelyNotSubmitted, true);
+    assert.equal(runtimeCalls, 0);
+  }, { run: async () => { runtimeCalls++; } });
+});
+
+test('a runtime error after native delivery cannot relabel the acknowledged prompt as unsent', { concurrency: false }, async () => {
+  await withFixture(async ({ sessionId, connection, run }) => {
+    run.writer.sendComplete({ exitCode: 0 });
+    await connection.receive({ type: 'chat.send', sessionId, clientMessageId: CLIENT_ID, content: 'Native acknowledged input' });
+    const receipts = connection.frames.filter(frame => frame.text === 'message_delivery');
+    assert.deepEqual(receipts.map(frame => frame.delivery), ['queued', 'delivered']);
+    assert.ok(receipts.every(frame => !frame.definitelyNotSubmitted));
+    assert.equal(chatRunRegistry.getRun(sessionId)?.messageReceipts.get(CLIENT_ID)?.delivery, 'delivered');
+  }, { run: async (_provider, content, options, writer) => {
+    writer.send({ kind: 'status', text: 'message_delivery', provider: 'claude', sessionId: options.sessionId,
+      clientMessageId: CLIENT_ID, content, delivery: 'delivered' });
+    throw new Error('Synthetic failure after acknowledgement');
+  } });
+});
+
+test('delivery confirmation outranks later failures and clears any stale definitely-unsent classification', { concurrency: false }, async () => {
+  await withFixture(async ({ sessionId, run }) => {
+    const receipt = { kind: 'status', text: 'message_delivery', provider: 'claude', sessionId, clientMessageId: CLIENT_ID, content: 'Synthetic delivery transitions' };
+    run.writer.send({ ...receipt, delivery: 'failed', definitelyNotSubmitted: true });
+    run.writer.send({ ...receipt, delivery: 'queued' });
+    assert.equal(run.messageReceipts.get(CLIENT_ID)?.definitelyNotSubmitted, true);
+    run.writer.send({ ...receipt, delivery: 'delivered' });
+    assert.equal(run.messageReceipts.get(CLIENT_ID)?.definitelyNotSubmitted, undefined);
+    run.writer.send({ ...receipt, delivery: 'failed', definitelyNotSubmitted: true });
+    assert.equal(run.messageReceipts.get(CLIENT_ID)?.delivery, 'delivered');
+    assert.equal(run.messageReceipts.get(CLIENT_ID)?.definitelyNotSubmitted, undefined);
+  });
 });
 
 test('a completed run returns final delivery receipts on subscribe without replaying old assistant content', { concurrency: false }, async () => {

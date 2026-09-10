@@ -1,5 +1,7 @@
 {
   "composer": {
+    "effortDefault": "远端默认",
+    "effortUnconfirmed": "已保留 {{effort}}。远端尚未确认此模型支持该选项，会在发送时验证你的选择。",
     "editing": {
       "title": "正在替换先前的消息",
       "filesNotReverted": "已修改的文件不会被还原",

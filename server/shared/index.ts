@@ -33,6 +33,7 @@ export {
   createCompleteMessage,
   createNormalizedMessage,
   AppError,
+  ProviderRunPreparationError,
   asyncHandler,
   createApiSuccessResponse,
   normalizeProjectPath,
