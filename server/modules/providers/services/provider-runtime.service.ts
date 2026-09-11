@@ -106,6 +106,14 @@ export function createProviderRuntimeService(
     async enqueue(providerName: LLMProvider, sessionId: string, command: string, options: AnyRecord): Promise<boolean> {
       return await dependencies.resolveProvider(providerName).runtime.enqueue?.(sessionId, command, options) ?? false;
     },
+    /** The chat gateway uses this to advance already submitted input in the owning process. */
+    async interruptQueued(providerName: LLMProvider, sessionId: string, clientMessageId: string): Promise<boolean> {
+      return await dependencies.resolveProvider(providerName).runtime.interruptQueued?.(sessionId, clientMessageId) ?? false;
+    },
+    /** Task detail controls stop only the selected task in its existing provider process. */
+    async stopTask(providerName: LLMProvider, sessionId: string, taskId: string): Promise<boolean> {
+      return await dependencies.resolveProvider(providerName).runtime.stopTask?.(sessionId, taskId) ?? false;
+    },
 
     hasRuntime(providerName: string): boolean {
       try {

@@ -153,7 +153,14 @@
       "retainedFiles": "保留的文件：{{names}}。若复制这段文字重新发送，请重新选择所需附件。",
       "copyPaused": "把暂停的文字复制到输入框",
       "copyPausedHint": "复制文字到输入框；附件副本会保留在这里供检查",
-      "afterReply": "等当前回复结束后发送，后台 Workflow 继续运行"
+      "afterReply": "等当前回复结束后发送，后台 Workflow 继续运行",
+      "interrupt": "中断当前回复并处理排队消息",
+      "interrupting": "正在中断…",
+      "interruptHint": "立即处理排队消息，后台任务继续运行。",
+      "interruptUnavailable": "当前执行尚未确认支持中断排队消息。",
+      "controlFailed": "操作失败，排队消息仍保留。",
+      "controlDisconnected": "连接已断开，请重连后重试；排队消息未被更改。",
+      "controlUnconfirmed": "尚未收到操作确认，请检查连接和当前状态后重试。"
     },
     "commands": {
       "reported": "远端已确认",

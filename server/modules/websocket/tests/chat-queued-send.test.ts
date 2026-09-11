@@ -32,7 +32,7 @@ async function withFixture(runTest: (fixture: {
   connection: FakeConnection;
   run: NonNullable<ReturnType<typeof chatRunRegistry.startRun>>;
   enqueueCalls: Array<{ provider: LLMProvider; sessionId: string; command: string; options: AnyRecord }>;
-}) => Promise<void>, options: { userId?: string; ownerId?: string; enqueue?: () => Promise<boolean>; run?: RuntimeGateway['run']; abort?: RuntimeGateway['abort']; provider?: LLMProvider } = {}): Promise<void> {
+}) => Promise<void>, options: { userId?: string; ownerId?: string; enqueue?: () => Promise<boolean>; run?: RuntimeGateway['run']; abort?: RuntimeGateway['abort']; interruptQueued?: RuntimeGateway['interruptQueued']; stopTask?: RuntimeGateway['stopTask']; provider?: LLMProvider } = {}): Promise<void> {
   const previous = process.env.DATABASE_PATH;
   const directory = await mkdtemp(path.join(os.tmpdir(), 'chat-queued-send-'));
   closeConnection(); process.env.DATABASE_PATH = path.join(directory, 'auth.db');
@@ -49,6 +49,8 @@ async function withFixture(runTest: (fixture: {
       hasRuntime: () => true,
       run: options.run ?? (async () => assert.fail('A queued send must never start another runtime')),
       abort: options.abort ?? (async () => assert.fail('A queued send must never stop the current runtime')),
+      interruptQueued: options.interruptQueued,
+      stopTask: options.stopTask,
       resolveToolApproval: () => {}, getPendingApprovalsForSession: () => [],
       enqueue: async (selectedProvider, sessionId, command, runtimeOptions) => {
         enqueueCalls.push({ provider: selectedProvider, sessionId, command, options: runtimeOptions });
@@ -71,6 +73,65 @@ async function withFixture(runTest: (fixture: {
     await rm(directory, { recursive: true, force: true });
   }
 }
+
+test('queued interrupt targets the existing UUID without resubmitting, completing or changing its delivery receipt', { concurrency: false }, async () => {
+  const calls: unknown[][] = [];
+  await withFixture(async ({ sessionId, connection, run, enqueueCalls }) => {
+    run.writer.send({ kind: 'status', text: 'claude_runtime_state', provider: 'claude', phase: 'foreground', acceptsInput: true, canInterruptQueuedMessages: true, canStopTask: true, backgroundTasks: 1 });
+    run.writer.send({ kind: 'status', text: 'message_delivery', provider: 'claude', clientMessageId: CLIENT_ID, delivery: 'queued', deliveryMode: 'queue', content: 'Already submitted' });
+    await connection.receive({ type: 'chat.interrupt', sessionId, clientMessageId: CLIENT_ID, requestId: 'interrupt-request' });
+    assert.deepEqual(calls, [['claude', sessionId, CLIENT_ID]]);
+    assert.equal(enqueueCalls.length, 0);
+    assert.equal(run.status, 'running');
+    assert.equal(run.messageReceipts.get(CLIENT_ID)?.delivery, 'queued');
+    assert.equal(run.messageReceipts.get(CLIENT_ID)?.deliveryMode, 'queue');
+    assert.deepEqual(connection.frames.at(-1), { kind: 'status', text: 'queued_input_interrupt', sessionId, clientMessageId: CLIENT_ID, requestId: 'interrupt-request', status: 'completed' });
+    await connection.receive({ type: 'chat.subscribe', sessions: [{ sessionId }] });
+    assert.equal(connection.frames.find(frame => frame.kind === 'chat_subscribed')?.canInterruptQueuedMessages, true);
+    assert.equal(connection.frames.find(frame => frame.kind === 'chat_subscribed')?.canStopTask, true);
+    assert.equal(chatRunRegistry.listRunningRuns()[0]?.canInterruptQueuedMessages, true);
+  }, { interruptQueued: async (...args) => { calls.push(args); return true; } });
+});
+
+for (const outcome of ['false', 'throw'] as const) {
+  test(`queued interrupt ${outcome} returns an action error without failing the queued message`, { concurrency: false }, async () => {
+    await withFixture(async ({ sessionId, connection, run }) => {
+      run.writer.send({ kind: 'status', text: 'claude_runtime_state', provider: 'claude', phase: 'foreground', acceptsInput: true, canInterruptQueuedMessages: true, backgroundTasks: 1 });
+      run.writer.send({ kind: 'status', text: 'message_delivery', provider: 'claude', clientMessageId: CLIENT_ID, delivery: 'queued', content: 'Keep queued' });
+      await connection.receive({ type: 'chat.interrupt', sessionId, clientMessageId: CLIENT_ID });
+      assert.equal(connection.frames.at(-1)?.text, 'queued_input_interrupt');
+      assert.equal(connection.frames.at(-1)?.status, 'failed');
+      assert.equal(run.messageReceipts.get(CLIENT_ID)?.delivery, 'queued');
+      assert.equal(run.status, 'running');
+      assert.equal(connection.frames.some(frame => frame.kind === 'protocol_error' || frame.kind === 'complete'), false);
+    }, { interruptQueued: async () => { if (outcome === 'throw') throw new Error('Native control rejected'); return false; } });
+  });
+}
+
+for (const state of ['delivered', 'failed', 'missing', 'unsupported', 'closed', 'completed', 'other-owner'] as const) {
+  test(`queued interrupt refuses ${state} state before any provider control`, { concurrency: false }, async () => {
+    await withFixture(async ({ sessionId, connection, run }) => {
+      run.writer.send({ kind: 'status', text: 'claude_runtime_state', provider: 'claude', phase: 'foreground', acceptsInput: state !== 'closed', canInterruptQueuedMessages: state !== 'unsupported', backgroundTasks: 1 });
+      if (state !== 'missing') run.writer.send({ kind: 'status', text: 'message_delivery', provider: 'claude', clientMessageId: CLIENT_ID, delivery: state === 'delivered' || state === 'failed' ? state : 'queued', content: 'Original' });
+      if (state === 'completed') run.writer.sendComplete({ exitCode: 0 });
+      await connection.receive({ type: 'chat.interrupt', sessionId, clientMessageId: CLIENT_ID });
+      assert.equal(connection.frames.at(-1)?.status, 'failed');
+      assert.equal(connection.frames.at(-1)?.text, 'queued_input_interrupt');
+    }, { ...(state === 'other-owner' ? { userId: 'other-user' } : {}), interruptQueued: async () => assert.fail('Unavailable queued messages must never interrupt a current reply') });
+  });
+}
+
+test('task stop uses the owning runtime and reports acceptance separately from task completion', { concurrency: false }, async () => {
+  const calls: unknown[][] = [];
+  await withFixture(async ({ sessionId, connection, run }) => {
+    run.writer.send({ kind: 'status', text: 'claude_runtime_state', provider: 'claude', phase: 'background', acceptsInput: true, canStopTask: true, backgroundTasks: 2 });
+    await connection.receive({ type: 'chat.stop-task', sessionId, taskId: 'workflow-task', requestId: 'stop-request' });
+    assert.deepEqual(calls, [['claude', sessionId, 'workflow-task']]);
+    assert.deepEqual(connection.frames.at(-1), { kind: 'status', text: 'task_stop', sessionId, taskId: 'workflow-task', requestId: 'stop-request', status: 'completed' });
+    assert.equal(run.status, 'running');
+    assert.equal(run.runtimeState?.backgroundTasks, 2, 'Only a native notification settles the task');
+  }, { stopTask: async (...args) => { calls.push(args); return true; } });
+});
 
 test('a UUID-stamped send enters the existing Claude runtime without mutating its model, effort, or run identity', { concurrency: false }, async () => {
   await withFixture(async ({ sessionId, connection, run, enqueueCalls }) => {

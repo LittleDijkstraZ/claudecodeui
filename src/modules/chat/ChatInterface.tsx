@@ -25,6 +25,7 @@ import { useScheduledMessages } from '@/modules/chat/composer/useScheduledMessag
 import { useChatSessionState } from '@/modules/chat/hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '@/modules/chat/hooks/useChatRealtimeHandlers';
 import { useChatComposerState } from '@/modules/chat/hooks/useChatComposerState';
+import { useClaudeTaskControls } from '@/modules/chat/hooks/useClaudeTaskControls';
 import { useSessionStore } from '@/modules/chat/hooks/useSessionStore';
 import {
   useProcessingSessions,
@@ -264,6 +265,10 @@ function ChatInterface({
   useEffect(() => { agentHistorySession.current = viewedSessionId; setAgentHistoryError(null); }, [viewedSessionId]);
 
   const agentMessages = useMemo(() => chatMessages.filter(message => message.isSubagentContainer || message.toolName === 'Workflow'), [chatMessages]);
+  const queuedMessages = useMemo(() => chatMessages.filter(message => message.type === 'user' && message.delivery === 'queued' && message.clientMessageId), [chatMessages]);
+  const { interruptQueuedMessage, stopTask, interruptingMessageId, stoppingTaskId, interruptError, taskStopError } = useClaudeTaskControls({
+    sessionId: viewedSessionId, activity: sessionActivity, messages: queuedMessages, sendMessage, subscribe,
+  });
   const taskRecords = viewedSessionId ? sessionStore.getMessages(viewedSessionId) : undefined;
   const revealAgentOrigin = useCallback((messageKey: string) => {
     workspaceActions?.collapsePanel();
@@ -275,8 +280,9 @@ function ChatInterface({
       sessionId: viewedSessionId, project: selectedProject, messages: agentMessages, records: taskRecords, activity: sessionActivity,
       hasEarlierMessages: hasMoreMessages, isLoadingEarlierMessages: isLoadingMoreMessages,
       loadEarlierMessages: loadEarlierAgentActivity, historyError: agentHistoryError, revealOrigin: revealAgentOrigin, onFileOpen,
+      stopTask, stoppingTaskId, taskStopError,
     });
-  }, [workspaceActions, viewedSessionId, selectedProject, agentMessages, taskRecords, sessionActivity, hasMoreMessages, isLoadingMoreMessages, loadEarlierAgentActivity, agentHistoryError, revealAgentOrigin, onFileOpen]);
+  }, [workspaceActions, viewedSessionId, selectedProject, agentMessages, taskRecords, sessionActivity, hasMoreMessages, isLoadingMoreMessages, loadEarlierAgentActivity, agentHistoryError, revealAgentOrigin, onFileOpen, stopTask, stoppingTaskId, taskStopError]);
 
   const jumpToChange = useCallback((change: ConversationFileChange) => {
     setChangeJumpError(null);
@@ -359,7 +365,6 @@ function ChatInterface({
     syncInputOverlayScroll,
     handleClearInput,
     handleAbortSession,
-    handleInterruptAndSend,
     handlePermissionDecision,
     handleGrantToolPermission,
     handleInputFocusChange,
@@ -689,7 +694,10 @@ function ChatInterface({
           hasInput={Boolean(input.trim())}
           onClearInput={handleClearInput}
           onSubmit={handleSubmit}
-          onInterruptAndSend={handleInterruptAndSend}
+          queuedMessages={queuedMessages}
+          onInterruptQueuedMessage={interruptQueuedMessage}
+          interruptingMessageId={interruptingMessageId}
+          interruptError={interruptError}
           isDragActive={isDragActive}
           queuedDraft={queuedDraft}
           onEditQueuedDraft={editQueuedDraft}

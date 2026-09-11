@@ -36,6 +36,10 @@ export interface IProviderRuntime {
   ): Promise<unknown>;
   /** Adds input to an already owned process; false means no such input stream, never permission to spawn one. */
   enqueue?(sessionId: string, command: string, options: AnyRecord): Promise<boolean>;
+  /** Interrupts the foreground reply without closing stdin or resubmitting the identified queued input. */
+  interruptQueued?(sessionId: string, clientMessageId: string): Promise<boolean>;
+  /** Stops one native task belonging to this live session; false means no such running task. */
+  stopTask?(sessionId: string, taskId: string): Promise<boolean>;
   abort(sessionId: string): boolean | Promise<boolean>;
   permissions?: ProviderRuntimePermissionGateway;
 }

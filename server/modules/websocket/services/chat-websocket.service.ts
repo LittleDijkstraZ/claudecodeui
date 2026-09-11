@@ -76,6 +76,8 @@ export type ProviderRuntimeGateway = {
     writer: ProviderRuntimeWriter,
   ): Promise<unknown>;
   enqueue?(provider: LLMProvider, sessionId: string, command: string, options: AnyRecord): Promise<boolean>;
+  interruptQueued?(provider: LLMProvider, sessionId: string, clientMessageId: string): Promise<boolean>;
+  stopTask?(provider: LLMProvider, sessionId: string, taskId: string): Promise<boolean>;
   abort(provider: LLMProvider, sessionId: string): Promise<boolean>;
   resolveToolApproval(requestId: string, payload: ProviderPermissionDecision): void;
   getPendingApprovalsForSession(sessionId: string): unknown[];
@@ -545,6 +547,37 @@ async function handleChatAbort(
   if (run.provider !== 'claude') chatRunRegistry.completeRunIfCurrent(run, { exitCode: 0, aborted: true });
 }
 
+/** Handles live controls without replacing a run or changing a queued prompt's delivery receipt. */
+async function handleLiveClaudeControl(ws: WebSocket, userId: string | number | null, data: AnyRecord, dependencies: ChatWebSocketDependencies): Promise<void> {
+  const sessionId = readRequiredSessionId(data);
+  const isInterrupt = data.type === 'chat.interrupt';
+  const clientMessageId = typeof data.clientMessageId === 'string' ? data.clientMessageId : undefined;
+  const taskId = typeof data.taskId === 'string' ? data.taskId : undefined;
+  const reply = (status: 'completed' | 'failed', error?: string) => sendJson(ws, {
+    kind: 'status', text: isInterrupt ? 'queued_input_interrupt' : 'task_stop', sessionId,
+    ...(isInterrupt ? { clientMessageId } : { taskId }),
+    ...(typeof data.requestId === 'string' ? { requestId: data.requestId } : {}), status, ...(error ? { error } : {}),
+  });
+  const run = sessionId ? chatRunRegistry.getRun(sessionId) : undefined;
+  if (!sessionId || !run || run.status !== 'running' || run.provider !== 'claude' || String(run.writer.userId) !== String(userId)) {
+    reply('failed', 'This Claude session is no longer available for this action.'); return;
+  }
+  if (run.runtimeState?.acceptsInput !== true || (isInterrupt ? run.runtimeState.canInterruptQueuedMessages !== true : run.runtimeState.canStopTask !== true)) {
+    reply('failed', 'This Claude process has not confirmed support for this action.'); return;
+  }
+  if (isInterrupt ? !clientMessageId || run.messageReceipts.get(clientMessageId)?.delivery !== 'queued' : !taskId?.trim()) {
+    reply('failed', isInterrupt ? 'This message is no longer queued.' : 'A running task identifier is required.'); return;
+  }
+  try {
+    const accepted = isInterrupt
+      ? await dependencies.runtime.interruptQueued?.('claude', sessionId, clientMessageId!)
+      : await dependencies.runtime.stopTask?.('claude', sessionId, taskId!);
+    reply(accepted ? 'completed' : 'failed', accepted ? undefined : isInterrupt
+      ? 'The message is no longer queued or Claude could not interrupt the current reply.'
+      : 'The task is no longer running or Claude could not stop it.');
+  } catch (error) { reply('failed', error instanceof Error ? error.message : String(error)); }
+}
+
 /**
  * Handles `chat.subscribe`: for each requested session, reports whether a run
  * is processing, re-attaches the live stream to this socket, replays missed
@@ -636,6 +669,8 @@ function handlePermissionResponse(data: AnyRecord, dependencies: ChatWebSocketDe
  * Inbound protocol (client to server):
  * - `chat.send`                { sessionId, content, options? }
  * - `chat.abort`               { sessionId }
+ * - `chat.interrupt`           { sessionId, clientMessageId, requestId? }
+ * - `chat.stop-task`           { sessionId, taskId, requestId? }
  * - `chat.subscribe`           { sessions: [{ sessionId, lastSeq? }] }
  * - `chat.permission-response` { requestId, allow, updatedInput?, message?, rememberEntry? }
  *
@@ -663,6 +698,10 @@ export async function runDetachedChatTurn(
     userId: string | number | null;
     content: string;
     options?: AnyRecord;
+    /** Saved queues reuse normal UUID receipt handling when admitted to a retained Claude process. */
+    clientMessageId?: string;
+    /** A durable ordinary queue may join an accepting stream without stopping its background work. */
+    allowExistingInput?: boolean;
     /**
      * Aborts a run already in progress instead of refusing to start. A
      * scheduled message sets this: the user picked the time knowing it might
@@ -689,6 +728,15 @@ export async function runDetachedChatTurn(
 
   const activeRun = chatRunRegistry.getRun(input.sessionId);
   if (activeRun && activeRun.status === 'running') {
+    if (input.allowExistingInput && !input.interruptActiveRun && provider === 'claude' && dependencies.runtime.enqueue && activeRun.runtimeState?.acceptsInput === true) {
+      const result = await dispatchRun(null, input.userId, input.sessionId, session,
+        { sessionId: input.sessionId, content: input.content, clientMessageId: input.clientMessageId, options: input.options ?? {} }, dependencies);
+      // A closing stream can reject before making a receipt. Preserve that
+      // durable draft for another pass; an admitted UUID owns its outcome.
+      return !result.started && result.code === 'INPUT_NOT_ACCEPTED' && input.clientMessageId && !activeRun.messageReceipts.has(input.clientMessageId)
+        ? { started: false, code: 'RUN_IN_PROGRESS', error: 'The existing input stream became unavailable before this message was admitted.' }
+        : result;
+    }
     if (!input.interruptActiveRun) {
       return { started: false, code: 'RUN_IN_PROGRESS', error: 'A run was already in progress for this session.' };
     }
@@ -709,7 +757,7 @@ export async function runDetachedChatTurn(
     input.userId,
     input.sessionId,
     session,
-    { sessionId: input.sessionId, content: input.content, options: input.options ?? {} },
+    { sessionId: input.sessionId, content: input.content, clientMessageId: input.clientMessageId, options: input.options ?? {} },
     dependencies,
   );
 }
@@ -744,6 +792,10 @@ export function handleChatConnection(
           return;
         case 'chat.abort':
           await handleChatAbort(ws, data, dependencies);
+          return;
+        case 'chat.interrupt':
+        case 'chat.stop-task':
+          await handleLiveClaudeControl(ws, userId, data, dependencies);
           return;
         case 'chat.subscribe':
           handleChatSubscribe(ws, userId, data, dependencies);

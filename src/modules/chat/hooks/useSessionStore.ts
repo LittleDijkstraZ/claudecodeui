@@ -917,6 +917,30 @@ export function useSessionStore(userId?: string | number | null) {
       }
       updated.push(normalizedMessage);
     }
+    if (normalizedMessage.workflowProgress !== undefined) {
+      // A full native snapshot supersedes only this task's older large detail
+      // arrays. Keep all event identities/text and preserve newer replay state.
+      const incomingIndex = existingIndex >= 0 ? existingIndex : updated.length - 1;
+      const sameTask = (message: NormalizedMessage) => message.provider === normalizedMessage.provider
+        && (!message.runId || !normalizedMessage.runId || message.runId === normalizedMessage.runId)
+        && (message.taskId && normalizedMessage.taskId
+          ? message.taskId === normalizedMessage.taskId
+          : Boolean(message.toolUseId && message.toolUseId === normalizedMessage.toolUseId));
+      let retainedIndex = incomingIndex;
+      for (let index = 0; index < updated.length; index++) {
+        const candidate = updated[index];
+        if (!sameTask(candidate) || candidate.workflowProgress === undefined) continue;
+        if (typeof candidate.seq === 'number' && typeof updated[retainedIndex].seq === 'number'
+          && candidate.seq > updated[retainedIndex].seq!) retainedIndex = index;
+      }
+      updated = updated.map((message, index) => {
+        if (index === retainedIndex || !sameTask(message) || message.workflowProgress === undefined) return message;
+        const retained = { ...message };
+        delete retained.workflowProgress;
+        delete retained.workflowProgressTruncated;
+        return retained;
+      });
+    }
     if (updated.length > MAX_REALTIME_MESSAGES) {
       // Long Workflow tool streams must not evict user input that history has
       // not confirmed yet. Only replayable output participates in this cap.

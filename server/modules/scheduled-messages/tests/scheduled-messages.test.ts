@@ -8,6 +8,7 @@ import { claudeSessionActionsDb, closeConnection, initializeDatabase, scheduledM
 import { closeScheduledMessageDispatcher, dispatchDueScheduledMessages, dispatchQueuedMessages, initializeScheduledMessageDispatcher } from '@/modules/scheduled-messages/services/scheduled-message-dispatcher.service.js';
 import { scheduledMessagesService } from '@/modules/scheduled-messages/services/scheduled-messages.service.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
+import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 
 const SESSION_ID = 'scheduled-session';
 
@@ -73,6 +74,36 @@ test('a message due in the past is sent on the next pass, not skipped', async ()
     assert.equal(runs.length, 1);
     assert.equal(runs[0].command, 'run the nightly checks');
     assert.equal(scheduledMessagesDb.listForSession(userId, SESSION_ID)[0].status, 'sent');
+  });
+});
+
+test('saved queues poll every second independently from schedules and both timers are released on close', async t => {
+  await withIsolatedDatabase(async userId => {
+    const timers: Array<{ callback: () => void; interval: number; unrefCount: number; unref(): void }> = [];
+    const cleared: unknown[] = [];
+    t.mock.method(globalThis, 'setInterval', (callback: () => void, interval: number) => {
+      const timer = { callback, interval, unrefCount: 0, unref() { this.unrefCount++; } };
+      timers.push(timer); return timer as unknown as ReturnType<typeof setInterval>;
+    });
+    t.mock.method(globalThis, 'clearInterval', (timer: unknown) => { cleared.push(timer); });
+    const runs: RunCall[] = [];
+    initializeScheduledMessageDispatcher(createRuntime(runs));
+    initializeScheduledMessageDispatcher(createRuntime(runs));
+    assert.deepEqual(timers.map(timer => timer.interval).sort((a, b) => a - b), [1000, 30_000]);
+    assert.deepEqual(timers.map(timer => timer.unrefCount), [1, 1]);
+    sessionsDb.assignProviderSessionId(SESSION_ID, 'queue-native');
+    sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage: { content: 'Ready queued input', providerSessionId: 'queue-native' } });
+    const scheduled = scheduledMessagesDb.create({ userId, sessionId: SESSION_ID, content: 'Due scheduled input', options: {}, scheduledFor: new Date(0) });
+    timers.find(timer => timer.interval === 1000)!.callback();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.deepEqual(runs.map(run => run.command), ['Ready queued input']);
+    assert.equal(scheduledMessagesDb.listForSession(userId, SESSION_ID).find(row => row.id === scheduled.id)?.status, 'pending');
+    timers.find(timer => timer.interval === 30_000)!.callback();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.deepEqual(runs.map(run => run.command), ['Ready queued input', 'Due scheduled input']);
+    closeScheduledMessageDispatcher();
+    closeScheduledMessageDispatcher();
+    assert.deepEqual(cleared, timers);
   });
 });
 
@@ -150,6 +181,98 @@ test('a queued message stays pending while its session is busy', async () => {
   });
 });
 
+test('a message saved during startup joins the same Workflow input stream as soon as it accepts input', async () => {
+  await withIsolatedDatabase(async userId => {
+    sessionsDb.assignProviderSessionId(SESSION_ID, 'workflow-native');
+    const queuedMessage = { content: 'Continue discussing with the main model', providerSessionId: 'workflow-native' };
+    sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage });
+    const run = chatRunRegistry.startRun({ appSessionId: SESSION_ID, provider: 'claude', providerSessionId: 'workflow-native', connection: null, userId })!;
+    run.writer.send({ kind: 'status', text: 'claude_runtime_state', provider: 'claude', phase: 'foreground', acceptsInput: false, backgroundTasks: 0 });
+    const inputs: Array<{ command: string; options: Record<string, unknown> }> = [];
+    const runtime: ProviderRuntimeGateway = {
+      hasRuntime: () => true,
+      run: async () => assert.fail('A saved queue must not spawn another process beside Workflow'),
+      abort: async () => assert.fail('Sending a saved queue must preserve Workflow'),
+      resolveToolApproval: () => {}, getPendingApprovalsForSession: () => [],
+      enqueue: async (provider, sessionId, command, options) => {
+        assert.equal(provider, 'claude'); assert.equal(sessionId, SESSION_ID);
+        inputs.push({ command, options });
+        run.writer.send({ kind: 'status', text: 'message_delivery', provider, clientMessageId: options.clientMessageId, content: command, delivery: 'queued' });
+        return true;
+      },
+    };
+    assert.equal(await dispatchQueuedMessages(runtime), 0);
+    run.writer.send({ kind: 'status', text: 'claude_runtime_state', provider: 'claude', phase: 'background', acceptsInput: true, backgroundTasks: 1 });
+    assert.equal(await dispatchQueuedMessages(runtime), 1);
+    assert.equal(inputs.length, 1);
+    assert.equal(inputs[0].command, queuedMessage.content);
+    assert.match(String(inputs[0].options.clientMessageId), /^[0-9a-f-]{36}$/);
+    assert.equal(inputs[0].options.deliveryMode, 'queue');
+    assert.equal(chatRunRegistry.getRun(SESSION_ID), run);
+    assert.equal(run.status, 'running');
+    assert.equal(run.runtimeState?.backgroundTasks, 1);
+    assert.equal(sessionDraftsDb.getDrafts(userId).length, 0);
+    assert.equal(await dispatchQueuedMessages(runtime), 0);
+  });
+});
+
+test('a saved queue survives a stream-closing race before admission and is not replayed after an admitted failure', async () => {
+  await withIsolatedDatabase(async userId => {
+    sessionsDb.assignProviderSessionId(SESSION_ID, 'workflow-native');
+    const queuedMessage = { content: 'Keep this message', providerSessionId: 'workflow-native' };
+    sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage });
+    const run = chatRunRegistry.startRun({ appSessionId: SESSION_ID, provider: 'claude', providerSessionId: 'workflow-native', connection: null, userId })!;
+    run.writer.send({ kind: 'status', text: 'claude_runtime_state', provider: 'claude', phase: 'background', acceptsInput: true, backgroundTasks: 1 });
+    let attempts = 0;
+    const runtime: ProviderRuntimeGateway = {
+      hasRuntime: () => true, run: async () => assert.fail('Never replace the current Workflow'), abort: async () => assert.fail('Never stop the Workflow'),
+      resolveToolApproval: () => {}, getPendingApprovalsForSession: () => [],
+      enqueue: async (provider, _sessionId, content, options) => {
+        if (++attempts === 1) return false;
+        run.writer.send({ kind: 'status', text: 'message_delivery', provider, clientMessageId: options.clientMessageId, content, delivery: 'queued' });
+        run.writer.send({ kind: 'status', text: 'message_delivery', provider, clientMessageId: options.clientMessageId, content, delivery: 'failed', error: 'Attachment preparation failed' });
+        throw new Error('Attachment preparation failed');
+      },
+    };
+    assert.equal(await dispatchQueuedMessages(runtime), 1);
+    assert.deepEqual(sessionDraftsDb.getDrafts(userId)[0]?.queuedMessage, queuedMessage);
+    assert.equal(await dispatchQueuedMessages(runtime), 1);
+    assert.equal(sessionDraftsDb.getDrafts(userId).length, 0);
+    assert.equal([...run.messageReceipts.values()].at(-1)?.delivery, 'failed');
+    assert.equal(await dispatchQueuedMessages(runtime), 0);
+    assert.equal(attempts, 2);
+  });
+});
+
+test('a retained scheduled Workflow does not lock out a later saved main-conversation message', async () => {
+  await withIsolatedDatabase(async userId => {
+    sessionsDb.assignProviderSessionId(SESSION_ID, 'workflow-native');
+    scheduledMessagesDb.create({ userId, sessionId: SESSION_ID, content: 'Scheduled Workflow', options: {}, scheduledFor: new Date(0) });
+    let started!: () => void, finish!: () => void;
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    const finished = new Promise<void>(resolve => { finish = resolve; });
+    const queued: string[] = [];
+    const runtime: ProviderRuntimeGateway = {
+      hasRuntime: () => true,
+      run: async (_provider, _command, _options, writer) => {
+        writer.send({ kind: 'status', text: 'claude_runtime_state', provider: 'claude', phase: 'background', acceptsInput: true, backgroundTasks: 1 });
+        started(); await finished;
+      },
+      enqueue: async (_provider, _sessionId, command) => { queued.push(command); return true; },
+      abort: async () => assert.fail('The scheduled Workflow must continue'),
+      resolveToolApproval: () => {}, getPendingApprovalsForSession: () => [],
+    };
+    const scheduled = dispatchDueScheduledMessages(runtime);
+    try {
+      await ready;
+      sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage: { content: 'Main conversation follow-up', providerSessionId: 'workflow-native' } });
+      assert.equal(await dispatchQueuedMessages(runtime), 1);
+      assert.deepEqual(queued, ['Main conversation follow-up']);
+      assert.equal(chatRunRegistry.isProcessing(SESSION_ID), true);
+    } finally { finish(); await scheduled; }
+  });
+});
+
 test('a scheduled candidate claimed before rewind cannot later start in the replacement context', async () => {
   await withIsolatedDatabase(async userId => {
     sessionsDb.assignProviderSessionId(SESSION_ID, 'scheduled-original-native');
@@ -189,8 +312,9 @@ for (const firstKind of ['queued', 'scheduled'] as const) {
       } else {
         scheduledMessagesDb.create({ userId, sessionId: SESSION_ID, content: firstContent, options: {}, scheduledFor: new Date(0) });
       }
-      let poll!: () => void;
-      t.mock.method(globalThis, 'setInterval', (callback: () => void) => { poll = callback; return { unref() {} } as unknown as ReturnType<typeof setInterval>; });
+      const polls: Array<() => void> = [];
+      const poll = () => { for (const callback of polls) callback(); };
+      t.mock.method(globalThis, 'setInterval', (callback: () => void) => { polls.push(callback); return { unref() {} } as unknown as ReturnType<typeof setInterval>; });
       t.mock.method(globalThis, 'clearInterval', () => {});
       let finishWorkflow!: () => void;
       const workflow = new Promise<void>(resolve => { finishWorkflow = resolve; });

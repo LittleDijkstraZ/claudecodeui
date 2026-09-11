@@ -151,7 +151,14 @@
       "retainedFiles": "Retained files: {{names}}. Select them again if you copy this text into a new send.",
       "copyPaused": "Copy paused text to composer",
       "copyPausedHint": "Copy text to composer; retained files stay here for review",
-      "afterReply": "Queue until the current reply ends; background Workflows keep running"
+      "afterReply": "Queue until the current reply ends; background Workflows keep running",
+      "interrupt": "Interrupt to process queued messages",
+      "interrupting": "Interrupting…",
+      "interruptHint": "Handle queued messages now; background tasks keep running.",
+      "interruptUnavailable": "This execution has not confirmed support for interrupting queued messages.",
+      "controlFailed": "The action failed. Your queued messages remain available.",
+      "controlDisconnected": "Connection lost. Reconnect to try again; your queued messages have not been changed.",
+      "controlUnconfirmed": "Confirmation was not received. Check the connection and current status before trying again."
     },
     "commands": {
       "reported": "This session",

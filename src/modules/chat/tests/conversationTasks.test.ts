@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest';
+
 import type { ChatMessage, NormalizedMessage, SessionActivity } from '@/shared/types';
 import { normalizedToChatMessages } from '@/modules/chat/hooks/useChatMessages';
 import { deriveConversationTasks } from '@/modules/chat/agents/conversationTasks';
@@ -40,6 +41,30 @@ describe('task inspection by recorded identity', () => {
   test('deduplicates exact tool/task IDs without grouping similarly named runs', () => {
     const other = workflow('tool-b'); other.toolResult = { content: 'Launched', toolUseResult: { status: 'async_launched', taskId: 'task-b' } };
     expect(deriveConversationTasks([workflow(), workflow(), other], [], null)).toHaveLength(2);
+  });
+  test('retains chronological activity and the latest native phase snapshot across out-of-order replay', () => {
+    const start = progress({ id: 'first', timestamp: '2026-01-01T00:00:01Z', text: 'Starting checks' });
+    const phase = progress({ id: 'phase', timestamp: '2026-01-01T00:00:05Z', workflowProgress: [{ type: 'workflow_phase', index: 0, title: 'Verify' }, { type: 'workflow_agent', index: 0, phaseIndex: 0, label: 'Reviewer', state: 'done', resultPreview: 'Checks passed' }], workflowProgressTruncated: true });
+    const done = progress({ id: 'done', kind: 'task_notification', status: 'completed', content: '**All checks passed**', timestamp: '2026-01-01T00:00:10Z' });
+    const other = progress({ id: 'other', taskId: 'task-other', toolUseId: 'tool-other' });
+    const [task] = deriveConversationTasks([workflow()], [done, start, phase, start, other], null);
+    expect(task.activity.map(entry => entry.id)).toEqual(['first', 'phase', 'done']);
+    expect(task.workflowProgress).toEqual(phase.workflowProgress);
+    expect(task.workflowProgressTruncated).toBe(true);
+    expect(task).toMatchObject({ status: 'completed', result: '**All checks passed**' });
+  });
+  test('uses native workflow name, script path, and text-block output from launch metadata', () => {
+    const message = workflow();
+    message.toolInput = { script: 'export async function run() {}' };
+    message.toolResult = { content: JSON.stringify([{ type: 'text', text: '**Build ready**' }]), toolUseResult: { workflowName: 'Release checks', scriptPath: '/project/generated.js', status: 'completed' } };
+    expect(deriveConversationTasks([message], [], null)[0]).toMatchObject({ title: 'Release checks', description: '/project/generated.js', result: '**Build ready**' });
+  });
+  test('late running snapshots cannot replace completed native agent details', () => {
+    const completed = progress({ id: 'done', kind: 'task_notification', status: 'completed', timestamp: '2026-01-01T00:00:10Z', workflowProgress: [{ type: 'workflow_agent', index: 0, label: 'Reviewer', state: 'done', resultPreview: 'Verified' }] });
+    const late = progress({ id: 'late', timestamp: '2026-01-01T00:00:20Z', workflowProgress: [{ type: 'workflow_agent', index: 0, label: 'Reviewer', state: 'start' }] });
+    const [task] = deriveConversationTasks([workflow()], [completed, late], activity);
+    expect(task.status).toBe('completed');
+    expect(task.workflowProgress).toEqual(completed.workflowProgress);
   });
 });
 

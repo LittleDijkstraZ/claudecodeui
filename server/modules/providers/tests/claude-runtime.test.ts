@@ -70,6 +70,7 @@ function runtimeHarness(steps: (state: {
   inputDone: Promise<void>;
 }) => AsyncGenerator<AnyRecord>, waitCeilingMs = 1000, fixture: {
   interrupt?: () => Promise<void>;
+  stopTask?: (taskId: string) => Promise<void>;
   resolveModel?: () => Promise<string>;
   onEvent?: (event: NormalizedMessage) => void;
   spawn?: (options: SpawnOptions) => ChildProcessWithoutNullStreams;
@@ -93,7 +94,7 @@ function runtimeHarness(steps: (state: {
       inputClosed = true;
     })();
     const iterator = steps({ events, inputClosed: () => inputClosed, inputDone });
-    return Object.assign(iterator, { interrupt: async () => { interrupts++; await fixture.interrupt?.(); } }) as unknown as Query;
+    return Object.assign(iterator, { interrupt: async () => { interrupts++; await fixture.interrupt?.(); }, stopTask: async (taskId: string) => { await fixture.stopTask?.(taskId); } }) as unknown as Query;
   }) as typeof query;
   const runtime = createClaudeRuntime({ query: queryMock, loadMcpConfig: async () => null, waitCeilingMs,
     ...(fixture.spawn ? { spawn: fixture.spawn } : {}) });
@@ -112,11 +113,118 @@ function runtimeHarness(steps: (state: {
     enqueue: (command: string, clientMessageId: string, deliveryMode: 'queue' | 'interrupt' = 'queue') => runtime.enqueue!(appSessionId, command, { clientMessageId, deliveryMode }),
     options: () => sdkOptions,
     abort: () => runtime.abort(appSessionId),
+    interruptQueued: (clientMessageId: string) => runtime.interruptQueued!(appSessionId, clientMessageId),
+    stopTask: (taskId: string) => runtime.stopTask!(appSessionId, taskId),
     run: () => runtime.run('Fixture only; no model call is made.', { sessionId: appSessionId }, {
       send: message => { events.push(message as NormalizedMessage); fixture.onEvent?.(message as NormalizedMessage); },
     }, context),
   };
 }
+
+test('interrupting an existing queued input preserves the native query, other messages and Workflow', async () => {
+  const h = runtimeHarness(async function* ({ inputClosed, inputDone }) {
+    yield workflow(); yield started(); yield result();
+    await h.enqueue('First follow-up', 'first-follow-up');
+    yield { type: 'assistant', session_id: nativeSession, user_message_uuid: 'first-follow-up', message: { id: 'reply-one', role: 'assistant', content: [{ type: 'text', text: 'Working' }] } };
+    await h.enqueue('Queued direction', 'queued-direction');
+    await h.enqueue('Keep this too', 'queued-other');
+    assert.equal(await h.interruptQueued('queued-direction'), true);
+    assert.equal(h.interrupts(), 1);
+    assert.equal(h.queries(), 1);
+    assert.equal(inputClosed(), false);
+    assert.equal(h.events.some(event => event.kind === 'complete'), false);
+    assert.equal(h.events.filter(event => event.text === 'message_delivery' && event.clientMessageId === 'queued-direction').at(-1)?.delivery, 'queued');
+    yield { ...result(true), terminal_reason: 'aborted_streaming', user_message_uuid: 'first-follow-up' };
+    assert.equal(h.events.filter(event => event.text === 'claude_runtime_state').at(-1)?.backgroundTasks, 1);
+    for (const id of ['queued-direction', 'queued-other']) {
+      yield { type: 'user', session_id: nativeSession, uuid: id };
+      yield { ...result(), user_message_uuid: id };
+    }
+    yield notification(); yield result(); await inputDone;
+  });
+  await h.run();
+  assert.equal(h.options()?.perTaskStopAffordance, true);
+  assert.equal(h.inputs.filter(input => input.uuid === 'queued-direction').length, 1);
+  assert.equal(h.events.filter(event => event.kind === 'complete').length, 1);
+  assert.equal(h.events.at(-1)?.success, true);
+});
+
+test('a failed queued interrupt leaves delivery and live input intact; settled IDs never interrupt newer replies', async () => {
+  const h = runtimeHarness(async function* ({ inputClosed, inputDone }) {
+    yield workflow(); yield started();
+    await h.enqueue('Pending', 'pending');
+    await assert.rejects(h.interruptQueued('pending'), /Native interrupt rejected/);
+    assert.equal(inputClosed(), false);
+    assert.equal(h.events.filter(event => event.text === 'message_delivery' && event.clientMessageId === 'pending').at(-1)?.delivery, 'queued');
+    yield { type: 'user', session_id: nativeSession, uuid: 'pending' };
+    assert.equal(await h.interruptQueued('pending'), false);
+    assert.equal(await h.interruptQueued('unknown'), false);
+    assert.equal(h.interrupts(), 1);
+    yield { ...result(), user_message_uuid: 'pending' }; yield notification(); yield result(); await inputDone;
+  }, 1000, { interrupt: async () => { throw new Error('Native interrupt rejected'); } });
+  await h.run();
+  assert.equal(h.events.at(-1)?.success, true);
+});
+
+test('concurrent queued interrupt clicks share one native control request', async () => {
+  let releaseInterrupt!: () => void;
+  const interruptResponse = new Promise<void>(resolve => { releaseInterrupt = resolve; });
+  const h = runtimeHarness(async function* ({ inputDone }) {
+    yield workflow(); yield started();
+    await h.enqueue('Queued', 'queued');
+    const first = h.interruptQueued('queued');
+    const second = h.interruptQueued('queued');
+    assert.equal(h.interrupts(), 1);
+    releaseInterrupt();
+    assert.deepEqual(await Promise.all([first, second]), [true, true]);
+    yield { ...result(), user_message_uuid: 'queued' };
+    yield notification(); yield result(); await inputDone;
+  }, 1000, { interrupt: () => interruptResponse });
+  await h.run();
+  assert.equal(h.events.at(-1)?.success, true);
+});
+
+test('queued input can run while Workflow is in the background without any interrupt', async () => {
+  const h = runtimeHarness(async function* ({ inputClosed, inputDone }) {
+    yield workflow(); yield started(); yield result();
+    assert.equal(await h.enqueue('Continue the conversation', 'background-input'), true);
+    await delay(0);
+    assert.equal(h.inputs.filter(input => input.uuid === 'background-input').length, 1);
+    assert.equal(h.inputs.find(input => input.uuid === 'background-input')?.message.content, 'Continue the conversation');
+    assert.equal(await h.interruptQueued('background-input'), true);
+    assert.equal(h.interrupts(), 0);
+    assert.equal(inputClosed(), false);
+    yield { type: 'assistant', session_id: nativeSession, user_message_uuid: 'background-input', message: { id: 'bg-reply', role: 'assistant', content: [{ type: 'text', text: 'Main reply while Workflow runs' }] } };
+    yield { ...result(), user_message_uuid: 'background-input' };
+    assert.equal(h.events.filter(event => event.text === 'claude_runtime_state').at(-1)?.backgroundTasks, 1);
+    yield notification(); yield result(); await inputDone;
+  });
+  await h.run();
+  assert.equal(h.queries(), 1);
+  assert.equal(h.events.some(event => event.kind === 'text' && event.content === 'Main reply while Workflow runs'), true);
+  assert.equal(h.events.at(-1)?.success, true);
+});
+
+test('task stop uses the native task ID and retains other tasks and main input', async () => {
+  const stopped: string[] = [];
+  const h = runtimeHarness(async function* ({ inputClosed, inputDone }) {
+    yield workflow(); yield started(); yield result();
+    yield { type: 'system', subtype: 'task_progress', session_id: nativeSession, task_id: 'agent-task', task_type: 'local_agent' };
+    assert.equal(await h.stopTask('unknown-task'), false);
+    assert.equal(await h.stopTask('agent-task'), true);
+    assert.deepEqual(stopped, ['agent-task']);
+    assert.equal(inputClosed(), false);
+    assert.equal(h.interrupts(), 0);
+    yield { type: 'system', subtype: 'task_notification', session_id: nativeSession, task_id: 'agent-task', status: 'stopped' };
+    yield { type: 'system', subtype: 'task_progress', session_id: nativeSession, task_id: 'agent-task' };
+    assert.equal(await h.stopTask('agent-task'), false);
+    assert.equal(await h.stopTask('task-workflow-call'), true);
+    assert.deepEqual(stopped, ['agent-task', 'task-workflow-call']);
+    yield { ...notification(), status: 'stopped' }; yield result(); await inputDone;
+  }, 1000, { stopTask: async (taskId) => { stopped.push(taskId); } });
+  await h.run();
+  assert.equal(h.events.at(-1)?.success, true);
+});
 
 test('mock SDK Workflow launch does not complete UI or close input; final follow-up completes exactly once', async () => {
   const h = runtimeHarness(async function* ({ events, inputClosed, inputDone }) {
@@ -125,8 +233,11 @@ test('mock SDK Workflow launch does not complete UI or close input; final follow
     yield result();
     assert.equal(events.some(event => event.kind === 'complete'), false);
     assert.equal(inputClosed(), false);
-    yield { type: 'system', subtype: 'task_progress', session_id: nativeSession, task_id: 'task-workflow-call', summary: 'Verifying fixture', usage: { tool_uses: 3 } };
-    assert.equal(events.some(event => event.kind === 'status' && event.text === 'Verifying fixture'), true);
+    yield { type: 'system', subtype: 'task_progress', session_id: nativeSession, task_id: 'task-workflow-call', summary: 'Verifying fixture', usage: { tool_uses: 3 },
+      workflow_progress: [{ type: 'workflow_phase', index: 0, title: 'Verify' }, { type: 'workflow_agent', index: 1, label: 'Check', state: 'done', phaseIndex: 0, promptPreview: 'Check', resultPreview: 'Done' }] };
+    const progress = events.filter(event => event.kind === 'status' && event.text === 'Verifying fixture');
+    assert.equal(progress.length, 1);
+    assert.equal(progress[0].workflowProgress?.[0]?.type, 'workflow_phase');
     yield notification();
     assert.equal(events.some(event => event.kind === 'complete'), false);
     yield { type: 'assistant', session_id: nativeSession, message: { role: 'assistant', content: [{ type: 'text', text: 'Final fixture answer' }] } };

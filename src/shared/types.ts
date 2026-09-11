@@ -3,6 +3,7 @@ import type { NavigateFunction } from 'react-router-dom';
 
 import type { LLMProvider } from '@contracts/providers.js';
 import type { ChatBackupScope, ChatBackupGroupSnapshot } from '@contracts/chatBackup.js';
+import type { WorkflowProgressEntry } from '@contracts/claude-workflow.js';
 
 //----------------- LLM PROVIDER MODEL CATALOG ------------
 
@@ -176,6 +177,10 @@ export type SessionRuntimeState = {
   acceptsInput?: boolean;
   /** Only modes explicitly advertised by this remote execution may be offered as supported. */
   inputModes?: ClaudeInputMode[];
+  /** This execution can interrupt a reply while retaining already queued input and background tasks. */
+  canInterruptQueuedMessages?: boolean;
+  /** This execution exposes native task stopping independently of the main conversation. */
+  canStopTask?: boolean;
   backgroundTasks?: number;
   executionId?: string;
 };
@@ -540,6 +545,10 @@ export type NormalizedMessage = {
   images?: Array<{ path?: string; data?: string; name?: string }>;
   files?: Array<{ path?: string; name?: string; mimeType?: string; size?: number }>;
   workflow?: boolean;
+  /** Latest bounded native Workflow phase/agent snapshot; omitted ticks retain earlier details. */
+  workflowProgress?: WorkflowProgressEntry[];
+  /** The native snapshot exceeded the display transport budget. */
+  workflowProgressTruncated?: boolean;
   taskId?: string;
   toolUseId?: string;
   usage?: unknown;
@@ -1985,6 +1994,30 @@ export type WorkspaceBtwTab = { id: `btw:${string}`; sessionId: string; sourceLa
 /** One completed ephemeral BTW exchange, passed only as context for that tab's next side question. */
 export type ClaudeBtwHistoryTurn = { question: string; response: string };
 
+/** Recorded agent or workflow details used by chat task summaries and the workspace inspector; activity is joined only by exact provider task/tool identities. */
+export type ConversationTask = {
+  id: string;
+  kind: 'agent' | 'workflow';
+  title: string;
+  description: string;
+  sourceKey: string;
+  message: ChatMessage;
+  toolId?: string;
+  taskId?: string;
+  status: 'running' | 'completed' | 'failed' | 'stopped' | 'unknown';
+  startedAt: number | null;
+  endedAt: number | null;
+  input: Record<string, unknown>;
+  activity: NormalizedMessage[];
+  progress: string;
+  result: string;
+  usage?: unknown;
+  /** Latest recorded native phase/agent snapshot, joined by this task's exact identity. */
+  workflowProgress?: WorkflowProgressEntry[];
+  /** Indicates clipped native details so the inspector does not present a partial record as complete. */
+  workflowProgressTruncated?: boolean;
+};
+
 /** The normalized agents in the viewed conversation and callbacks back to that conversation. */
 export type WorkspaceAgentsSnapshot = {
   records?: NormalizedMessage[];
@@ -1998,6 +2031,10 @@ export type WorkspaceAgentsSnapshot = {
   historyError?: string | null;
   revealOrigin: (messageKey: string) => void;
   onFileOpen?: (filePath: string, diffInfo?: unknown) => void;
+  /** Native task control is enabled only when the runtime advertises canStopTask. */
+  stopTask?: (taskId: string) => void;
+  stoppingTaskId?: string | null;
+  taskStopError?: string | null;
 };
 
 /** An explicit request to inspect an agent or one recorded tool in its timeline. */

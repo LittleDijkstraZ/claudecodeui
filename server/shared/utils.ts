@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 
+import type { WorkflowAgentProgress, WorkflowProgressEntry } from '@contracts/claude-workflow.js';
 import { parseFrontMatter } from '@/shared/frontmatter.js';
 import type {
   AnyRecord,
@@ -371,6 +372,60 @@ export function createNormalizedMessage(fields: NormalizedMessageInput): Normali
     timestamp: fields.timestamp || new Date().toISOString(),
     provider: fields.provider,
   };
+}
+
+/**
+ * Claude live task tracking and saved-history normalization use this projection
+ * for the native `workflow_progress` field, which is emitted by the bundled CLI
+ * but omitted from its public SDK declarations. Retain only recognized display
+ * fields, at most 1,200 entries and 256,000 text characters per snapshot. Missing
+ * or malformed snapshots never erase previously recorded phase/agent details.
+ */
+export function normalizeClaudeWorkflowProgress(value: unknown): Pick<NormalizedMessage, 'workflowProgress' | 'workflowProgressTruncated'> {
+  if (!Array.isArray(value)) return {};
+  const source = value.slice(0, 1200);
+  const workflowProgress: WorkflowProgressEntry[] = [];
+  let truncated = value.length > source.length;
+  const textBudgetPerEntry = Math.min(16_000, Math.floor(256_000 / Math.max(1, source.length)));
+  for (const entry of source) {
+    const row = readObjectRecord(entry);
+    if (!row || !Number.isSafeInteger(row.index) || row.index < 0) continue;
+    let remainingText = textBudgetPerEntry;
+    const text = (candidate: unknown, limit = 512): string | undefined => {
+      if (typeof candidate !== 'string') return undefined;
+      const length = Math.min(limit, remainingText);
+      remainingText -= Math.min(candidate.length, length);
+      if (candidate.length <= length) return candidate;
+      truncated = true;
+      return length > 0 ? `${candidate.slice(0, Math.max(0, length - 1))}…` : '';
+    };
+    if (row.type === 'workflow_phase' && typeof row.title === 'string') {
+      workflowProgress.push({ type: 'workflow_phase', index: row.index, title: text(row.title)!, ...(typeof row.kind === 'string' ? { kind: text(row.kind) } : {}) });
+      continue;
+    }
+    if (row.type !== 'workflow_agent' || typeof row.label !== 'string'
+      || !['start', 'progress', 'done', 'error'].includes(row.state)) continue;
+    const agent: WorkflowAgentProgress = {
+      type: 'workflow_agent', index: row.index, label: text(row.label)!, state: row.state,
+    };
+    for (const field of ['phaseTitle', 'agentId', 'agentType', 'isolation', 'model', 'fallbackModel', 'lastAttemptReason', 'lastToolName', 'lastToolSummary'] as const) {
+      if (typeof row[field] === 'string') agent[field] = text(row[field]);
+    }
+    // Share the remaining budget across prompt, result, and failure previews so
+    // a large prompt cannot consume the result's entire display allowance.
+    const previewFields = (['promptPreview', 'resultPreview', 'error'] as const).filter(field => typeof row[field] === 'string');
+    const previewLimit = Math.min(6000, Math.floor(remainingText / Math.max(1, previewFields.length)));
+    for (const field of previewFields) agent[field] = text(row[field], previewLimit);
+    for (const field of ['phaseIndex', 'queuedAt', 'startedAt', 'lastProgressAt', 'attempt', 'tokens', 'toolCalls', 'durationMs'] as const) {
+      if (typeof row[field] === 'number' && Number.isFinite(row[field]) && row[field] >= 0) agent[field] = row[field];
+    }
+    for (const field of ['cached', 'blocked'] as const) {
+      if (typeof row[field] === 'boolean') agent[field] = row[field];
+    }
+    workflowProgress.push(agent);
+  }
+  if (source.length > 0 && workflowProgress.length === 0) return {};
+  return { workflowProgress, workflowProgressTruncated: truncated };
 }
 
 /**

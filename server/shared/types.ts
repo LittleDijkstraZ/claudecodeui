@@ -3,6 +3,7 @@ import type { Readable } from 'node:stream';
 
 import type { LLMProvider } from '@contracts/providers.js';
 import type { ChatBackupScope, ChatBackupGroupSnapshot } from '@contracts/chatBackup.js';
+import type { WorkflowProgressEntry } from '@contracts/claude-workflow.js';
 
 //----------------- HTTP RESPONSE SHAPES ------------
 /**
@@ -393,6 +394,10 @@ export type NormalizedMessage = {
   phase?: 'foreground' | 'background';
   acceptsInput?: boolean;
   backgroundTasks?: number;
+  /** Latest bounded native Workflow phase/agent snapshot; omitted on progress-only ticks. */
+  workflowProgress?: WorkflowProgressEntry[];
+  /** True when native Workflow details exceeded the display transport budget. */
+  workflowProgressTruncated?: boolean;
   executionId?: string;
   /** Correlates one queued send and native acknowledgement without implying processing completion. */
   clientMessageId?: string;

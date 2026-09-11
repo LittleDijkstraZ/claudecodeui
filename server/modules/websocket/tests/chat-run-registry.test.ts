@@ -228,6 +228,33 @@ test('replayEvents returns only events after the requested seq', async () => {
   });
 });
 
+test('Workflow replay keeps one full snapshot per task while preserving every progress event', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('workflow-snapshot-replay', 'claude', '/workspace/demo');
+    const connection = new FakeConnection();
+    const run = chatRunRegistry.startRun({ appSessionId: 'workflow-snapshot-replay', provider: 'claude', providerSessionId: null, connection, userId: null });
+    assert.ok(run);
+    const send = (taskId: string, text: string, title?: string) => run.writer.send({
+      kind: 'status', provider: 'claude', workflow: true, taskId, text,
+      ...(title ? { workflowProgress: [{ type: 'workflow_phase', index: 0, title }], workflowProgressTruncated: false } : {}),
+    });
+    send('task-a', 'Started A', 'A before');
+    send('task-b', 'Started B', 'B current');
+    send('task-a', 'A latest', 'A current');
+    send('task-a', 'A heartbeat');
+    const events = chatRunRegistry.replayEvents('workflow-snapshot-replay', 0);
+    assert.deepEqual(events.map(event => event.seq), [1, 2, 3, 4]);
+    assert.deepEqual(events.map(event => event.text), ['Started A', 'Started B', 'A latest', 'A heartbeat']);
+    assert.equal(events[0].workflowProgress, undefined);
+    assert.equal(events[0].workflowProgressTruncated, undefined);
+    assert.deepEqual(events[1].workflowProgress, [{ type: 'workflow_phase', index: 0, title: 'B current' }]);
+    assert.deepEqual(events[2].workflowProgress, [{ type: 'workflow_phase', index: 0, title: 'A current' }]);
+    assert.equal(events[3].workflowProgress, undefined);
+    assert.deepEqual(connection.frames[0].workflowProgress, [{ type: 'workflow_phase', index: 0, title: 'A before' }], 'Already emitted frames are unchanged.');
+    assert.deepEqual(chatRunRegistry.replayEvents('workflow-snapshot-replay', 2).map(event => event.seq), [3, 4]);
+  });
+});
+
 test('attachConnection adds a socket without cutting off the ones already watching', async () => {
   await withIsolatedDatabase(() => {
     sessionsDb.createAppSession('app-run-5', 'opencode', '/workspace/demo');

@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { scheduledMessagesDb, sessionDraftsDb, sessionsDb } from '@/modules/database/index.js';
 import type { QueuedSessionMessageRecord, ScheduledMessageRow } from '@/modules/database/index.js';
 import { chatRunRegistry, runDetachedChatTurn } from '@/modules/websocket/index.js';
@@ -11,8 +13,12 @@ import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
  * would buy precision nobody asked for.
  */
 const POLL_INTERVAL_MS = 30_000;
+// Saved input should enter a newly ready Workflow stream promptly. This cheap
+// queue scan is independent from the minute-granularity scheduled-message poll.
+const QUEUE_POLL_INTERVAL_MS = 1000;
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+let queuePollTimer: ReturnType<typeof setInterval> | null = null;
 // A scheduled run serializes only its own session. Long-lived provider queries
 // must never hold a global poll lock or postpone other sessions' due/queued work.
 const scheduledSessionDispatches = new Map<string, Promise<void>>();
@@ -71,6 +77,8 @@ async function sendClaimedQueuedMessage(
       userId: candidate.userId,
       content: message.content,
       expectedProviderSessionId,
+      clientMessageId: randomUUID(),
+      allowExistingInput: true,
       options: { ...message.options, attachments: message.attachments },
     },
     { runtime },
@@ -85,13 +93,18 @@ async function sendClaimedQueuedMessage(
   sessionDraftsDb.deleteEmptyDraft(candidate.userId, candidate.sessionId);
 }
 
-/** Sends every persisted queued turn whose session is currently idle. */
+/** Sends saved queues to idle sessions or the accepting input stream of their retained Claude process. */
 export async function dispatchQueuedMessages(runtime: ProviderRuntimeGateway): Promise<number> {
   const candidates = sessionDraftsDb.listQueuedMessages();
   let claimed = 0;
 
   await Promise.all(candidates.map(async (candidate) => {
-    if (scheduledSessionDispatches.has(candidate.sessionId) || chatRunRegistry.isProcessing(candidate.sessionId) || chatRunRegistry.isSessionMutating(candidate.sessionId)) {
+    const run = chatRunRegistry.getRun(candidate.sessionId);
+    const canJoinExistingInput = run?.status === 'running' && run.provider === 'claude'
+      && run.runtimeState?.acceptsInput === true && Boolean(runtime.enqueue)
+      && String(run.writer.userId) === String(candidate.userId);
+    if (chatRunRegistry.isSessionMutating(candidate.sessionId)
+      || !canJoinExistingInput && (scheduledSessionDispatches.has(candidate.sessionId) || chatRunRegistry.isProcessing(candidate.sessionId))) {
       return;
     }
     if (!sessionDraftsDb.claimQueuedMessage(candidate)) {
@@ -192,7 +205,7 @@ export function initializeScheduledMessageDispatcher(runtime: ProviderRuntimeGat
     return;
   }
 
-  const poll = () => {
+  const pollScheduled = () => {
     // Each dispatcher claims synchronously before yielding. Reservations are
     // per session, so the timer can keep finding newly queued work even when a
     // previously launched workflow keeps runtime.run pending indefinitely.
@@ -201,6 +214,8 @@ export function initializeScheduledMessageDispatcher(runtime: ProviderRuntimeGat
         const message = error instanceof Error ? error.message : String(error);
         console.error('[ScheduledMessages] Scheduled dispatch pass failed', { error: message });
       });
+  };
+  const pollQueued = () => {
     void dispatchQueuedMessages(runtime)
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
@@ -208,17 +223,24 @@ export function initializeScheduledMessageDispatcher(runtime: ProviderRuntimeGat
       });
   };
 
-  pollTimer = setInterval(poll, POLL_INTERVAL_MS);
+  pollTimer = setInterval(pollScheduled, POLL_INTERVAL_MS);
+  queuePollTimer = setInterval(pollQueued, QUEUE_POLL_INTERVAL_MS);
   // Never keep the process alive just to poll for scheduled messages.
   pollTimer.unref?.();
+  queuePollTimer.unref?.();
 
   // Catch up on anything that came due while the server was not running.
-  poll();
+  pollScheduled();
+  pollQueued();
 }
 
 export function closeScheduledMessageDispatcher(): void {
   if (pollTimer) {
     clearInterval(pollTimer);
     pollTimer = null;
+  }
+  if (queuePollTimer) {
+    clearInterval(queuePollTimer);
+    queuePollTimer = null;
   }
 }

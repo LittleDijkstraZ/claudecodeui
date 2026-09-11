@@ -15,10 +15,6 @@
 import crypto from 'crypto';
 import { spawn } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
-import { claudeSettingsFlags, resolveClaudeExecutionSettings } from '@/modules/providers/services/claude-execution-settings.js';
-import { claudeExecutionRecords } from '@/modules/providers/services/claude-execution-records.js';
-import { shellConfigurationObservation } from '@/modules/providers/services/claude-shell-observer.js';
-import { claudeUsageService } from '@/modules/claude-usage/index.js';
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
@@ -26,6 +22,10 @@ import path from 'path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { McpServerConfig, Options, Query, SDKUserMessage, SpawnOptions } from '@anthropic-ai/claude-agent-sdk';
 
+import { claudeSettingsFlags, resolveClaudeExecutionSettings } from '@/modules/providers/services/claude-execution-settings.js';
+import { claudeExecutionRecords } from '@/modules/providers/services/claude-execution-records.js';
+import { shellConfigurationObservation } from '@/modules/providers/services/claude-shell-observer.js';
+import { claudeUsageService } from '@/modules/claude-usage/index.js';
 import type { AnyRecord, IProviderRuntime, ProviderModelsDefinition, ProviderPermissionDecision, ProviderRuntimeContext, ProviderRuntimeWriter } from '@/shared/index.js';
 import { createClaudeTextStream } from '@/modules/providers/list/claude/claude-text-stream.js';
 import { createClaudeInputQueue } from '@/modules/providers/list/claude/claude-input-queue.js';
@@ -60,6 +60,8 @@ type ActiveSession = {
   writer: ProviderRuntimeWriter | null;
   releaseInput: (() => void) | null;
   enqueue?: (command: string, options: AnyRecord) => Promise<boolean>;
+  interruptQueued?: (clientMessageId: string) => Promise<boolean>;
+  stopTask?: (taskId: string) => Promise<boolean>;
   sideQuestions?: number;
   sideQuestionsSettled?: () => void;
   canAskSideQuestion?: () => boolean;
@@ -211,6 +213,9 @@ export function mapCliOptionsToSDK(options: AnyRecord = {}): Options {
   const sdkOptions: Options = {};
   sdkOptions.includePartialMessages = true;
   sdkOptions.forwardSubagentText = true;
+  // Chat exposes an individual Stop control for native tasks. This declaration
+  // lets foreground interruptions preserve those independently stoppable tasks.
+  sdkOptions.perTaskStopAffordance = true;
   sdkOptions.enableFileCheckpointing = true;
   sdkOptions.extraArgs = { 'replay-user-messages': null };
 
@@ -628,6 +633,10 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
   let foregroundTurnId = crypto.randomUUID();
   let foregroundStartedAt = new Date().toISOString();
   const reportedInterruptions = new Set<string>();
+  const activeTaskIds = new Set<string>();
+  const finishedTaskIds = new Set<string>();
+  const pendingTaskStops = new Map<string, Promise<boolean>>();
+  let queuedInterrupt: Promise<boolean> | undefined;
   let streamStarted = false;
   let streamGeneration = 0;
   let commandCatalogGeneration = 0;
@@ -638,7 +647,7 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
       delivery: entry.delivery, deliveryMode: entry.deliveryMode, content: entry.command, images: entry.images, files: entry.files, timestamp: entry.timestamp, executionId, ...(error ? { error } : {}) }));
   });
   const emitRuntimeState = () => ws.send(createNormalizedMessage({ kind: 'status', text: 'claude_runtime_state', provider: 'claude', sessionId: sessionKey(),
-    phase: foreground ? 'foreground' : 'background', acceptsInput: streamStarted && inputQueue.isOpen(), inputModes: ['queue', 'interrupt'], backgroundTasks: backgroundWork.pendingCount(), executionId,
+    phase: foreground ? 'foreground' : 'background', acceptsInput: streamStarted && inputQueue.isOpen(), inputModes: ['queue', 'interrupt'], canInterruptQueuedMessages: true, canStopTask: true, backgroundTasks: backgroundWork.pendingCount(), executionId,
     foregroundTurnId: foreground ? foregroundTurnId : undefined, foregroundStartedAt: foreground ? foregroundStartedAt : undefined }));
   releasePromptStream = inputQueue.release;
   const enqueueInput = async (command: string, next: AnyRecord): Promise<boolean> => {
@@ -663,6 +672,26 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
     addSession(sessionKey()!, queryInstance, ws, () => { releasePromptStream(); emitRuntimeState(); });
     const session = getSession(sessionKey()!)!;
     session.enqueue = enqueueInput;
+    session.interruptQueued = async (clientMessageId) => {
+      if (!queryInstance || session.aborted || !inputQueue.isOpen() || !inputQueue.isQueued(clientMessageId)) return false;
+      if (!foreground) return true; // The native queue can already drain; do not interrupt a later turn.
+      if (queuedInterrupt) return queuedInterrupt;
+      // interrupt() preserves native queued UUIDs. Keep stdin and ownership so
+      // the next turn can consume them without a duplicate prompt or lost Workflow.
+      const pending = queryInstance.interrupt().then(() => true);
+      queuedInterrupt = pending;
+      try { return await pending; }
+      finally { if (queuedInterrupt === pending) queuedInterrupt = undefined; }
+    };
+    session.stopTask = async (taskId) => {
+      if (!queryInstance || session.aborted || !inputQueue.isOpen() || !activeTaskIds.has(taskId)) return false;
+      const existing = pendingTaskStops.get(taskId);
+      if (existing) return existing;
+      const pending = queryInstance.stopTask(taskId).then(() => true);
+      pendingTaskStops.set(taskId, pending);
+      try { return await pending; }
+      finally { if (pendingTaskStops.get(taskId) === pending) pendingTaskStops.delete(taskId); }
+    };
     session.canAskSideQuestion = () => streamStarted && inputQueue.isOpen();
     session.sideQuestionsSettled = () => {
       if (heldOnlyForSideQuestions && !foreground && !backgroundWork.hasPendingWorkflow() && !inputQueue.hasPending()) {
@@ -969,6 +998,12 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
       // SDK messages are validated by the SDK; its newer additive event fields
       // are intentionally accepted here while the normalizer guards their shape.
       const message: AnyRecord = sdkMessage;
+      if (message.type === 'system' && typeof message.task_id === 'string') {
+        if (['task_started', 'task_progress'].includes(message.subtype) && !finishedTaskIds.has(message.task_id)) activeTaskIds.add(message.task_id);
+        if (message.subtype === 'task_notification' && ['completed', 'failed', 'stopped'].includes(message.status)) {
+          activeTaskIds.delete(message.task_id); finishedTaskIds.add(message.task_id);
+        }
+      }
       // Scope only command metadata/compaction feedback; preserve the existing general stream behavior.
       if (message.type === 'system' && (message.subtype === 'commands_changed' || message.subtype === 'compact_boundary' || message.subtype === 'status' && (message.status === 'compacting' || message.compact_result))
         && message.session_id && capturedSessionId && message.session_id !== capturedSessionId && !message.parent_tool_use_id) continue;
@@ -1010,12 +1045,16 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
       // Transform and normalize message via adapter
       const transformedMessage = transformMessage(message);
       const sid = capturedSessionId || sessionId || null;
+      const workflowProgress = backgroundWork.observe(message);
 
       // Use adapter to normalize SDK events into NormalizedMessage[]
       // Delivery receipts already render our submitted prompt (including its attachments).
       // Native user replay confirms delivery; forwarding it again would duplicate that bubble.
       const normalized = inputQueue.ownsUserEcho(message) ? [] : textStream.normalize(message, sid);
       for (const msg of normalized) {
+        // History can normalize progress independently; the live tracker below
+        // owns its task identity and emits this status exactly once.
+        if (workflowProgress && msg.kind === 'status' && msg.workflow === true) continue;
         // Preserve parentToolUseId from SDK wrapper for subagent tool grouping
         if (transformedMessage.parentToolUseId && !msg.parentToolUseId) {
           msg.parentToolUseId = transformedMessage.parentToolUseId;
@@ -1060,7 +1099,6 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
         if (budget) publishUsage(budget);
       }
 
-      const workflowProgress = backgroundWork.observe(message);
       if (workflowProgress) {
         emitRuntimeState();
         ws.send(createNormalizedMessage({
@@ -1292,6 +1330,8 @@ export function createClaudeRuntime(overrides: Partial<RuntimeDependencies> = {}
       finally { releaseStartingReservation(); }
     },
     enqueue: async (sessionId, command, options) => await getSession(sessionId)?.enqueue?.(command, options) ?? false,
+    interruptQueued: async (sessionId, clientMessageId) => await getSession(sessionId)?.interruptQueued?.(clientMessageId) ?? false,
+    stopTask: async (sessionId, taskId) => await getSession(sessionId)?.stopTask?.(taskId) ?? false,
     abort: abortClaudeSDKSession,
     permissions: { resolve: resolveToolApproval, listPending: getPendingApprovalsForSession },
   };

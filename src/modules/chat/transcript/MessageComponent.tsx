@@ -254,7 +254,9 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
 
           <div className="w-full">
 
-            {message.isSubagentContainer ? (
+            {message.toolName === 'Workflow' && !isExporting && workspaceActions ? (
+              <AgentSummary message={message} />
+            ) : message.isSubagentContainer ? (
               /* A spawned agent owns its whole card — header, timeline and
                  result — so it never goes through the tool input/result pair. */
               !isExporting && workspaceActions ? <AgentSummary message={message} /> : <SubagentPanel

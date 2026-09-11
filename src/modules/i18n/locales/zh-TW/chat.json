@@ -127,7 +127,14 @@
       "retainedFiles": "保留的檔案：{{names}}。若複製這段文字重新傳送，請重新選擇所需附件。",
       "copyPaused": "把暫停的文字複製到輸入框",
       "copyPausedHint": "複製文字到輸入框；附件副本會保留在這裡供檢查",
-      "afterReply": "等目前回覆結束後傳送，背景 Workflow 繼續執行"
+      "afterReply": "等目前回覆結束後傳送，背景 Workflow 繼續執行",
+      "interrupt": "中斷目前回覆並處理排隊訊息",
+      "interrupting": "正在中斷…",
+      "interruptHint": "立即處理排隊訊息，背景任務繼續執行。",
+      "interruptUnavailable": "目前執行尚未確認支援中斷排隊訊息。",
+      "controlFailed": "操作失敗，排隊訊息仍保留。",
+      "controlDisconnected": "連線已中斷，請重新連線後再試；排隊訊息未被更改。",
+      "controlUnconfirmed": "尚未收到操作確認，請檢查連線及目前狀態後重試。"
     },
     "commands": {
       "reported": "遠端已確認",

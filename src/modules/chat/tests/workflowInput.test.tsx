@@ -220,6 +220,20 @@ test('a foreground response refreshes the transcript once while keeping backgrou
   expect(view.refresh).toHaveBeenCalledTimes(2);
 });
 
+test('task control acknowledgements never change queued delivery or foreground state', () => {
+  const view = handlers();
+  view.emit({ kind: 'status', text: 'claude_runtime_state', sessionId: 'session-a', ...BACKGROUND, canInterruptQueuedMessages: true, canStopTask: true });
+  view.emit(receipt('queued'));
+  for (const text of ['queued_input_interrupt', 'task_stop']) {
+    view.emit({ kind: 'status', text, sessionId: 'session-a', status: 'failed', clientMessageId: '16dfd601-35b0-409f-aec3-f6cb10b48441', error: 'Could not control task' });
+  }
+  expect(view.result.current.protection.processingSessions.get('session-a')).toMatchObject({ phase: 'background', statusText: null, canInterruptQueuedMessages: true, canStopTask: true });
+  expect(view.result.current.store.getMessages('session-a').find(message => message.clientMessageId)?.delivery).toBe('queued');
+  view.emit({ kind: 'status', text: 'claude_runtime_state', sessionId: 'session-a', ...BACKGROUND, executionId: 'replacement-execution' });
+  expect(view.result.current.protection.processingSessions.get('session-a')?.canInterruptQueuedMessages).toBeUndefined();
+  expect(view.result.current.protection.processingSessions.get('session-a')?.canStopTask).toBeUndefined();
+});
+
 test('explicit sends with stale activity remain separate UUID requests without a deferred draft queue', async () => {
   const view = composer({ startedAt: 100, statusText: null, canInterrupt: true });
   await view.submit('First message');

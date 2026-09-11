@@ -1,4 +1,5 @@
 import type { AnyRecord } from '@/shared/index.js';
+import { normalizeClaudeWorkflowProgress } from '@/shared/index.js';
 
 const LEGACY_DEFERRED_TOOLS = new Set(['Monitor', 'ScheduleWakeup', 'CronCreate', 'TaskCreate']);
 const TERMINAL_TASK_STATUSES = new Set(['completed', 'failed', 'stopped']);
@@ -72,6 +73,7 @@ export function createClaudeBackgroundWorkTracker() {
         toolUseId: callId || null,
         text: typeof message.summary === 'string' ? message.summary : `Workflow ${message.status}`,
         usage: message.usage,
+        ...normalizeClaudeWorkflowProgress(message.workflow_progress),
       };
     }
 
@@ -87,6 +89,7 @@ export function createClaudeBackgroundWorkTracker() {
       text: typeof message.summary === 'string' ? message.summary
         : typeof message.description === 'string' ? message.description : 'Workflow running',
       usage: message.usage,
+      ...normalizeClaudeWorkflowProgress(message.workflow_progress),
     };
   }
 

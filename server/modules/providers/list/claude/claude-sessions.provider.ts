@@ -24,6 +24,7 @@ import {
 } from '@/shared/utils.js';
 import { sessionsDb } from '@/modules/database/index.js';
 import { claudeUsageService } from '@/modules/claude-usage/index.js';
+import { normalizeClaudeWorkflowProgress } from '@/shared/index.js';
 
 const PROVIDER = 'claude';
 
@@ -702,7 +703,16 @@ export class ClaudeSessionsProvider implements IProviderSessions {
 
     const taskNotification = readClaudeTaskNotification(raw);
     if (taskNotification) return [createNormalizedMessage({ id: baseId, sessionId, timestamp: ts, provider: PROVIDER,
-      kind: 'task_notification', ...taskNotification })];
+      kind: 'task_notification', ...taskNotification, ...normalizeClaudeWorkflowProgress(raw.workflow_progress) })];
+    if (raw.type === 'system' && raw.subtype === 'task_progress' && typeof raw.task_id === 'string') {
+      const progress = normalizeClaudeWorkflowProgress(raw.workflow_progress);
+      if (progress.workflowProgress) return [createNormalizedMessage({
+        id: baseId, sessionId, timestamp: ts, provider: PROVIDER, kind: 'status', workflow: true,
+        taskId: raw.task_id, ...(typeof raw.tool_use_id === 'string' ? { toolUseId: raw.tool_use_id } : {}),
+        status: 'running', text: typeof raw.description === 'string' ? raw.description : raw.summary,
+        usage: raw.usage, ...progress,
+      })];
+    }
     // The native boundary is the authoritative completion signal, also retained in JSONL history.
     if (raw.type === 'system' && raw.subtype === 'compact_boundary' && !raw.parent_tool_use_id && !raw.isSidechain) {
       return [createNormalizedMessage({ id: baseId, sessionId, timestamp: ts, provider: PROVIDER,

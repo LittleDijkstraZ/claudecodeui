@@ -89,6 +89,7 @@ export function createClaudeInputQueue(onDelivery: (entry: Entry, error?: string
     pending.length = 0; notify();
   };
   return { stream, begin, observe, release, isOpen: () => !closed,
+    isQueued: (id: string) => entries.get(id)?.delivery === 'queued',
     hasPending: () => preparing > 0 || pending.length > 0 || [...entries.values()].some(entry => !entry.initial && !entry.processed),
     messageCount: () => entries.size,
     // Only explicit native receipt IDs can attribute command output; a Workflow result cannot.

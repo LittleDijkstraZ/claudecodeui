@@ -29,7 +29,7 @@ type ChatRunStatus = 'running' | 'completed';
 type ChatRun = {
   appSessionId: string;
   runId: string;
-  runtimeState?: { phase: 'foreground' | 'background'; acceptsInput: boolean; inputModes?: Array<'queue' | 'interrupt'>; backgroundTasks: number; executionId?: string; foregroundTurnId?: string; foregroundStartedAt?: string };
+  runtimeState?: { phase: 'foreground' | 'background'; acceptsInput: boolean; inputModes?: Array<'queue' | 'interrupt'>; canInterruptQueuedMessages?: boolean; canStopTask?: boolean; backgroundTasks: number; executionId?: string; foregroundTurnId?: string; foregroundStartedAt?: string };
   provider: LLMProvider;
   providerSessionId: string | null;
   status: ChatRunStatus;
@@ -163,6 +163,7 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
     && (message.phase === 'foreground' || message.phase === 'background') && typeof message.acceptsInput === 'boolean';
   if (runtimeStateChanged) run.runtimeState = { phase: message.phase!, acceptsInput: message.acceptsInput!,
     inputModes: Array.isArray(message.inputModes) ? message.inputModes.filter((mode): mode is 'queue' | 'interrupt' => mode === 'queue' || mode === 'interrupt') : undefined,
+    canInterruptQueuedMessages: message.canInterruptQueuedMessages === true, canStopTask: message.canStopTask === true,
     backgroundTasks: Math.max(0, Number(message.backgroundTasks) || 0), executionId: message.executionId, foregroundTurnId: typeof message.foregroundTurnId === 'string' ? message.foregroundTurnId : undefined, foregroundStartedAt: typeof message.foregroundStartedAt === 'string' ? message.foregroundStartedAt : undefined };
 
   if (message.kind === 'complete') {
@@ -182,6 +183,20 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
       const oldest = [...run.messageReceipts].find(([, receipt]) => receipt.delivery !== 'queued');
       if (oldest) run.messageReceipts.delete(oldest[0]);
     }
+  }
+  if (outbound.workflowProgress !== undefined) {
+    // Each native snapshot replaces the same task's phase/agent state. Replay
+    // retains every lifecycle/text event, but only the newest large snapshot.
+    run.events = run.events.map(event => {
+      const sameTask = typeof outbound.taskId === 'string' && outbound.taskId.length > 0 && typeof event.taskId === 'string'
+        ? outbound.taskId === event.taskId
+        : typeof outbound.toolUseId === 'string' && outbound.toolUseId.length > 0 && outbound.toolUseId === event.toolUseId;
+      if (!sameTask || event.provider !== outbound.provider || event.workflowProgress === undefined) return event;
+      const retained = { ...event };
+      delete retained.workflowProgress;
+      delete retained.workflowProgressTruncated;
+      return retained;
+    });
   }
   run.events.push(outbound);
   if (run.events.length > MAX_BUFFERED_EVENTS_PER_RUN) {
@@ -368,7 +383,7 @@ export const chatRunRegistry = {
     provider: LLMProvider;
     startedAt: number;
     lastSeq: number;
-    phase?: 'foreground' | 'background'; acceptsInput?: boolean; inputModes?: Array<'queue' | 'interrupt'>; backgroundTasks?: number; executionId?: string;
+    phase?: 'foreground' | 'background'; acceptsInput?: boolean; inputModes?: Array<'queue' | 'interrupt'>; canInterruptQueuedMessages?: boolean; canStopTask?: boolean; backgroundTasks?: number; executionId?: string;
   }> {
     return Array.from(runs.values())
       .filter((run) => run.status === 'running')

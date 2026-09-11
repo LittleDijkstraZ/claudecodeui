@@ -1,6 +1,6 @@
 import { createRef } from 'react';
 import type { ComponentProps } from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { expect, test, vi } from 'vitest';
 
 import ChatComposer from '@/modules/chat/composer/ChatComposer';
@@ -13,8 +13,8 @@ vi.mock('@/modules/chat/hooks/useVoiceInput', () => ({ useVoiceInput: () => ({ s
 function fixture() {
   const props: ComponentProps<typeof ChatComposer> = {
     pendingPermissionRequests: [], handlePermissionDecision: vi.fn(), handleGrantToolPermission: () => ({ success: true }),
-    activity: { startedAt: 1, statusText: null, canInterrupt: true, phase: 'foreground', acceptsInput: true, inputModes: ['queue', 'interrupt'], backgroundTasks: 2 },
-    isLoading: false, onAbortSession: vi.fn(), onInterruptAndSend: vi.fn(), permissionMode: 'default', availablePermissionModes: ['default'], onSelectPermissionMode: vi.fn(),
+    activity: { startedAt: 1, statusText: null, canInterrupt: true, phase: 'foreground', acceptsInput: true, inputModes: ['queue', 'interrupt'], canInterruptQueuedMessages: true, backgroundTasks: 2 },
+    isLoading: false, onAbortSession: vi.fn(), onInterruptQueuedMessage: vi.fn(), permissionMode: 'default', availablePermissionModes: ['default'], onSelectPermissionMode: vi.fn(),
     providerLabel: 'Claude', provider: 'claude', effort: 'high', availableEffortOptions: [{ value: 'high' }], onSelectEffort: vi.fn(),
     model: 'A-very-long-remote-model-name', availableModelOptions: [], onSelectModel: vi.fn(), modelsLoading: false, modelDetails: null,
     tokenBudget: null, onShowTokenUsage: vi.fn(), slashCommandsCount: 0, onToggleCommandMenu: vi.fn(), hasInput: true, onClearInput: vi.fn(), onSubmit: vi.fn(event => event.preventDefault()),
@@ -29,32 +29,47 @@ function fixture() {
   return { props, ...render(<ChatComposer {...props} />) };
 }
 
-test('a writable running reply shows distinct Queue and Interrupt buttons; Interrupt never triggers form send or Stop', () => {
-  const { props } = fixture();
-  fireEvent.click(screen.getByRole('button', { name: 'Queue next message' }));
-  expect(props.onSubmit).toHaveBeenCalledTimes(1);
-  expect(props.onInterruptAndSend).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole('button', { name: 'Interrupt and send' }));
-  expect(props.onInterruptAndSend).toHaveBeenCalledTimes(1);
-  expect(props.onSubmit).toHaveBeenCalledTimes(1);
-  expect(props.onAbortSession).not.toHaveBeenCalled();
-});
+const QUEUED = { type: 'user' as const, content: 'The queued question', timestamp: 1, delivery: 'queued' as const, clientMessageId: 'queued-one' };
 
-test('an older remote keeps Queue usable but disables unsupported Interrupt', () => {
+test('Interrupt is hidden until a message has actually been queued', () => {
   const { props, rerender } = fixture();
-  rerender(<ChatComposer {...props} activity={{ ...props.activity!, inputModes: undefined }} />);
-  const interrupt = screen.getByRole('button', { name: 'Interrupt and send' });
-  expect(interrupt.hasAttribute("disabled")).toBe(true);
-  fireEvent.click(interrupt);
-  expect(props.onInterruptAndSend).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: /Interrupt/ })).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Queue next message' }));
   expect(props.onSubmit).toHaveBeenCalledOnce();
+  expect(props.onInterruptQueuedMessage).not.toHaveBeenCalled();
+  rerender(<ChatComposer {...props} input="" hasInput={false} queuedMessages={[QUEUED]} />);
+  const card = screen.getByTestId('queued-message-card');
+  fireEvent.click(within(card).getByRole('button', { name: 'Interrupt to process queued messages' }));
+  expect(props.onInterruptQueuedMessage).toHaveBeenCalledWith('queued-one');
+  expect(props.onSubmit).toHaveBeenCalledOnce();
+  expect(props.onAbortSession).not.toHaveBeenCalled();
+  rerender(<ChatComposer {...props} queuedMessages={[]} />);
+  expect(screen.queryByRole('button', { name: /Interrupt/ })).toBeNull();
 });
 
-test('an empty draft or editing an earlier message never enables interrupt-and-send', () => {
+test('a remote must advertise queued interrupt independently from draft interrupt support', () => {
   const { props, rerender } = fixture();
-  rerender(<ChatComposer {...props} input="" hasInput={false} />);
-  expect(screen.getByRole('button', { name: 'Interrupt and send' }).hasAttribute('disabled')).toBe(true);
-  rerender(<ChatComposer {...props} isEditingSentMessage />);
-  expect(screen.getByRole('button', { name: 'Interrupt and send' }).hasAttribute('disabled')).toBe(true);
+  rerender(<ChatComposer {...props} queuedMessages={[QUEUED]} activity={{ ...props.activity!, canInterruptQueuedMessages: undefined }} />);
+  const interrupt = screen.getByRole('button', { name: 'Interrupt to process queued messages' });
+  expect(interrupt.hasAttribute('disabled')).toBe(true);
+  fireEvent.click(interrupt);
+  expect(props.onInterruptQueuedMessage).not.toHaveBeenCalled();
+});
+
+test('queued controls stay independent of a new draft and show pending/error states in the same card', () => {
+  const { props, rerender } = fixture();
+  rerender(<ChatComposer {...props} queuedMessages={[QUEUED, { ...QUEUED, clientMessageId: 'queued-two', content: 'Another queued question' }]} interruptingMessageId="queued-one" />);
+  expect(screen.getAllByTestId('queued-message-card')).toHaveLength(1);
+  expect(screen.getByText('Another queued question')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Interrupt to process queued messages' }).hasAttribute('disabled')).toBe(true);
+  rerender(<ChatComposer {...props} queuedMessages={[QUEUED]} interruptError="Could not interrupt" />);
+  expect(within(screen.getByTestId('queued-message-card')).getByRole('alert').textContent).toBe('Could not interrupt');
+});
+
+test('background workflow leaves the composer in Send mode', () => {
+  const { props, rerender } = fixture();
+  rerender(<ChatComposer {...props} activity={{ ...props.activity!, phase: 'background' }} />);
+  expect(screen.queryByRole('button', { name: 'Queue next message' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'input.send' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: /Interrupt/ })).toBeNull();
 });

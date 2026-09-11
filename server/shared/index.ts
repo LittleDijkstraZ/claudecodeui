@@ -44,6 +44,7 @@ export {
   asyncHandler,
   createApiSuccessResponse,
   normalizeProjectPath,
+  normalizeClaudeWorkflowProgress,
   readObjectRecord,
   validateWorkspacePath,
 } from './utils.js';

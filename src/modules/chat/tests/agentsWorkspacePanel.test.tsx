@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ChatMessage, WorkspaceAgentsSnapshot } from '@/shared/types';
@@ -19,12 +19,12 @@ const snapshot = { sessionId: 'main', project: null, messages: [message], hasEar
 function Harness() {
   const actions = useWorkspacePanelActions(); const panel = useWorkspacePanels();
   useEffect(() => actions?.publishAgents(snapshot), [actions]);
-  return <><AgentSummary message={message} /><button onClick={() => actions?.openAgent('message-assistant-agent-one', 'tool-32')}>Reveal agent edit</button><output>{panel?.open ? panel.tab : 'closed'}</output><AgentsPanel /></>;
+  return <><div data-testid="agent-transcript-summary"><AgentSummary message={message} /></div><button onClick={() => actions?.openAgent('message-assistant-agent-one', 'tool-32')}>Reveal agent edit</button><output>{panel?.open ? panel.tab : 'closed'}</output><AgentsPanel /></>;
 }
 describe('agent workspace details', () => {
   it('opens a compact transcript agent into its full timeline and expands the exact changed tool beyond the first page', () => {
     render(<WorkspacePanelsProvider><Harness /></WorkspacePanelsProvider>);
-    fireEvent.click(screen.getByRole('button', { name: /Researcher.*Inspect files/ })); expect(screen.getByRole('status').textContent).toBe('agents');
+    fireEvent.click(within(screen.getByTestId('agent-transcript-summary')).getByRole('button', { name: /Researcher.*Inspect files/ })); expect(screen.getByRole('status').textContent).toBe('agents');
     expect(screen.getByText('Research all 40 files')).toBeDefined(); expect(screen.getByText('Agent final result')).toBeDefined(); expect(screen.getByText('Duration not recorded')).toBeDefined();
     expect(screen.queryByText('Tool tool-32')).toBeNull(); fireEvent.click(screen.getByText('Reveal agent edit')); expect(screen.getByText('Tool tool-32')).toBeDefined(); expect(screen.queryByText('Tool tool-33')).toBeNull();
     expect(revealConversationChange).toHaveBeenLastCalledWith(expect.any(HTMLElement), expect.objectContaining({ messageKey: 'message-assistant-agent-one', toolId: 'tool-32' }), expect.any(Function));

@@ -415,7 +415,10 @@ export function useChatRealtimeHandlers({
         }
 
         case 'status': {
-          if (msg.workflow === true || msg.text === 'execution_conflict') {
+          if (msg.text === 'queued_input_interrupt' || msg.text === 'task_stop') {
+            // A task-control acknowledgement is handled by the requesting UI;
+            // it neither confirms delivery nor changes the foreground state.
+          } else if (msg.workflow === true || msg.text === 'execution_conflict') {
             // Background progress and launch conflicts do not become foreground activity.
           } else if (msg.text === 'native_commands_changed') {
             if (sid) window.dispatchEvent(new CustomEvent('cloudcli-native-commands-changed', { detail: { sessionId: sid } }));
