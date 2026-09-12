@@ -778,6 +778,16 @@ sending and stays available for follow-ups; failed requests can be retried. Hist
 is limited to the most recent 32 exchanges / 64,000 characters (with a notice when
 limited), while the full discussion remains visible until the tab is closed.
 
+Claude 2.1.263 keeps a cache-safe side-question context that can lag behind a
+running main turn. Each live BTW request therefore includes a fresh, bounded
+excerpt of that query's visible activity in the native side-question channel:
+delivered user text, assistant text (including partial streaming blocks), and
+tool calls/results. The excerpt excludes reasoning and nested agents, retains
+at most 40 rows / 48,000 serialized characters, and marks shortened content.
+It is captured again for every follow-up and never enters the main prompt or
+saved transcript. A starting or closing live query returns a retryable error
+instead of silently falling back to older saved context.
+
 When a remote still runs the older question-only route, the local UI retries its
 explicit history-field rejection with recent exchanges packaged into a new native
 BTW question (within that server's 16,000-character limit). This keeps follow-ups

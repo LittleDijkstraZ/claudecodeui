@@ -205,6 +205,41 @@ test('queued input can run while Workflow is in the background without any inter
   assert.equal(h.events.at(-1)?.success, true);
 });
 
+test('native BTW acquisitions capture new main-turn partial text while preserving query and queue ownership', async () => {
+  const h = runtimeHarness(async function* ({ inputClosed, inputDone }) {
+    yield workflow(); yield started(); yield result();
+    await h.enqueue('New main question', 'new-main-input');
+    const beforeDelivery = h.acquireBtw()!;
+    assert.ok(!beforeDelivery.context.includes('New main question'));
+    beforeDelivery.release();
+    yield { type: 'user', uuid: 'new-main-input', session_id: nativeSession, message: { role: 'user', content: 'New main question' } };
+    const partial = (event: AnyRecord) => ({ type: 'stream_event', session_id: nativeSession, event });
+    yield partial({ type: 'message_start', message: { id: 'main-latest' } });
+    yield partial({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+    yield partial({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'LATEST_VISIBLE_SENTINEL' } });
+    const first = h.acquireBtw()!;
+    assert.ok(first.context.includes('LATEST_VISIBLE_SENTINEL'));
+    assert.ok(first.context.includes('New main question'));
+    first.release(); first.release();
+    yield partial({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: ' and newer update' } });
+    yield partial({ type: 'content_block_stop', index: 0 });
+    yield { type: 'assistant', uuid: 'native-latest-row', session_id: nativeSession, message: { id: 'main-latest', role: 'assistant', content: [{ type: 'text', text: 'LATEST_VISIBLE_SENTINEL and newer update' }] } };
+    yield { type: 'assistant', session_id: 'other-native', message: { role: 'assistant', content: [{ type: 'text', text: 'FOREIGN_SESSION' }] } };
+    yield { type: 'assistant', session_id: nativeSession, parent_tool_use_id: 'child', message: { role: 'assistant', content: [{ type: 'text', text: 'CHILD_RESPONSE' }] } };
+    yield { type: 'assistant', session_id: nativeSession, message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'PRIVATE_THINKING' }] } };
+    const second = h.acquireBtw()!;
+    assert.equal((second.context.match(/LATEST_VISIBLE_SENTINEL/g) ?? []).length, 1);
+    assert.ok(second.context.includes('and newer update'));
+    assert.ok(!first.context.includes('and newer update'));
+    for (const excluded of ['FOREIGN_SESSION', 'CHILD_RESPONSE', 'PRIVATE_THINKING']) assert.ok(!second.context.includes(excluded));
+    second.release();
+    assert.equal(h.queries(), 1); assert.equal(h.interrupts(), 0); assert.equal(inputClosed(), false);
+    yield { ...result(), user_message_uuid: 'new-main-input' }; yield notification(); yield result(); await inputDone;
+  });
+  await h.run();
+  assert.equal(h.events.at(-1)?.success, true);
+});
+
 test('task stop uses the native task ID and retains other tasks and main input', async () => {
   const stopped: string[] = [];
   const h = runtimeHarness(async function* ({ inputClosed, inputDone }) {

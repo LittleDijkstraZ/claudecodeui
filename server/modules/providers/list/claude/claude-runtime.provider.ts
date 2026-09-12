@@ -29,6 +29,7 @@ import { claudeUsageService } from '@/modules/claude-usage/index.js';
 import type { AnyRecord, IProviderRuntime, ProviderModelsDefinition, ProviderPermissionDecision, ProviderRuntimeContext, ProviderRuntimeWriter } from '@/shared/index.js';
 import { createClaudeTextStream } from '@/modules/providers/list/claude/claude-text-stream.js';
 import { createClaudeInputQueue } from '@/modules/providers/list/claude/claude-input-queue.js';
+import { createClaudeSideQuestionContext } from '@/modules/providers/list/claude/claude-side-question-context.js';
 import { createClaudeBackgroundWorkTracker } from '@/modules/providers/list/claude/claude-background-work.js';
 import {
   appendFilesInputTag,
@@ -65,6 +66,7 @@ type ActiveSession = {
   sideQuestions?: number;
   sideQuestionsSettled?: () => void;
   canAskSideQuestion?: () => boolean;
+  sideQuestionContext?: () => string;
   abortPromise?: Promise<boolean>;
   aborted?: boolean;
 };
@@ -641,7 +643,11 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
   let streamGeneration = 0;
   let commandCatalogGeneration = 0;
   const pendingUsageSummaries = new Set<Promise<void>>();
+  const sideQuestionContext = createClaudeSideQuestionContext(() => capturedSessionId);
+  let observingMainContext = true;
   const inputQueue = createClaudeInputQueue((entry, error) => {
+    if (observingMainContext) sideQuestionContext.observe(createNormalizedMessage({ kind: 'status', text: 'message_delivery', provider: 'claude',
+      sessionId: capturedSessionId, clientMessageId: entry.id, delivery: entry.delivery, content: entry.command }));
     ws.send(createNormalizedMessage({ kind: 'status', text: 'message_delivery', provider: 'claude', sessionId: sessionKey(),
       clientMessageId: entry.id, responseMessageId: entry.responseMessageId, transcriptAnchorId: entry.transcriptAnchorId, providerSessionId: capturedSessionId || undefined,
       delivery: entry.delivery, deliveryMode: entry.deliveryMode, content: entry.command, images: entry.images, files: entry.files, timestamp: entry.timestamp, executionId, ...(error ? { error } : {}) }));
@@ -693,6 +699,7 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
       finally { if (pendingTaskStops.get(taskId) === pending) pendingTaskStops.delete(taskId); }
     };
     session.canAskSideQuestion = () => streamStarted && inputQueue.isOpen();
+    session.sideQuestionContext = sideQuestionContext.snapshot;
     session.sideQuestionsSettled = () => {
       if (heldOnlyForSideQuestions && !foreground && !backgroundWork.hasPendingWorkflow() && !inputQueue.hasPending()) {
         heldOnlyForSideQuestions = false;
@@ -1008,7 +1015,10 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
       if (message.type === 'system' && (message.subtype === 'commands_changed' || message.subtype === 'compact_boundary' || message.subtype === 'status' && (message.status === 'compacting' || message.compact_result))
         && message.session_id && capturedSessionId && message.session_id !== capturedSessionId && !message.parent_tool_use_id) continue;
       streamGeneration++;
+      observingMainContext = !message.parent_tool_use_id && !message.isSidechain && !message.isSynthetic
+        && (!message.session_id || !capturedSessionId || message.session_id === capturedSessionId);
       inputQueue.observe(message);
+      observingMainContext = true;
       if (!message.parent_tool_use_id && !message.isSidechain && (message.type === 'assistant' || message.type === 'stream_event' && message.event?.type === 'message_start')) {
         if (!foreground) { foreground = true; foregroundTurnId = crypto.randomUUID(); foregroundStartedAt = new Date().toISOString(); emitRuntimeState(); }
       }
@@ -1062,6 +1072,8 @@ async function queryClaudeSDK(command: string, options: AnyRecord, ws: ProviderR
         if (isSubagentPromptEcho(msg)) {
           continue;
         }
+        if (!message.parent_tool_use_id && !message.isSidechain && !message.isSynthetic
+          && (!message.session_id || message.session_id === capturedSessionId)) sideQuestionContext.observe(msg);
         ws.send(msg);
       }
 
@@ -1351,7 +1363,7 @@ export function acquireClaudeSideQuestionQuery(sessionId: string) {
   if (!session || session.status !== 'active' || session.aborted || !session.canAskSideQuestion?.()) return null;
   session.sideQuestions = (session.sideQuestions ?? 0) + 1;
   let released = false;
-  return { query: session.instance, release: () => {
+  return { query: session.instance, context: session.sideQuestionContext?.() ?? '', release: () => {
     if (released) return;
     released = true;
     session.sideQuestions = Math.max(0, (session.sideQuestions ?? 1) - 1);
